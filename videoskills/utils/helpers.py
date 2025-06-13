@@ -134,6 +134,8 @@ def get_args():
         {"name": "--num_envs", "type": int, "help": "Number of environments to create. Overrides config file if provided."},
         {"name": "--seed", "type": int, "help": "Random seed. Overrides config file if provided."},
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
+        {"name": "--use_wandb", "action": "store_true", "default": False, "help": "Enable logging to Weights & Biases"},
+        {"name": "--wandb_project", "type": str, "default": "VideoSkills", "help": "Weights & Biases project name"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

@@ -386,9 +386,3 @@ class SMPLRobot(LeggedRobot):
         return torch.exp(-5 * dof_err - 2 * ang_err)
 
 
-    def post_physics_step(self):
-        super().post_physics_step()
-
-        # Play motion during simulation
-
-

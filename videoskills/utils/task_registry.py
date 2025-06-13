@@ -4,6 +4,7 @@ from typing import Tuple
 import torch
 import numpy as np
 import sys
+import wandb
 
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
@@ -114,6 +115,14 @@ class TaskRegistry():
             log_dir = None
         else:
             log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
+
+        if args.use_wandb and wandb is not None:
+            if log_dir is not None:
+                os.makedirs(os.path.join(log_dir, "wandb"), exist_ok=True)
+            run_name = train_cfg.runner.run_name
+            wandb.init(project=args.wandb_project, name=run_name,
+                       dir=log_dir,
+                       config=vars(args), sync_tensorboard=True)
         
         train_cfg_dict = class_to_dict(train_cfg)
         runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)

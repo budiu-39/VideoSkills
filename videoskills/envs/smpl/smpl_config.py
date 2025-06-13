@@ -22,7 +22,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 1
+        num_envs = 2048
         num_actions = 69
         ref_obs = 23 * 3 + 4 + 1  #
         # TODO: now is the simplified edition
@@ -59,9 +59,24 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         base_height_target = 0.25
 
         class scales(LeggedRobotCfg.rewards.scales):
-            torques = -0.0002
+            termination = -0.0
+            tracking_lin_vel = 0.0
+            tracking_ang_vel = 0.0
+            tracking = 10.0
+            lin_vel_z = 0.0
+            ang_vel_xy = 0
+            orientation = -0.
+            torques = -0.000001
+            dof_vel = -0.
+            dof_acc = -0.
+            base_height = -0.
+            feet_air_time =  0.0
+            collision = -1.
+            feet_stumble = -0.0
+            action_rate = -0.00
+            stand_still = -0.
             dof_pos_limits = -10.0
-            tracking = 1.0
+
 
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
@@ -69,7 +84,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = ''
+        run_name = 'deepmimic_test'
         experiment_name = 'smpl_ppo'
 
 
