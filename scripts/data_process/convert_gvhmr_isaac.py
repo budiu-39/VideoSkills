@@ -1,19 +1,29 @@
+import glob
 import os
 import sys
+import pdb
+import os.path as osp
 sys.path.append(os.getcwd())
 
+import torch
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
 import joblib
+
 from tqdm import tqdm
 import argparse
-
-from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+import cv2
+from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 import torch
+import mujoco
 import mujoco.viewer
 
+import time
+
+
+import os
 
 def rotate(pose, trans, rotate_matrix = [[1., 0., 0.], [0., 0., 1], [0., -1., 0.]]):
     pose[:, :3] = torch.tensor(

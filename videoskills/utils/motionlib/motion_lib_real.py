@@ -3,7 +3,7 @@ import numpy as np
 from tqdm import tqdm
 import os.path as osp
 
-from . import torch_utils
+from .. import torch_utils
 import joblib
 import torch
 import torch.multiprocessing as mp

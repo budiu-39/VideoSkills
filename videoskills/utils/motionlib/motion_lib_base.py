@@ -8,7 +8,7 @@ sys.path.append(os.getcwd())
 import numpy as np
 from tqdm import tqdm
 
-from . import torch_utils
+from .. import torch_utils
 import joblib
 import torch
 import torch.multiprocessing as mp

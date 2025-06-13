@@ -1,6 +1,7 @@
 import glob
 import os
 import sys
+import pdb
 import os.path as osp
 sys.path.append(os.getcwd())
 
@@ -10,22 +11,20 @@ import numpy as np
 import joblib
 from tqdm import tqdm
 import argparse
-
-from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+import cv2
+from poselib.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-from smplx import SMPL, SMPLX, SMPLH
-
 
 
 if __name__ == "__main__":
-
-
     parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true", default=False)
     parser.add_argument("--path", type=str, default="")
+    parser.add_argument("--process_split", type=str, default="train", choices=["train", "test", "valid"])
     args = parser.parse_args()
     
-    process_split = "train"
+    process_split = args.process_split
     upright_start = True
     robot_cfg = {
             "mesh": False,
@@ -46,33 +45,42 @@ if __name__ == "__main__":
             "geom_params": {},
             "actuator_params": {},
             "model": "smpl",
-            "model_path": "smpl",
         }
 
     smpl_local_robot = LocalRobot(robot_cfg,)
-
     if not osp.isdir(args.path):
         print("Please specify AMASS data path")
-
+        import ipdb; ipdb.set_trace()
+        
     all_pkls = glob.glob(f"{args.path}/**/*.npz", recursive=True)
     amass_occlusion = joblib.load("output/Humanoid_motion/amass_copycat_occlusion_v3.pkl")
     amass_full_motion_dict = {}
     amass_splits = {
-        'vald': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
+        'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
         'test': ['Transitions_mocap', 'SSM_synced'],
         'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT',  'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB", "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]   # Adding ACCAD
     }
     process_set = amass_splits[process_split]
     length_acc = []
     for data_path in tqdm(all_pkls):
+        print("Processing", data_path)
         bound = 0
-        splits = data_path.split("/")[2]
-        key_name = data_path.split("/")[2:]
+
+        path_parts = data_path.split("/")
+        if "AMASS" in path_parts:
+            amass_index = path_parts.index("AMASS")
+            splits = path_parts[amass_index + 1]  # 获取 AMASS 后的下一个部分作为 split
+            key_name = path_parts[amass_index + 1:]
+        else:
+            print("AMASS not found in path:", data_path)
+            continue
+
         key_name_dump = "0-" + "_".join(key_name).replace(".npz", "")
         
         if (not splits in process_set):
+            print("Skipping", splits, key_name_dump)
             continue
-        
+
         if key_name_dump in amass_occlusion:
             issue = amass_occlusion[key_name_dump]["issue"]
             if (issue == "sitting" or issue == "airborne") and "idxes" in amass_occlusion[key_name_dump]:
@@ -114,13 +122,11 @@ if __name__ == "__main__":
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
 
         beta = np.zeros(16)
-
-
         gender_number, beta[:], gender = [0], 0, "neutral"
 
         smpl_local_robot.load_from_skeleton(betas=torch.from_numpy(beta[None,]), gender=gender_number, objs_info=None)
-        smpl_local_robot.write_xml(f"data/robots/smpl/smpl_humanoid/smpl_humanoid.xml")
-        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid/smpl_humanoid.xml")
+        smpl_local_robot.write_xml(f"phc/data/assets/mjcf/{robot_cfg['model']}_humanoid.xml")
+        skeleton_tree = SkeletonTree.from_mjcf(f"phc/data/assets/mjcf/{robot_cfg['model']}_humanoid.xml")
         root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
 
@@ -131,7 +137,6 @@ if __name__ == "__main__":
                     is_local=True)
         
         if robot_cfg['upright_start']:
-            # 这样做是因为 SMPLX 是 Y up，而 mujoco 是 Z up，所以需要将 SMPLX 的姿态转换为 mujoco 的姿态。
             pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
                                 sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
             # should fix pose_quat as well here...
@@ -156,9 +161,20 @@ if __name__ == "__main__":
 
         amass_full_motion_dict[key_name_dump] = new_motion_out
 
+        motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+
+        # 构建保存路径
+        rel_path = osp.relpath(data_path, args.path)  # 相对路径，如 CMU/123/xxx.npz
+        save_path = osp.join("AMASS_processed", rel_path).replace(".npz", ".npy")
+        os.makedirs(osp.dirname(save_path), exist_ok=True)
+
+        # 保存 motion 对象为 numpy 文件
+        motion_obj.to_file(save_path)
+
+
     if upright_start:
-        os.makedirs("output/Humanoid_motion/smpl/amass", exist_ok=True)
-        joblib.dump(amass_full_motion_dict, "output/Humanoid_motion/smpl/amass/amass_selected_test.pkl", compress=True)
+        os.makedirs("output/Humanoid_motion/amass", exist_ok=True)
+        joblib.dump(amass_full_motion_dict, f"output/Humanoid_motion/amass/amass_selected_{process_split}.pkl", compress=True)
     else:
-        os.makedirs("output/Humanoid_motion/smpl/amass", exist_ok=True)
-        joblib.dump(amass_full_motion_dict, "output/Humanoid_motion/smpl/amass/amass_train_take6.pkl", compress=True)
+        os.makedirs("output/Humanoid_motion/amass", exist_ok=True)
+        joblib.dump(amass_full_motion_dict, "output/Humanoid_motion/amass/amass_train_take6.pkl", compress=True)

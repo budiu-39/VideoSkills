@@ -1,4 +1,3 @@
-import numpy as np
 import os
 import yaml
 
@@ -6,8 +5,8 @@ from scripts.poselib.skeleton.skeleton3d import SkeletonMotion
 from scripts.poselib.core.rotation3d import *
 from isaacgym.torch_utils import *
 
-from . import torch_utils
-
+from .. import torch_utils
+from joblib import load
 import torch
 
 USE_CACHE = True
@@ -174,7 +173,7 @@ class MotionLib():
 
         return root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos
 
-    def _load_motions(self, motion_file):
+    def _load_motions(self, motion_file, skeleton_trees = None):
         self._motions = []
         self._motion_lengths = []
         self._motion_weights = []
@@ -238,28 +237,93 @@ class MotionLib():
 
         return
 
+    def _load_motions_from_pkl(self, motion_file, skeleton_trees=None):
+        self._motions = []
+        self._motion_lengths = []
+        self._motion_weights = []
+        self._motion_fps = []
+        self._motion_dt = []
+        self._motion_num_frames = []
+        self._motion_files = []
+
+
+        motions = load(motion_file)
+
+        num_motions = len(motions)
+        for f in motions:
+            curr_motion = SkeletonMotion.from_dict(motions[f])
+            print("Loading {:d}/{:d} motion files".format(f + 1, num_motions))
+
+            motion_fps = curr_motion.fps
+            curr_dt = 1.0 / motion_fps
+
+            num_frames = curr_motion.tensor.shape[0]
+            curr_len = 1.0 / motion_fps * (num_frames - 1)
+
+            self._motion_fps.append(motion_fps)
+            self._motion_dt.append(curr_dt)
+            self._motion_num_frames.append(num_frames)
+
+            curr_motion["local_rotation"] = curr_motion.pop("pose_quat")
+
+            curr_dof_vels = self._compute_motion_dof_vels(curr_motion)
+            curr_motion.dof_vels = curr_dof_vels
+
+            # Moving motion tensors to the GPU
+            if USE_CACHE:
+                curr_motion = DeviceCache(curr_motion, self._device)
+            else:
+                curr_motion.tensor = curr_motion.tensor.to(self._device)
+                curr_motion._skeleton_tree._parent_indices = curr_motion._skeleton_tree._parent_indices.to(self._device)
+                curr_motion._skeleton_tree._local_translation = curr_motion._skeleton_tree._local_translation.to(
+                    self._device)
+                curr_motion._rotation = curr_motion._rotation.to(self._device)
+
+            self._motions.append(curr_motion)
+            self._motion_lengths.append(curr_len)
+
+            curr_weight = motion_weights[f]
+            self._motion_weights.append(curr_weight)
+            self._motion_files.append(curr_file)
+
+        self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
+
+        self._motion_weights = torch.tensor(self._motion_weights, dtype=torch.float32, device=self._device)
+        self._motion_weights /= self._motion_weights.sum()
+
+        self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
+        self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
+        self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device)
+
+        num_motions = self.num_motions()
+        total_len = self.get_total_length()
+
+        print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
+
+        return
+
     def _fetch_motion_files(self, motion_file):
-        ext = os.path.splitext(motion_file)[1]
-        if (ext == ".yaml"):
-            dir_name = os.path.dirname(motion_file)
-            motion_files = []
-            motion_weights = []
-
-            with open(os.path.join(os.getcwd(), motion_file), 'r') as f:
-                motion_config = yaml.load(f, Loader=yaml.SafeLoader)
-
-            motion_list = motion_config['motions']
-            for motion_entry in motion_list:
-                curr_file = motion_entry['file']
-                curr_weight = motion_entry['weight']
-                assert (curr_weight >= 0)
-
-                curr_file = os.path.join(dir_name, curr_file)
-                motion_weights.append(curr_weight)
-                motion_files.append(curr_file)
-        else:
-            motion_files = [motion_file]
-            motion_weights = [1.0]
+        # ext = os.path.splitext(motion_file)[1]
+        # if (ext == ".yaml"):
+        #     dir_name = os.path.dirname(motion_file)
+        #     motion_files = []
+        #     motion_weights = []
+        #
+        #     with open(os.path.join(os.getcwd(), motion_file), 'r') as f:
+        #         motion_config = yaml.load(f, Loader=yaml.SafeLoader)
+        #
+        #     motion_list = motion_config['motions']
+        #     for motion_entry in motion_list:
+        #         curr_file = motion_entry['file']
+        #         curr_weight = motion_entry['weight']
+        #         assert (curr_weight >= 0)
+        #
+        #         curr_file = os.path.join(dir_name, curr_file)
+        #         motion_weights.append(curr_weight)
+        #         motion_files.append(curr_file)
+        # else:
+        motion_files = motion_file
+        motion_weights = [1.0] * len(motion_files)
 
         return motion_files, motion_weights
 

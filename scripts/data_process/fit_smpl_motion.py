@@ -247,13 +247,19 @@ def match_amass_dataset(key_name, all_datasets):
 @hydra.main(version_base=None, config_path="../../phc/data/cfg", config_name="config")
 def main(cfg : DictConfig) -> None:
     import ipdb
-    if cfg.robot.input_motion_type == 'GVHMR':
+    if ("gvhmr_path" in cfg and cfg.gvhmr_path) and ("amass_root" in cfg and cfg.amass_root):
+        raise ValueError("Both 'gvhmr_path' and 'amass_root' are provided. Please specify only one.")
+    elif not ("gvhmr_path" in cfg and cfg.gvhmr_path) and not ("amass_root" in cfg and cfg.amass_root):
+        raise ValueError("Neither 'gvhmr_path' nor 'amass_root' is provided. Please specify one.")
+
+    if "gvhmr_path" in cfg and cfg.gvhmr_path:
+        cfg.robot.input_motion_type = "GVHMR"
         pt_files = glob.glob(osp.join(cfg.gvhmr_path, "*", "*.pt"))
         key_name_to_pkls = {
             osp.basename(osp.dirname(f)): f for f in pt_files
         }
-        # key_names = list(key_name_to_pkls.keys())
     else:
+        cfg.robot.input_motion_type = "AMASS"
         if "amass_root" in cfg:
             amass_root = cfg.amass_root
         else:
@@ -385,9 +391,9 @@ def main(cfg : DictConfig) -> None:
     if cfg.robot.input_motion_type == 'GVHMR':
         # data_key = list(all_data.keys())[0]
         # os.makedirs(f"output/Unitree_motion/{cfg.robot.humanoid_type}/v1/singles", exist_ok=True)
-        dumped_file = f"output/Unitree_motion/{cfg.robot.humanoid_type}/v1/GVHMR_test.pkl"
+        dumped_file = f"output/Unitree_motion/{cfg.robot.humanoid_type}/v1/GVHMR_output.pkl"
         print(dumped_file)
-        vis_mujoco(all_data[key_names[0]],cfg.robot.humanoid_type)
+        # vis_mujoco(all_data[key_names[0]],cfg.robot.humanoid_type)         # for visualization
         joblib.dump(all_data, dumped_file)
 
     else:
