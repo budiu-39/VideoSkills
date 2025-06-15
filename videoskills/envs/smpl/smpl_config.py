@@ -6,8 +6,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         pos = [0.0, 0.0, 0.42]  # x,y,z [m]
 
     class motion:
-        file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/AMASS_Zup')
-        keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
+        file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
+        # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
+        keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',
+                             'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
+                             'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']
 
     class noise:
         add_noise = False
@@ -22,18 +25,17 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 2048
+        num_envs = 32
         num_actions = 69
-        ref_obs = 23 * 3 + 4 + 1  #
+        humanoid_obs = 1 + 23 * 3 + 24 * 10 #
+        task_obs = 24 * 20
         # TODO: now is the simplified edition
-        num_observations =  6 + 1 + 3 + 23 * 6 + num_actions + ref_obs  # 69 + 138 + 10 + 74 =
+        num_observations =  790 + 69 # 69 + 138 + 10 + 74 =
         # base_pos 1 + base_lin_vel 3 + base_ang_vel 3 + projected_gravity 3 + dof_pos 23 * 3
         # + dof_vel 23 * 3 + actions 69
 
 
-        # SMPL_MUJOCO_NAMES = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',
-        #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
-        #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']
+
         # filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33,
         #                 128, 0, 192, 0, 64, 0, 0, 0,
         #                 0, 0, 0, 0, 0, 0, 0]
@@ -57,16 +59,24 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
-
+        class task_w:
+            k_pos = 100
+            k_rot = 10
+            k_vel = 0.1
+            k_ang_vel = 0.1
+            w_pos = 0.5
+            w_rot = 0.3
+            w_vel = 0.1
+            w_ang_vel = 0.1
         class scales(LeggedRobotCfg.rewards.scales):
             termination = -0.0
             tracking_lin_vel = 0.0
             tracking_ang_vel = 0.0
-            tracking = 10.0
+            imitation = 10.0
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
-            torques = -0.000001
+            torques = -0.0000001
             dof_vel = -0.
             dof_acc = -0.
             base_height = -0.
@@ -86,6 +96,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         run_name = 'deepmimic_test'
         experiment_name = 'smpl_ppo'
+        load_run = 'Jun14_00-53-03_deepmimic_test' # -1 = last run
 
 
 

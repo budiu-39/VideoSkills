@@ -8,7 +8,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.utils.motionlib.motion_lib_smpl import MotionLibSMPL
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree
 from videoskills.utils.motionlib.motion_lib import MotionLib
-from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params, calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_rotate_inverse
 import xml.etree.ElementTree as ET
 import glob
 
@@ -184,8 +184,8 @@ class SMPLRobot(LeggedRobot):
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
         self.gym.set_actor_dof_properties(env_ptr, actor_handles, dof_prop)
         for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/10, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/10, dtype=torch.float, device=self.device)
+            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/3, dtype=torch.float, device=self.device)
+            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/3, dtype=torch.float, device=self.device)
 
         filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
@@ -264,6 +264,19 @@ class SMPLRobot(LeggedRobot):
             self._reset_hybrid_state_init(env_ids)
 
 
+    def _init_buffers(self):
+        super()._init_buffers()
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self._rigid_body_state = gymtorch.wrap_tensor(rigid_body_state)
+        bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
+        self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
+
+        self.key_pos = self._rigid_body_state_reshaped[..., self.key_body_ids, 0:3]   #3
+        self.key_rot = self._rigid_body_state_reshaped[..., self.key_body_ids, 3:7]   #4
+        self.key_vel = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]   #3
+        self.key_ang_vel = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]  #3
+
     def _reset_default(self, env_ids):
         self.dof_pos[env_ids] = self.default_dof_pos[env_ids]
         self.dof_vel[env_ids] = 0.
@@ -291,11 +304,11 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos \
+        root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, _, _, _, _ \
             = self._motion_lib.get_motion_state(motion_ids, motion_times)
 
         self._set_env_state(env_ids=env_ids,
-                            root_pos=root_pos,
+                            root_pos=root_pos + self.env_origins[env_ids],
                             root_rot=root_rot,
                             dof_pos=dof_pos,
                             root_vel=root_vel,
@@ -335,17 +348,28 @@ class SMPLRobot(LeggedRobot):
                                               gymtorch.unwrap_tensor(self.dof_state),
                                               gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
 
+    def post_physics_step(self):
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.key_pos[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 0:3]
+        self.key_rot[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 3:7]
+        self.key_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]
+        self.key_ang_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]
+        super().post_physics_step()
 
     def _post_physics_step_callback(self):
         progress = self.episode_length_buf.to(torch.float) * self.dt
         motion_times = progress + self._motion_start_times
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         motion_times = torch.fmod(motion_times, motion_lens)
-        (root_pos, root_rot, dof_pos, _, _, _, _) = self._motion_lib.get_motion_state(
-            self._sampled_motion_ids, motion_times)
+        (root_pos, root_rot, dof_pos, _, _, _, key_pos, key_rot, key_vel, key_ang_vel) = (
+            self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times))
         self.ref_root_pos[:] = root_pos + self.env_origins
         self.ref_root_rot[:] = root_rot
         self.ref_dof_pos[:] = dof_pos
+        self.ref_key_pos = key_pos
+        self.ref_key_rot = key_rot
+        self.ref_key_vel = key_vel
+        self.ref_key_ang_vel = key_ang_vel
 
         return super()._post_physics_step_callback()
 
@@ -354,35 +378,104 @@ class SMPLRobot(LeggedRobot):
     # hieght 于 rotation 应该也是有关系的吧？
     # 是 local 的
     def compute_observations(self):
-        self.obs_buf = torch.cat((self.base_pos[:,2:3] * self.obs_scales.height_measurements,
-                                  self.base_lin_vel * self.obs_scales.lin_vel,
-                                  self.base_ang_vel * self.obs_scales.ang_vel,
-                                  self.projected_gravity,
-                                  (self.dof_pos - self.default_dof_pos) * self.obs_scales.dof_pos,
-                                  self.dof_vel * self.obs_scales.dof_vel,
-                                  self.actions
-                                  ), dim=-1)
+        ## TODO: 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
+        ## task obs 参考 compute_imitation_observations
+        humanoid_obs = self.compute_humanoid_observations()
+        task_obs = self.compute_task_observations()
 
+        self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
 
+    def compute_humanoid_observations(self):
+        root_h = self.dof_pos[:, 2:3]
+        heading_rot_inv = calc_heading_quat_inv(self.base_quat)
+        heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
+        root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)  # [N, K, 3]
+        local_body_pos = quat_apply(heading_rot_inv_expand, self.key_pos - root_base_expand)[:,1:].view(self.num_envs, -1)
+        local_body_rot = quat_mul(heading_rot_inv_expand, self.key_rot).view(self.num_envs, -1) # [N, K, 4]
+        local_body_vel = quat_apply(heading_rot_inv_expand, self.key_vel).view(self.num_envs, -1)
+        local_body_ang_vel = quat_apply(heading_rot_inv_expand, self.key_ang_vel).view(self.num_envs, -1)
 
-        # base_pos 1 + base_lin_vel 3 + base_ang_vel 3 + projected_gravity 3 + dof_pos 23 * 3
-        # + dof_vel 23 * 3 + actions 69
-        delta_rot = quat_mul(quat_conjugate(self.ref_root_rot), self.base_quat)
-        ref = torch.cat((self.ref_dof_pos - self.default_dof_pos, (self.ref_root_pos[:,2:3]
-                         - self.base_pos[:,2:3]), delta_rot), dim=-1)
-        # ref_dof_pos 23 * 3 +  ref_root_height 1 + delta_rot 4
+        # 1 +  3 * (K - 1) + 4 * K + 3 * K + 3 * K = 1 + 3K + 4K + 3K + 3K - 3 = 13 * 24 - 2  # 310
+        obs = torch.cat((root_h, local_body_pos, local_body_rot, local_body_vel, local_body_ang_vel), dim=-1)
+        return obs
 
-        self.obs_buf = torch.cat((self.obs_buf, ref), dim=-1)
+    def compute_task_observations(self):
+        obs = []
+        heading_rot_inv = calc_heading_quat_inv(self.base_quat)
+        heading_rot = calc_heading_quat_inv(self.base_quat)
+        heading_rot_expand = heading_rot.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
+        heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
 
-        if self.add_noise:
-            self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+        diff_global_key_pos = self.ref_key_pos - self.key_pos
+        diff_local_key_pos_flat = quat_apply(heading_rot_inv_expand, diff_global_key_pos).view(self.num_envs, -1)
+
+        diff_global_key_rot = quat_mul(self.ref_key_rot, quat_conjugate(
+            self.key_rot))
+        diff_local_key_rot_flat = quat_mul(
+            quat_mul(heading_rot_inv_expand, diff_global_key_rot),
+            heading_rot_expand).view(self.num_envs, -1)  # Need to be change of basis
+
+        diff_global_key_rot = self.ref_key_vel - self.key_vel
+        diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_rot).view(self.num_envs, -1)
+
+        diff_global_key_ang_vel = self.ref_key_ang_vel - self.key_ang_vel
+        diff_local_key_ang_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_ang_vel).view(self.num_envs, -1)
+
+        local_ref_key_pos = self.ref_key_pos - self.base_pos.unsqueeze(1).expand(-1, self.ref_key_pos.shape[1], -1)
+        local_ref_key_pos = quat_apply(heading_rot_inv_expand, local_ref_key_pos).view(self.num_envs, -1)
+
+        local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot)
+        local_ref_key_rot = quat_mul(local_ref_key_rot, heading_rot_expand).view(self.num_envs, -1)
+
+        obs.append(diff_local_key_pos_flat)  # 3
+        obs.append(diff_local_key_rot_flat)  # 4
+        obs.append(diff_local_key_vel_flat)  # 3
+        obs.append(diff_local_key_ang_vel_flat) # 3
+        obs.append(local_ref_key_pos) # 3
+        obs.append(local_ref_key_rot) # 4
+
+        obs = torch.cat(obs, dim=-1)
+
+        return obs
 
     # TODO: 重写 compute_reward， 目前包含 dof pos 和 root_rot，没有包含高度，而且并不是  heading 的
     # 可以考虑 max coordinate 或者加入 heading
-    def _reward_tracking(self):
-        dof_err = torch.mean(torch.square(self.dof_pos - self.ref_dof_pos), dim=1)
-        rot_diff = quat_mul(self.ref_root_rot, quat_conjugate(self.base_quat))
-        ang_err = torch.square(quat_to_angle_axis(rot_diff)[0])
-        return torch.exp(-5 * dof_err - 2 * ang_err)
+    # def _reward_tracking(self):
+    #     dof_err = torch.mean(torch.square(self.dof_pos - self.ref_dof_pos), dim=1)
+    #     rot_diff = quat_mul(self.ref_root_rot, quat_conjugate(self.base_quat))
+    #     ang_err = torch.square(quat_to_angle_axis(rot_diff)[0])
+    #     return torch.exp(-5 * dof_err - 2 * ang_err)
 
 
+    def _reward_imitation(self):
+        # reward 是不需要 heading 归一化 的！
+        """
+        Computes the imitation reward based on the difference between the current and reference key body positions and rotations.
+        The reward is computed in the heading frame of the root body.
+        """
+        pos_err = torch.mean(torch.square(self.key_pos- self.ref_key_pos), dim=1).mean(-1)
+        rot_err = torch.mean(torch.square(quat_mul(self.key_rot, quat_conjugate(self.ref_key_rot))), dim=1).mean(-1)
+        vel_err = torch.mean(torch.square(self.key_vel- self.ref_key_vel), dim=1).mean(-1)
+        ang_vel_err = torch.mean(torch.square(self.key_ang_vel - self.ref_key_ang_vel), dim=1).mean(-1)
+
+        reward = (self.cfg.rewards.task_w.w_pos * torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err) +
+                    self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err) +
+                    self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err) +
+                    self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err))
+        return reward
+
+    # def apply_heading_frame(self, root_pos, root_rot, key_pos, key_rot, key_vel=None, key_ang_vel=None):
+    #     heading_inv = calc_heading_quat_inv(root_rot)  # [N, 4]
+    #
+    #     rel_pos = key_pos - root_pos.unsqueeze(1)  # [N, K, 3]
+    #     rel_pos = quat_apply(heading_inv, rel_pos)  # 旋转到 heading frame
+    #
+    #     rel_rot = quat_mul(heading_inv.unsqueeze(1), key_rot)
+    #     if key_vel is not None:
+    #         rel_vel = quat_rotate_inverse(heading_inv.unsqueeze(1), key_vel)
+    #         rel_ang_vel = quat_rotate_inverse(heading_inv.unsqueeze(1), key_ang_vel)
+    #     else:
+    #         rel_vel = None
+    #         rel_ang_vel = None
+    #
+    #     return rel_pos, rel_rot, rel_vel, rel_ang_vel

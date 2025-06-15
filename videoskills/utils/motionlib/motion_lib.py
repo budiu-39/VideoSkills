@@ -75,6 +75,8 @@ class MotionLib():
         self._load_motions(motion_file)
 
         motions = self._motions
+        self.gvs = torch.cat([m.global_velocity for m in motions], dim=0).float()
+        self.gas = torch.cat([m.global_angular_velocity for m in motions], dim=0).float()
         self.gts = torch.cat([m.global_translation for m in motions], dim=0).float()
         self.grs = torch.cat([m.global_rotation for m in motions], dim=0).float()
         self.lrs = torch.cat([m.local_rotation for m in motions], dim=0).float()
@@ -153,17 +155,22 @@ class MotionLib():
         key_pos0 = self.gts[f0l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
         key_pos1 = self.gts[f1l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
 
+        key_rot0 = self.grs[f0l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+        key_rot1 = self.grs[f1l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+
         dof_vel = self.dvs[f0l]
 
-        vals = [root_pos0, root_pos1, local_rot0, local_rot1, root_vel, root_ang_vel, key_pos0, key_pos1]
+        vals = [root_pos0, root_pos1, local_rot0, local_rot1, root_vel, root_ang_vel, key_pos0,
+                key_pos1, key_rot0, key_rot1]
         for v in vals:
             assert v.dtype != torch.float64
 
         blend = blend.unsqueeze(-1)
 
         root_pos = (1.0 - blend) * root_pos0 + blend * root_pos1
-
         root_rot = torch_utils.slerp(root_rot0, root_rot1, blend)
+        blend_exp = blend.unsqueeze(1)
+        key_rot = torch_utils.slerp(key_rot0, key_rot1, blend_exp)
 
         blend_exp = blend.unsqueeze(-1)
         key_pos = (1.0 - blend_exp) * key_pos0 + blend_exp * key_pos1
@@ -171,7 +178,15 @@ class MotionLib():
         local_rot = torch_utils.slerp(local_rot0, local_rot1, torch.unsqueeze(blend, axis=-1))
         dof_pos = self._local_rotation_to_dof(local_rot)
 
-        return root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos
+        key_vel0 = self.gvs[f0l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+        key_vel1 = self.gvs[f1l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+        key_vel = (1.0 - blend_exp) * key_vel0 + blend_exp * key_vel1
+
+        key_ang_vel0 = self.gas[f0l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+        key_ang_vel1 = self.gas[f1l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
+        key_ang_vel = (1.0 - blend_exp) * key_ang_vel0 + blend_exp * key_ang_vel1
+
+        return root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos, key_rot, key_vel, key_ang_vel
 
     def _load_motions(self, motion_file, skeleton_trees = None):
         self._motions = []
