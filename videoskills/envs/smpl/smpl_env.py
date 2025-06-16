@@ -15,6 +15,8 @@ import glob
 class SMPLRobot(LeggedRobot):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         self.cfg = cfg
+        if self.cfg.dev:
+            self.cfg.env.num_envs = 16
         self.sim_params = sim_params
         self.height_samples = None
         self.debug_viz = False
@@ -27,6 +29,8 @@ class SMPLRobot(LeggedRobot):
         motion_file_list = self.get_all_motion_files(motion_file)
         self._load_motion(motion_file_list)
 
+        # if not self.headless:
+        #     self._build_marker_state_tensors()
 
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
         self._sampled_motion_ids = torch.zeros(self.num_envs).long().to(self.device)
@@ -35,6 +39,8 @@ class SMPLRobot(LeggedRobot):
         self.ref_root_pos = torch.zeros(self.num_envs, 3, device=self.device)
         self.ref_root_rot = torch.zeros(self.num_envs, 4, device=self.device)
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
+
+        self.env_key_pos_origins = self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
 
     def get_all_motion_files(self, amass_processed_dir: str, ext=".npy") -> list:
         """
@@ -73,6 +79,14 @@ class SMPLRobot(LeggedRobot):
         # asset is a xml resource
         robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file , asset_options)
 
+        # marker
+        if not self.headless:
+            self._sphere_geom = gymutil.WireframeSphereGeometry(
+                radius=0.03,
+                num_lats=12,  # “纬线”数
+                num_lons=12,  # “经线”数
+                color=(1.0, 0.2, 0.2))
+
         self.num_dof = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         self.body_names = self.gym.get_asset_rigid_body_names(robot_asset)
@@ -97,9 +111,10 @@ class SMPLRobot(LeggedRobot):
         start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
 
         self._get_env_origins()
+
         env_lower = gymapi.Vec3(0., 0., 0.)
         env_upper = gymapi.Vec3(0., 0., 0.)
-        self.actor_handles = []
+        self.robot_handles = []
         self.envs = []
 
         for i in range(self.num_envs):
@@ -110,7 +125,7 @@ class SMPLRobot(LeggedRobot):
             self.envs.append(env_handle)
 
         # regularization?
-        dof_prop = self.gym.get_actor_dof_properties(self.envs[0], self.actor_handles[0])
+        dof_prop = self.gym.get_actor_dof_properties(self.envs[0], self.robot_handles[0])
         self.dof_limits_lower = []
         self.dof_limits_upper = []
         for j in range(self.num_dofs):
@@ -133,7 +148,7 @@ class SMPLRobot(LeggedRobot):
 
         key_body_ids = []
         for body_name in self.cfg.motion.keybodys:
-            body_id = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0], body_name)
+            body_id = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0], body_name)
             assert(body_id != -1)
             key_body_ids.append(body_id)
 
@@ -142,25 +157,67 @@ class SMPLRobot(LeggedRobot):
         # TODO： need to be test
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
-            self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.actor_handles[0],
+            self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0],
                                                                          feet_names[i])
 
         self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device,
                                                      requires_grad=False)
         for i in range(len(penalized_contact_names)):
             self.penalised_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0],
-                                                                                      self.actor_handles[0],
+                                                                                      self.robot_handles[0],
                                                                                       penalized_contact_names[i])
 
         self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long,
                                                        device=self.device, requires_grad=False)
         for i in range(len(termination_contact_names)):
             self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0],
-                                                                                        self.actor_handles[0],
+                                                                                        self.robot_handles[0],
                                                                                         termination_contact_names[i])
 
+
+
+    # def _build_marker(self, env_id, env_ptr):
+    #
+    #     default_pose = gymapi.Transform()
+    #     for i in range(self.num_bodies):
+    #         marker_handle = self.gym.create_actor(env_ptr, self._marker_asset, default_pose, "marker",
+    #                                               self.num_envs + 10, 1, 0)
+    #
+    #         self.gym.set_rigid_body_color(env_ptr, marker_handle, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.8, 0.0, 0.0))
+    #         self._marker_handles[env_id].append(marker_handle)
+    #
+    #     return
+
+    # def _build_marker_state_tensors(self):
+    #     num_actors = self.root_states.shape[0] // self.num_envs
+    #     self._marker_states = self.root_states.view(self.num_envs, num_actors, self.root_states.shape[-1])[..., 1:(1 + self.num_bodies), :]
+    #     self._marker_pos = self._marker_states[..., :3]
+    #     self._marker_rotation = self._marker_states[..., 3:7]
+    #     self._humanoid_actor_ids = num_actors * torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
+    #     self._marker_actor_ids = self._humanoid_actor_ids.unsqueeze(-1) + to_torch(self._marker_handles, dtype=torch.int32, device=self.device)
+    #     self._marker_actor_ids = self._marker_actor_ids.flatten()
+    #
+    #     return
+
+    def render(self):
+        if not self.headless and hasattr(self, "ref_key_pos"):
+            self.gym.clear_lines(self.viewer)
+            max_vis_envs = self.num_envs
+            T = gymapi.Transform()
+            for i in range(max_vis_envs):
+                env_ptr = self.envs[i]  # 当前环境的指针
+                pts = self.ref_key_pos[i].cpu().numpy()  # (K,3)
+
+                for p in pts:  # 逐点画线框小球
+                    T.p.x, T.p.y, T.p.z = map(float, p)
+                    gymutil.draw_lines(self._sphere_geom,  # 线框球模板
+                                       self.gym,
+                                       self.viewer,
+                                       env_ptr,
+                                       T)
+        super().render()
+
     def _build_env(self, env_id, env_ptr, humanoid_asset):
-        self.actor_handles = []
         col_group = env_id
         col_filter = 0 # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
 
@@ -173,30 +230,33 @@ class SMPLRobot(LeggedRobot):
         start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
 
         # here is the instance of the humanoid asset
-        actor_handles = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
+        robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
                                                 0)
-        self.gym.enable_actor_dof_force_sensors(env_ptr, actor_handles)
+        self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
 
         for j in range(self.num_bodies):
-            self.gym.set_rigid_body_color(env_ptr, actor_handles, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
+            self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
 
         # configure PD control method
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-        self.gym.set_actor_dof_properties(env_ptr, actor_handles, dof_prop)
+        self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
         for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/3, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/3, dtype=torch.float, device=self.device)
+            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/40, dtype=torch.float, device=self.device)
+            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/40, dtype=torch.float, device=self.device)
 
         filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-        props = self.gym.get_actor_rigid_shape_properties(env_ptr, actor_handles)
+        props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
         assert (len(filter_ints) == len(props))
 
         for p_idx in range(len(props)):
             props[p_idx].filter = filter_ints[p_idx]
-        self.gym.set_actor_rigid_shape_properties(env_ptr, actor_handles, props)
+        self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
 
-        self.actor_handles.append(actor_handles)
+        self.robot_handles.append(robot_handle)
+
+        # if not self.headless:
+        #     self._build_marker(env_id, env_ptr)
 
         return
 
@@ -366,7 +426,7 @@ class SMPLRobot(LeggedRobot):
         self.ref_root_pos[:] = root_pos + self.env_origins
         self.ref_root_rot[:] = root_rot
         self.ref_dof_pos[:] = dof_pos
-        self.ref_key_pos = key_pos
+        self.ref_key_pos = key_pos + self.env_key_pos_origins
         self.ref_key_rot = key_rot
         self.ref_key_vel = key_vel
         self.ref_key_ang_vel = key_ang_vel
@@ -415,8 +475,8 @@ class SMPLRobot(LeggedRobot):
             quat_mul(heading_rot_inv_expand, diff_global_key_rot),
             heading_rot_expand).view(self.num_envs, -1)  # Need to be change of basis
 
-        diff_global_key_rot = self.ref_key_vel - self.key_vel
-        diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_rot).view(self.num_envs, -1)
+        diff_global_key_vel = self.ref_key_vel - self.key_vel
+        diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_vel).view(self.num_envs, -1)
 
         diff_global_key_ang_vel = self.ref_key_ang_vel - self.key_ang_vel
         diff_local_key_ang_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_ang_vel).view(self.num_envs, -1)
@@ -463,6 +523,21 @@ class SMPLRobot(LeggedRobot):
                     self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err) +
                     self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err))
         return reward
+
+    # def _load_marker_asset(self):
+    #     asset_root = self.cfg.marker.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+    #
+    #     asset_options = gymapi.AssetOptions()
+    #     asset_options.angular_damping = 0.0
+    #     asset_options.linear_damping = 0.0
+    #     asset_options.max_angular_velocity = 0.0
+    #     asset_options.density = 0
+    #     asset_options.fix_base_link = True
+    #     asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
+    #
+    #     self._marker_asset = self.gym.load_asset(self.sim, asset_root, "traj_marker.urdf", asset_options)
+    #
+    #     return
 
     # def apply_heading_frame(self, root_pos, root_rot, key_pos, key_rot, key_vel=None, key_ang_vel=None):
     #     heading_inv = calc_heading_quat_inv(root_rot)  # [N, 4]

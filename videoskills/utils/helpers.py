@@ -100,6 +100,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         # num envs
         if args.num_envs is not None:
             env_cfg.env.num_envs = args.num_envs
+        if args.dev:
+            env_cfg.dev = True
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -116,6 +118,7 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             cfg_train.runner.load_run = args.load_run
         if args.checkpoint is not None:
             cfg_train.runner.checkpoint = args.checkpoint
+
 
     return env_cfg, cfg_train
 
@@ -136,6 +139,7 @@ def get_args():
         {"name": "--max_iterations", "type": int, "help": "Maximum number of training iterations. Overrides config file if provided."},
         {"name": "--use_wandb", "action": "store_true", "default": False, "help": "Enable logging to Weights & Biases"},
         {"name": "--wandb_project", "type": str, "default": "VideoSkills", "help": "Weights & Biases project name"},
+        {"name": "--dev", "action": "store_true", "default": False, "help": "development mode, use smaller envs"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

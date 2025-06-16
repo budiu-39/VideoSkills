@@ -5,6 +5,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         type = 'random'  # 'hybrid' or 'default'
         pos = [0.0, 0.0, 0.42]  # x,y,z [m]
 
+    class marker:
+        file = ('{LEGGED_GYM_ROOT_DIR}/data/marker/')
+
     class motion:
         file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
@@ -25,7 +28,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 32
+        num_envs = 2048
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 10 #
         task_obs = 24 * 20
@@ -72,11 +75,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             termination = -0.0
             tracking_lin_vel = 0.0
             tracking_ang_vel = 0.0
-            imitation = 10.0
+            imitation = 1000.0
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
-            torques = -0.0000001
+            torques = -0.000001
             dof_vel = -0.
             dof_acc = -0.
             base_height = -0.
@@ -96,7 +99,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         run_name = 'deepmimic_test'
         experiment_name = 'smpl_ppo'
-        load_run = 'Jun14_00-53-03_deepmimic_test' # -1 = last run
+        load_run = 'obs_max_test' # -1 = last run
 
 
 

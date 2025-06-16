@@ -189,6 +189,7 @@ class MotionLib():
         return root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos, key_rot, key_vel, key_ang_vel
 
     def _load_motions(self, motion_file, skeleton_trees = None):
+        # TODO: Add support for offset
         self._motions = []
         self._motion_lengths = []
         self._motion_weights = []

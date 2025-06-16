@@ -85,7 +85,7 @@ for motion_id in range(len(motion_files)):
     t = 0.0
     while not gym.query_viewer_has_closed(viewer) and t < motion_len:
         t_tensor = torch.tensor([t], device=device)
-        root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, _ = \
+        root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, _, _, _, _= \
             motion_lib.get_motion_state(torch.tensor([motion_id], device=device), t_tensor)
 
         # 设置 root state
