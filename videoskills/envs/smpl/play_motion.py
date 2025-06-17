@@ -2,6 +2,8 @@ import os
 import time
 import numpy as np
 
+import time
+
 from isaacgym import gymapi, gymtorch
 import torch
 from videoskills.utils.motionlib.motion_lib import MotionLib
@@ -112,6 +114,7 @@ for motion_id in range(len(motion_files)):
         gym.draw_viewer(viewer, sim, True)
 
         t += sim_params.dt
+        time.sleep(0.1)
 
 print("\nAll motions played successfully.")
 gym.destroy_viewer(viewer)

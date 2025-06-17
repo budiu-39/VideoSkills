@@ -116,10 +116,12 @@ class SMPLRobot(LeggedRobot):
         env_upper = gymapi.Vec3(0., 0., 0.)
         self.robot_handles = []
         self.envs = []
-
+        max_agg_bodies = 160
+        max_agg_shapes = 160
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
+            self.gym.begin_aggregate(env_handle, max_agg_bodies, max_agg_shapes, True)
             self._build_env(i, env_handle, robot_asset)
             self.gym.end_aggregate(env_handle)
             self.envs.append(env_handle)
@@ -174,31 +176,6 @@ class SMPLRobot(LeggedRobot):
                                                                                         self.robot_handles[0],
                                                                                         termination_contact_names[i])
 
-
-
-    # def _build_marker(self, env_id, env_ptr):
-    #
-    #     default_pose = gymapi.Transform()
-    #     for i in range(self.num_bodies):
-    #         marker_handle = self.gym.create_actor(env_ptr, self._marker_asset, default_pose, "marker",
-    #                                               self.num_envs + 10, 1, 0)
-    #
-    #         self.gym.set_rigid_body_color(env_ptr, marker_handle, 0, gymapi.MESH_VISUAL, gymapi.Vec3(0.8, 0.0, 0.0))
-    #         self._marker_handles[env_id].append(marker_handle)
-    #
-    #     return
-
-    # def _build_marker_state_tensors(self):
-    #     num_actors = self.root_states.shape[0] // self.num_envs
-    #     self._marker_states = self.root_states.view(self.num_envs, num_actors, self.root_states.shape[-1])[..., 1:(1 + self.num_bodies), :]
-    #     self._marker_pos = self._marker_states[..., :3]
-    #     self._marker_rotation = self._marker_states[..., 3:7]
-    #     self._humanoid_actor_ids = num_actors * torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
-    #     self._marker_actor_ids = self._humanoid_actor_ids.unsqueeze(-1) + to_torch(self._marker_handles, dtype=torch.int32, device=self.device)
-    #     self._marker_actor_ids = self._marker_actor_ids.flatten()
-    #
-    #     return
-
     def render(self):
         if not self.headless and hasattr(self, "ref_key_pos"):
             self.gym.clear_lines(self.viewer)
@@ -239,10 +216,10 @@ class SMPLRobot(LeggedRobot):
 
         # configure PD control method
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-        self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
         for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/40, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/40, dtype=torch.float, device=self.device)
+            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/3, dtype=torch.float, device=self.device)
+            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/3, dtype=torch.float, device=self.device)
+        self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
 
         filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
@@ -254,9 +231,6 @@ class SMPLRobot(LeggedRobot):
         self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
 
         self.robot_handles.append(robot_handle)
-
-        # if not self.headless:
-        #     self._build_marker(env_id, env_ptr)
 
         return
 
@@ -394,9 +368,17 @@ class SMPLRobot(LeggedRobot):
         """ Check if environments need to be reset
         """
         # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
-        self.reset_buf = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
-        self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        self.reset_buf |= self.time_out_buf
+
+        fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
+        time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+
+        key_delta_sq = torch.sum((self.key_pos - self.ref_key_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
+        # 只要任何一个关键点 > 0.5 m 就触发
+        key_too_far = torch.any(key_delta_sq > (1.0 ** 2), dim=1)  # → ℝ[num_envs]
+
+        # --------- ③ 汇总三个条件 ----------
+        self.reset_buf = fall | time_out | key_too_far
+        self.time_out_buf = time_out
 
     def _reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
@@ -438,7 +420,9 @@ class SMPLRobot(LeggedRobot):
     # hieght 于 rotation 应该也是有关系的吧？
     # 是 local 的
     def compute_observations(self):
-        ## TODO: 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
+        ## 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
+        ## 此外还有一个 actions 的 obs
+        # TODO： 不过有一个事情是！这个 humanoid_obs 其实非常难以获得。所以如果目的是实机的话，obs 是要重写的
         ## task obs 参考 compute_imitation_observations
         humanoid_obs = self.compute_humanoid_observations()
         task_obs = self.compute_task_observations()
@@ -498,15 +482,6 @@ class SMPLRobot(LeggedRobot):
 
         return obs
 
-    # TODO: 重写 compute_reward， 目前包含 dof pos 和 root_rot，没有包含高度，而且并不是  heading 的
-    # 可以考虑 max coordinate 或者加入 heading
-    # def _reward_tracking(self):
-    #     dof_err = torch.mean(torch.square(self.dof_pos - self.ref_dof_pos), dim=1)
-    #     rot_diff = quat_mul(self.ref_root_rot, quat_conjugate(self.base_quat))
-    #     ang_err = torch.square(quat_to_angle_axis(rot_diff)[0])
-    #     return torch.exp(-5 * dof_err - 2 * ang_err)
-
-
     def _reward_imitation(self):
         # reward 是不需要 heading 归一化 的！
         """
@@ -524,33 +499,3 @@ class SMPLRobot(LeggedRobot):
                     self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err))
         return reward
 
-    # def _load_marker_asset(self):
-    #     asset_root = self.cfg.marker.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
-    #
-    #     asset_options = gymapi.AssetOptions()
-    #     asset_options.angular_damping = 0.0
-    #     asset_options.linear_damping = 0.0
-    #     asset_options.max_angular_velocity = 0.0
-    #     asset_options.density = 0
-    #     asset_options.fix_base_link = True
-    #     asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
-    #
-    #     self._marker_asset = self.gym.load_asset(self.sim, asset_root, "traj_marker.urdf", asset_options)
-    #
-    #     return
-
-    # def apply_heading_frame(self, root_pos, root_rot, key_pos, key_rot, key_vel=None, key_ang_vel=None):
-    #     heading_inv = calc_heading_quat_inv(root_rot)  # [N, 4]
-    #
-    #     rel_pos = key_pos - root_pos.unsqueeze(1)  # [N, K, 3]
-    #     rel_pos = quat_apply(heading_inv, rel_pos)  # 旋转到 heading frame
-    #
-    #     rel_rot = quat_mul(heading_inv.unsqueeze(1), key_rot)
-    #     if key_vel is not None:
-    #         rel_vel = quat_rotate_inverse(heading_inv.unsqueeze(1), key_vel)
-    #         rel_ang_vel = quat_rotate_inverse(heading_inv.unsqueeze(1), key_ang_vel)
-    #     else:
-    #         rel_vel = None
-    #         rel_ang_vel = None
-    #
-    #     return rel_pos, rel_rot, rel_vel, rel_ang_vel

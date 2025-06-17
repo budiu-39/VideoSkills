@@ -28,7 +28,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 2048
+        num_envs = 16
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 10 #
         task_obs = 24 * 20
@@ -99,7 +99,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         run_name = 'deepmimic_test'
         experiment_name = 'smpl_ppo'
-        load_run = 'obs_max_test' # -1 = last run
+        load_run = 'obs_max_early_termination' # -1 = last run
 
 
 
