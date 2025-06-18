@@ -8,7 +8,8 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.utils.motionlib.motion_lib_smpl import MotionLibSMPL
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree
 from videoskills.utils.motionlib.motion_lib import MotionLib
-from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params, calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_rotate_inverse
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params
+from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 import xml.etree.ElementTree as ET
 import glob
 
@@ -336,8 +337,8 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        if self.cfg.dev:
-            motion_times = torch.zeros(num_envs, device=self.device)
+        # if self.cfg.dev:
+        #     motion_times = torch.zeros(num_envs, device=self.device)
 
         motion_state = self._motion_lib.get_motion_state(motion_ids, motion_times)
 
@@ -456,7 +457,8 @@ class SMPLRobot(LeggedRobot):
         heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
         root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)  # [N, K, 3]
         local_body_pos = quat_apply(heading_rot_inv_expand, self.key_pos - root_base_expand)[:,1:].view(self.num_envs, -1)
-        local_body_rot = quat_mul(heading_rot_inv_expand, self.key_rot).view(self.num_envs, -1) # [N, K, 4]
+        local_body_rot = quat_mul(heading_rot_inv_expand, self.key_rot).view(self.num_envs, -1)
+        # local_body_rot = quat_to_tan_norm(quat_mul(heading_rot_inv_expand, self.key_rot).view(-1,4)).view(self.num_envs, -1) # [N, K, 4]
         local_body_vel = quat_apply(heading_rot_inv_expand, self.key_vel).view(self.num_envs, -1)
         local_body_ang_vel = quat_apply(heading_rot_inv_expand, self.key_ang_vel).view(self.num_envs, -1)
 
@@ -477,9 +479,12 @@ class SMPLRobot(LeggedRobot):
         # TODO： 这个应该相同才对吧，目前不同，反倒是 diff_global_key_rot 相同 # 解决了！
         diff_global_key_rot = quat_mul(self.ref_key_rot, quat_conjugate(
             self.key_rot))
-        diff_local_key_rot_flat = quat_mul(
+        diff_local_key_rot_flat =quat_mul(
             quat_mul(heading_rot_inv_expand, diff_global_key_rot),
-            heading_rot_expand).view(self.num_envs, -1)  # Need to be change of basis
+            heading_rot_expand).view(self.num_envs, -1)
+        # diff_local_key_rot_flat = quat_to_tan_norm(quat_mul(
+        #     quat_mul(heading_rot_inv_expand, diff_global_key_rot),
+        #     heading_rot_expand).view(-1,4)).view(self.num_envs, -1)  # Need to be change of basis
 
         diff_global_key_vel = self.ref_key_vel - self.key_vel
         diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_vel).view(self.num_envs, -1)
@@ -490,14 +495,16 @@ class SMPLRobot(LeggedRobot):
         local_ref_key_pos = self.ref_key_pos - self.base_pos.unsqueeze(1).expand(-1, self.ref_key_pos.shape[1], -1)
         local_ref_key_pos = quat_apply(heading_rot_inv_expand, local_ref_key_pos).view(self.num_envs, -1)
 
-        local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(self.num_envs, -1)
+        local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(
+            self.num_envs, -1)
+        # local_ref_key_rot = quat_to_tan_norm(quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(-1,4)).view(self.num_envs, -1)
 
         obs.append(diff_local_key_pos_flat)  # 3
-        obs.append(diff_local_key_rot_flat)  # 4
+        obs.append(diff_local_key_rot_flat)  # 6
         obs.append(diff_local_key_vel_flat)  # 3
         obs.append(diff_local_key_ang_vel_flat) # 3
         obs.append(local_ref_key_pos) # 3
-        obs.append(local_ref_key_rot) # 4
+        obs.append(local_ref_key_rot) # 6
 
         obs = torch.cat(obs, dim=-1)
 

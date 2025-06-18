@@ -10,11 +10,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class early_termination:
         enabled = True
-        distance = [0.5] * 24
+        distance = [0.25] * 24
 
     class motion:
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
         keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',
                              'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
@@ -33,12 +33,13 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 8192
+        num_envs = 2048
         num_actions = 69
-        humanoid_obs = 1 + 23 * 3 + 24 * 10 #
-        task_obs = 24 * 20
+        humanoid_obs = 1 + 23 * 3 + 24 * 12 #
+        task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
         # TODO: now is the simplified edition
-        num_observations =  790 + 69 # 69 + 138 + 10 + 74 =
+        # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
+        num_observations = 859
         # base_pos 1 + base_lin_vel 3 + base_ang_vel 3 + projected_gravity 3 + dof_pos 23 * 3
         # + dof_vel 23 * 3 + actions 69
 
@@ -100,9 +101,9 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'strict_ET_fixed_obs'
+        run_name = 'heading_frame_fixed'
         experiment_name = 'smpl_ppo'
-        load_run = 'strict_ET_fixed_obs' # -1 = last run
+        load_run = 'heading_frame_fixed' # -1 = last run
 
 
 

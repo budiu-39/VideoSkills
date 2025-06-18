@@ -171,12 +171,12 @@ class LeggedRobotCfg(BaseConfig):
             contact_collection = 2 # 0: never, 1: last sub-step, 2: all sub-steps (default=2)
 
 class LeggedRobotCfgPPO(BaseConfig):
-    seed = 1
+    seed = 42
     runner_class_name = 'OnPolicyRunner'
     class policy:
         init_noise_std = 1.0
-        actor_hidden_dims = [1024, 512, 256]
-        critic_hidden_dims = [1024, 512, 256]
+        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         # only for 'ActorCriticRecurrent':
         # rnn_type = 'lstm'
