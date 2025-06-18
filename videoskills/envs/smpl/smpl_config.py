@@ -8,7 +8,12 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class marker:
         file = ('{LEGGED_GYM_ROOT_DIR}/data/marker/')
 
+    class early_termination:
+        enabled = True
+        distance = [0.25] * 24
+
     class motion:
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
         keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',

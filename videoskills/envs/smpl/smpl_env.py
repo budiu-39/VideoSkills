@@ -41,6 +41,7 @@ class SMPLRobot(LeggedRobot):
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
 
         self.env_key_pos_origins = self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
+        self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance, device=self.device) ** 2
 
     def get_all_motion_files(self, amass_processed_dir: str, ext=".npy") -> list:
         """
@@ -338,16 +339,15 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, _, _, _, _ \
-            = self._motion_lib.get_motion_state(motion_ids, motion_times)
+        motion_state = self._motion_lib.get_motion_state(motion_ids, motion_times)
 
         self._set_env_state(env_ids=env_ids,
-                            root_pos=root_pos + self.env_origins[env_ids],
-                            root_rot=root_rot,
-                            dof_pos=dof_pos,
-                            root_vel=root_vel,
-                            root_ang_vel=root_ang_vel,
-                            dof_vel=dof_vel)
+                            root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
+                            root_rot=motion_state["root_rot"],
+                            dof_pos=motion_state["dof_pos"],
+                            root_vel=motion_state["root_vel"],
+                            root_ang_vel=motion_state["root_ang_vel"],
+                            dof_vel=motion_state["dof_vel"])
 
         self._reset_ref_env_ids = env_ids
 
@@ -365,6 +365,7 @@ class SMPLRobot(LeggedRobot):
         return
 
     def check_termination(self):
+        # 这里并没有取分 early termination 和 time out
         """ Check if environments need to be reset
         """
         # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
@@ -374,7 +375,7 @@ class SMPLRobot(LeggedRobot):
 
         key_delta_sq = torch.sum((self.key_pos - self.ref_key_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
-        key_too_far = torch.any(key_delta_sq > (1.0 ** 2), dim=1)  # → ℝ[num_envs]
+        key_too_far = torch.any(key_delta_sq > self.early_termination_distance, dim=1)  # → ℝ[num_envs]
 
         # --------- ③ 汇总三个条件 ----------
         self.reset_buf = fall | time_out | key_too_far
@@ -403,15 +404,14 @@ class SMPLRobot(LeggedRobot):
         motion_times = progress + self._motion_start_times
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         motion_times = torch.fmod(motion_times, motion_lens)
-        (root_pos, root_rot, dof_pos, _, _, _, key_pos, key_rot, key_vel, key_ang_vel) = (
-            self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times))
-        self.ref_root_pos[:] = root_pos + self.env_origins
-        self.ref_root_rot[:] = root_rot
-        self.ref_dof_pos[:] = dof_pos
-        self.ref_key_pos = key_pos + self.env_key_pos_origins
-        self.ref_key_rot = key_rot
-        self.ref_key_vel = key_vel
-        self.ref_key_ang_vel = key_ang_vel
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
+        self.ref_root_pos[:] = motion_state["root_pos"] + self.env_origins
+        self.ref_root_rot[:] = motion_state["root_rot"]
+        self.ref_dof_pos[:] = motion_state["dof_pos"]
+        self.ref_key_pos = motion_state["key_pos"] + self.env_key_pos_origins
+        self.ref_key_rot = motion_state["key_rot"]
+        self.ref_key_vel = motion_state["key_vel"]
+        self.ref_key_ang_vel = motion_state["key_ang_vel"]
 
         return super()._post_physics_step_callback()
 
@@ -468,8 +468,7 @@ class SMPLRobot(LeggedRobot):
         local_ref_key_pos = self.ref_key_pos - self.base_pos.unsqueeze(1).expand(-1, self.ref_key_pos.shape[1], -1)
         local_ref_key_pos = quat_apply(heading_rot_inv_expand, local_ref_key_pos).view(self.num_envs, -1)
 
-        local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot)
-        local_ref_key_rot = quat_mul(local_ref_key_rot, heading_rot_expand).view(self.num_envs, -1)
+        local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(self.num_envs, -1)
 
         obs.append(diff_local_key_pos_flat)  # 3
         obs.append(diff_local_key_rot_flat)  # 4

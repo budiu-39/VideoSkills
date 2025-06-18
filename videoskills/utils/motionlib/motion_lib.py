@@ -1,7 +1,7 @@
 import os
 import yaml
 
-from scripts.poselib.skeleton.skeleton3d import SkeletonMotion
+from scripts.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
 from scripts.poselib.core.rotation3d import *
 from isaacgym.torch_utils import *
 
@@ -72,6 +72,7 @@ class MotionLib():
         self._num_dof = dof_offsets[-1]
         self._key_body_ids = torch.tensor(key_body_ids, device=device)
         self._device = device
+        self._rotate_motion = True
         self._load_motions(motion_file)
 
         motions = self._motions
@@ -90,6 +91,7 @@ class MotionLib():
         self.length_starts = lengths_shifted.cumsum(0)
 
         self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device)
+
 
         return
 
@@ -186,7 +188,20 @@ class MotionLib():
         key_ang_vel1 = self.gas[f1l.unsqueeze(-1), self._key_body_ids.unsqueeze(0)]
         key_ang_vel = (1.0 - blend_exp) * key_ang_vel0 + blend_exp * key_ang_vel1
 
-        return root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel, key_pos, key_rot, key_vel, key_ang_vel
+        motion_state = {
+            "root_pos": root_pos,
+            "root_rot": root_rot,
+            "dof_pos": dof_pos,
+            "root_vel": root_vel,
+            "root_ang_vel": root_ang_vel,
+            "dof_vel": dof_vel,
+            "key_pos": key_pos,
+            "key_rot": key_rot,
+            "key_vel": key_vel,
+            "key_ang_vel": key_ang_vel,
+        }
+
+        return motion_state
 
     def _load_motions(self, motion_file, skeleton_trees = None):
         # TODO: Add support for offset
@@ -207,68 +222,8 @@ class MotionLib():
             print("Loading {:d}/{:d} motion files: {:s}".format(f + 1, num_motion_files, curr_file))
             curr_motion = SkeletonMotion.from_file(curr_file)
 
-            motion_fps = curr_motion.fps
-            curr_dt = 1.0 / motion_fps
-
-            num_frames = curr_motion.tensor.shape[0]
-            curr_len = 1.0 / motion_fps * (num_frames - 1)
-
-            self._motion_fps.append(motion_fps)
-            self._motion_dt.append(curr_dt)
-            self._motion_num_frames.append(num_frames)
-
-            curr_dof_vels = self._compute_motion_dof_vels(curr_motion)
-            curr_motion.dof_vels = curr_dof_vels
-
-            # Moving motion tensors to the GPU
-            if USE_CACHE:
-                curr_motion = DeviceCache(curr_motion, self._device)
-            else:
-                curr_motion.tensor = curr_motion.tensor.to(self._device)
-                curr_motion._skeleton_tree._parent_indices = curr_motion._skeleton_tree._parent_indices.to(self._device)
-                curr_motion._skeleton_tree._local_translation = curr_motion._skeleton_tree._local_translation.to(
-                    self._device)
-                curr_motion._rotation = curr_motion._rotation.to(self._device)
-
-            self._motions.append(curr_motion)
-            self._motion_lengths.append(curr_len)
-
-            curr_weight = motion_weights[f]
-            self._motion_weights.append(curr_weight)
-            self._motion_files.append(curr_file)
-
-        self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
-
-        self._motion_weights = torch.tensor(self._motion_weights, dtype=torch.float32, device=self._device)
-        self._motion_weights /= self._motion_weights.sum()
-
-        self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
-        self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
-        self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device)
-
-        num_motions = self.num_motions()
-        total_len = self.get_total_length()
-
-        print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
-
-        return
-
-    def _load_motions_from_pkl(self, motion_file, skeleton_trees=None):
-        self._motions = []
-        self._motion_lengths = []
-        self._motion_weights = []
-        self._motion_fps = []
-        self._motion_dt = []
-        self._motion_num_frames = []
-        self._motion_files = []
-
-
-        motions = load(motion_file)
-
-        num_motions = len(motions)
-        for f in motions:
-            curr_motion = SkeletonMotion.from_dict(motions[f])
-            print("Loading {:d}/{:d} motion files".format(f + 1, num_motions))
+            # if self._rotate_motion:
+            #     curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
 
             motion_fps = curr_motion.fps
             curr_dt = 1.0 / motion_fps
@@ -279,8 +234,6 @@ class MotionLib():
             self._motion_fps.append(motion_fps)
             self._motion_dt.append(curr_dt)
             self._motion_num_frames.append(num_frames)
-
-            curr_motion["local_rotation"] = curr_motion.pop("pose_quat")
 
             curr_dof_vels = self._compute_motion_dof_vels(curr_motion)
             curr_motion.dof_vels = curr_dof_vels
@@ -436,3 +389,41 @@ class MotionLib():
                 assert (False)
 
         return dof_vel
+
+    def apply_rotation(self, motion, fps, rotation_angle=None):
+        """
+        Apply a rotation to the motion data.
+
+        Args:
+            motion (SkeletonMotion): The motion to rotate.
+            rotation_angle (float, optional): The angle to rotate (in radians). If None, a random angle is sampled.
+        """
+        # Sample a random angle if rotation_angle is not provided
+        if rotation_angle is None:
+            rotation_angle = torch.rand(1) * 2 * torch.pi  # Random angle in [0, 2π]
+
+        # Create a rotation quaternion for the z-axis
+        rotation_quat = torch_utils.quat_from_angle_axis(rotation_angle,
+                                                         torch.tensor([0.0, 0.0, 1.0]))
+
+        global_translation = torch_utils.quat_apply(rotation_quat, motion.global_translation[:,0])
+
+        if rotation_quat.shape != motion.global_rotation.shape:
+            rotation_quat = rotation_quat.expand_as(motion.global_rotation)
+
+        # Apply the rotation to the global rotation
+        global_rotation = torch_utils.quat_mul(rotation_quat, motion.global_rotation)
+
+        # Apply the rotation to the global translation
+
+        # Create a new SkeletonState with the rotated global rotation and translation
+        new_sk_state = SkeletonState.from_rotation_and_root_translation(
+            motion.skeleton_tree,
+            global_rotation,
+            global_translation,  # Ensure translation is 3D
+            is_local=False
+        )
+
+        new_motion = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+
+        return new_motion
