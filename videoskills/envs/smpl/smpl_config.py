@@ -10,7 +10,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class early_termination:
         enabled = True
-        distance = [0.25] * 24
+        distance = [0.5] * 24
 
     class motion:
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
@@ -33,7 +33,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class env(LeggedRobotCfg.env):
 
-        num_envs = 16
+        num_envs = 8192
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 10 #
         task_obs = 24 * 20
@@ -41,8 +41,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         num_observations =  790 + 69 # 69 + 138 + 10 + 74 =
         # base_pos 1 + base_lin_vel 3 + base_ang_vel 3 + projected_gravity 3 + dof_pos 23 * 3
         # + dof_vel 23 * 3 + actions 69
-
-
 
         # filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33,
         #                 128, 0, 192, 0, 64, 0, 0, 0,
@@ -102,9 +100,9 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'deepmimic_test'
+        run_name = 'strict_ET_fixed_obs'
         experiment_name = 'smpl_ppo'
-        load_run = 'obs_max_early_termination' # -1 = last run
+        load_run = 'strict_ET_fixed_obs' # -1 = last run
 
 
 

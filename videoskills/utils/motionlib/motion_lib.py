@@ -72,7 +72,7 @@ class MotionLib():
         self._num_dof = dof_offsets[-1]
         self._key_body_ids = torch.tensor(key_body_ids, device=device)
         self._device = device
-        self._rotate_motion = True
+        self._rotate_motion = False
         self._load_motions(motion_file)
 
         motions = self._motions

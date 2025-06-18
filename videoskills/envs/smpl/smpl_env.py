@@ -17,6 +17,7 @@ class SMPLRobot(LeggedRobot):
         self.cfg = cfg
         if self.cfg.dev:
             self.cfg.env.num_envs = 16
+            headless = False
         self.sim_params = sim_params
         self.height_samples = None
         self.debug_viz = False
@@ -28,9 +29,7 @@ class SMPLRobot(LeggedRobot):
         motion_file = self.cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         motion_file_list = self.get_all_motion_files(motion_file)
         self._load_motion(motion_file_list)
-
-        # if not self.headless:
-        #     self._build_marker_state_tensors()
+        self._initialize_motion_offsets()
 
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
         self._sampled_motion_ids = torch.zeros(self.num_envs).long().to(self.device)
@@ -40,7 +39,6 @@ class SMPLRobot(LeggedRobot):
         self.ref_root_rot = torch.zeros(self.num_envs, 4, device=self.device)
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
 
-        self.env_key_pos_origins = self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
         self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance, device=self.device) ** 2
 
     def get_all_motion_files(self, amass_processed_dir: str, ext=".npy") -> list:
@@ -186,9 +184,9 @@ class SMPLRobot(LeggedRobot):
                 env_ptr = self.envs[i]  # 当前环境的指针
                 pts = self.ref_key_pos[i].cpu().numpy()  # (K,3)
 
-                for p in pts:  # 逐点画线框小球
+                for p in pts:
                     T.p.x, T.p.y, T.p.z = map(float, p)
-                    gymutil.draw_lines(self._sphere_geom,  # 线框球模板
+                    gymutil.draw_lines(self._sphere_geom,
                                        self.gym,
                                        self.viewer,
                                        env_ptr,
@@ -237,7 +235,6 @@ class SMPLRobot(LeggedRobot):
 
     # TODO: 重写 reset dof 和 load motion， 把 root 和 dof 和在一起
     def _load_motion(self, motion_file):
-
 
         self._motion_lib = MotionLib(motion_file=motion_file,
                                      dof_body_ids=self.dof_body_ids,
@@ -339,7 +336,18 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
+        if self.cfg.dev:
+            motion_times = torch.zeros(num_envs, device=self.device)
+
         motion_state = self._motion_lib.get_motion_state(motion_ids, motion_times)
+
+        if self.cfg.dev:
+            motion_state["root_rot"] = quat_mul(self.rotation_offset[env_ids], motion_state["root_rot"])
+            motion_state["root_pos"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_pos"])
+            motion_state["root_ang_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_ang_vel"])
+            motion_state["root_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_vel"])
+
+
 
         self._set_env_state(env_ids=env_ids,
                             root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
@@ -405,10 +413,23 @@ class SMPLRobot(LeggedRobot):
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         motion_times = torch.fmod(motion_times, motion_lens)
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
-        self.ref_root_pos[:] = motion_state["root_pos"] + self.env_origins
+
+        if self.cfg.dev:
+            motion_state["root_rot"] = quat_mul(self.rotation_offset, motion_state["root_rot"])
+            motion_state["root_pos"] = quat_apply(self.rotation_offset, motion_state["root_pos"])
+            motion_state["key_rot"] = quat_mul(
+                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_rot"].shape[1], -1),
+                motion_state["key_rot"]
+            )
+            motion_state["key_pos"] = quat_apply(
+                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_pos"].shape[1], -1),
+                motion_state["key_pos"]
+            )
+
+        self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
         self.ref_root_rot[:] = motion_state["root_rot"]
         self.ref_dof_pos[:] = motion_state["dof_pos"]
-        self.ref_key_pos = motion_state["key_pos"] + self.env_key_pos_origins
+        self.ref_key_pos = motion_state["key_pos"] + self.pos_offset['key_body']
         self.ref_key_rot = motion_state["key_rot"]
         self.ref_key_vel = motion_state["key_vel"]
         self.ref_key_ang_vel = motion_state["key_ang_vel"]
@@ -446,13 +467,14 @@ class SMPLRobot(LeggedRobot):
     def compute_task_observations(self):
         obs = []
         heading_rot_inv = calc_heading_quat_inv(self.base_quat)
-        heading_rot = calc_heading_quat_inv(self.base_quat)
+        heading_rot = calc_heading_quat(self.base_quat)
         heading_rot_expand = heading_rot.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
         heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
 
         diff_global_key_pos = self.ref_key_pos - self.key_pos
         diff_local_key_pos_flat = quat_apply(heading_rot_inv_expand, diff_global_key_pos).view(self.num_envs, -1)
 
+        # TODO： 这个应该相同才对吧，目前不同，反倒是 diff_global_key_rot 相同 # 解决了！
         diff_global_key_rot = quat_mul(self.ref_key_rot, quat_conjugate(
             self.key_rot))
         diff_local_key_rot_flat = quat_mul(
@@ -488,13 +510,40 @@ class SMPLRobot(LeggedRobot):
         The reward is computed in the heading frame of the root body.
         """
         pos_err = torch.mean(torch.square(self.key_pos- self.ref_key_pos), dim=1).mean(-1)
-        rot_err = torch.mean(torch.square(quat_mul(self.key_rot, quat_conjugate(self.ref_key_rot))), dim=1).mean(-1)
+        rot_diff = quat_mul(self.ref_key_rot, quat_conjugate(self.key_rot))
+        diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
+        rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
         vel_err = torch.mean(torch.square(self.key_vel- self.ref_key_vel), dim=1).mean(-1)
         ang_vel_err = torch.mean(torch.square(self.key_ang_vel - self.ref_key_ang_vel), dim=1).mean(-1)
 
-        reward = (self.cfg.rewards.task_w.w_pos * torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err) +
-                    self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err) +
-                    self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err) +
-                    self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err))
+        # Compute the reward as a weighted sum of the errors
+        reward_pos = self.cfg.rewards.task_w.w_pos * torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err)
+        reward_rot = self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err)
+        reward_vel = self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err)
+        reward_ang_vel = self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
+        reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
         return reward
 
+    def _initialize_motion_offsets(self):
+        """
+        For each environment, generate a random heading rotation and compute:
+        - rotation_offset: quaternion of shape [num_envs, 4]
+        - pos_offset: [env_origins, env_key_pos_origins]
+        """
+        # Generate random heading angles in [-pi, pi]
+        heading_angles = torch_rand_float(-np.pi, np.pi, (self.num_envs, 1), device=self.device)
+        self.rotation_offset = torch.zeros(self.num_envs, 4, device=self.device)
+
+        # Heading quaternion (rotation around up-axis)
+        axis = torch.zeros(self.num_envs, 3, device=self.device)
+        axis[:, self.up_axis_idx] = 1.0
+        sin_half = torch.sin(heading_angles * 0.5)
+        cos_half = torch.cos(heading_angles * 0.5)
+        self.rotation_offset[:, :3] = axis * sin_half
+        self.rotation_offset[:, 3] = cos_half.squeeze()
+
+        # Positional offsets (env origins & key_pos origins already expanded properly)
+        self.pos_offset = {
+            "root": self.env_origins.clone(),
+            "key_body": self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1),
+        }

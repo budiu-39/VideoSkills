@@ -4,7 +4,7 @@ from typing import Tuple
 import torch
 import numpy as np
 import sys
-import wandb
+
 
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
@@ -110,19 +110,11 @@ class TaskRegistry():
 
         if log_root=="default":
             log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-            log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
+            log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
         elif log_root is None:
             log_dir = None
         else:
-            log_dir = os.path.join(log_root, datetime.now().strftime('%b%d_%H-%M-%S') + '_' + train_cfg.runner.run_name)
-
-        if args.use_wandb and wandb is not None:
-            if log_dir is not None:
-                os.makedirs(os.path.join(log_dir, "wandb"), exist_ok=True)
-            run_name = train_cfg.runner.run_name
-            wandb.init(project=args.wandb_project, name=run_name,
-                       dir=log_dir,
-                       config=vars(args), sync_tensorboard=True)
+            log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
         
         train_cfg_dict = class_to_dict(train_cfg)
         runner = OnPolicyRunner(env, train_cfg_dict, log_dir, device=args.rl_device)
@@ -133,7 +125,7 @@ class TaskRegistry():
             resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
             print(f"Loading model from: {resume_path}")
             runner.load(resume_path)
-        return runner, train_cfg
+        return runner, train_cfg, log_dir
 
 # make global task registry
 task_registry = TaskRegistry()
