@@ -10,11 +10,13 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class early_termination:
         enabled = True
-        distance = [0.25] * 24
+        distance = [0.5] * 24
 
     class motion:
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/output/Humanoid_motion/smpl/turn')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
+        file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
+
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
         keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',
                              'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
@@ -83,7 +85,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
-            torques = -0.000001
+            torques = -0.0001
             dof_vel = -0.
             dof_acc = -0.
             base_height = -0.
@@ -97,13 +99,26 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
+
+    class policy:
+        init_noise_std = 1.0
+        actor_hidden_dims = [1024, 512, 256]
+        critic_hidden_dims =[1024, 512, 256]
+        # actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        # critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        # only for 'ActorCriticRecurrent':
+        # rnn_type = 'lstm'
+        # rnn_hidden_size = 512
+        # rnn_num_layers = 1
+
     class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'heading_frame_fixed'
+        run_name = 'larger_power_regularization' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
-        load_run = 'heading_frame_fixed' # -1 = last run
-
+        load_run = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/new_params' # -1 = last run
+        # checkpoint = '31200'
 
 

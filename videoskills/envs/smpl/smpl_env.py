@@ -349,7 +349,6 @@ class SMPLRobot(LeggedRobot):
             motion_state["root_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_vel"])
 
 
-
         self._set_env_state(env_ids=env_ids,
                             root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
                             root_rot=motion_state["root_rot"],
@@ -425,6 +424,10 @@ class SMPLRobot(LeggedRobot):
             motion_state["key_pos"] = quat_apply(
                 self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_pos"].shape[1], -1),
                 motion_state["key_pos"]
+            )
+            motion_state["key_vel"] = quat_apply(
+                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_vel"].shape[1], -1),
+                motion_state["key_vel"]
             )
 
         self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']

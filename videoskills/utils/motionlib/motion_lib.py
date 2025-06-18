@@ -222,8 +222,8 @@ class MotionLib():
             print("Loading {:d}/{:d} motion files: {:s}".format(f + 1, num_motion_files, curr_file))
             curr_motion = SkeletonMotion.from_file(curr_file)
 
-            # if self._rotate_motion:
-            #     curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
+            if self._rotate_motion:
+                curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
 
             motion_fps = curr_motion.fps
             curr_dt = 1.0 / motion_fps
