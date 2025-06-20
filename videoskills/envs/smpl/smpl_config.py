@@ -13,14 +13,24 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         distance = [0.5] * 24
 
     class motion:
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
-        file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
-        keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',
+        keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
                              'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
-                             'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']
+                             'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+
+    class domain_rand:
+        randomize_friction = False
+        friction_range = [0.5, 1.25]
+        randomize_base_mass = False
+        added_mass_range = [-1., 1.]
+        push_robots = False
+        push_interval_s = 15
+        max_push_vel_xy = 1.
 
     class noise:
         add_noise = False
@@ -34,8 +44,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             height_measurements = 0.1
 
     class env(LeggedRobotCfg.env):
-
-        num_envs = 2048
+        eval_mode = False
+        land_event_detect = False
+        num_envs = 256
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 12 #
         task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
@@ -74,7 +85,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             k_vel = 0.1
             k_ang_vel = 0.1
             w_pos = 0.5
-            w_rot = 0.3
+            w_rot = 0.5
             w_vel = 0.1
             w_ang_vel = 0.1
         class scales(LeggedRobotCfg.rewards.scales):
@@ -85,7 +96,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
-            torques = -0.0001
+            torques = -0.00001
             dof_vel = -0.
             dof_acc = -0.
             base_height = -0.
@@ -102,23 +113,25 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class policy:
         init_noise_std = 1.0
-        actor_hidden_dims = [1024, 512, 256]
-        critic_hidden_dims =[1024, 512, 256]
-        # actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        # critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        # actor_hidden_dims = [1024, 512, 256]
+        # critic_hidden_dims =[1024, 512, 256]
+        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         # only for 'ActorCriticRecurrent':
         # rnn_type = 'lstm'
         # rnn_hidden_size = 512
         # rnn_num_layers = 1
 
+
     class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'larger_power_regularization' # 'smpl_ppo'
+        run_name = 'eval_test' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
-        load_run = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/new_params' # -1 = last run
-        # checkpoint = '31200'
+        load_run = 'universal_eval' # -1 = last run
+        # checkpoint = '6000'
+        eval_interval = 100
 
 

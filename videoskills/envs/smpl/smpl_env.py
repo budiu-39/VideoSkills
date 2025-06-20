@@ -24,6 +24,7 @@ class SMPLRobot(LeggedRobot):
         self.debug_viz = False
         self.init_done = False
         self._parse_cfg(self.cfg)
+        self.eval_mode = self.cfg.env.eval_mode
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         # define motionlib and motion sampling buf
@@ -34,6 +35,7 @@ class SMPLRobot(LeggedRobot):
 
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
         self._sampled_motion_ids = torch.zeros(self.num_envs).long().to(self.device)
+
         self._state_init = self.cfg.init_state.type
 
         self.ref_root_pos = torch.zeros(self.num_envs, 3, device=self.device)
@@ -192,7 +194,31 @@ class SMPLRobot(LeggedRobot):
                                        self.viewer,
                                        env_ptr,
                                        T)
+
+            # Draw arrows at feet that just landed
+            if hasattr(self, "just_landed_event"):
+                feet_pos = self._rigid_body_state_reshaped[..., self.feet_indices, 0:3]  # [num_envs, num_feet, 3]
+
+                # 创建一个蓝色球体
+                sphere = gymutil.WireframeSphereGeometry(
+                    radius=0.04,
+                    num_lats=10,
+                    num_lons=10,
+                    color=(0.2, 0.2, 1.0)  # 蓝色
+                )
+
+                env_ids, foot_ids = torch.nonzero(self.just_landed_event, as_tuple=True)
+                for env_id, foot_id in zip(env_ids.tolist(), foot_ids.tolist()):
+                    env_ptr = self.envs[env_id]
+                    foot_pos = feet_pos[env_id, foot_id].cpu().numpy()
+
+                    T = gymapi.Transform()
+                    T.p.x, T.p.y, T.p.z = map(float, foot_pos)
+
+                    gymutil.draw_lines(sphere, self.gym, self.viewer, env_ptr, T)
         super().render()
+
+
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         col_group = env_id
@@ -256,6 +282,7 @@ class SMPLRobot(LeggedRobot):
         if len(env_ids) == 0:
             return
 
+        self.gym.clear_lines(self.viewer)
         # reset robot states
         self._reset_robot(env_ids)
         self._reset_env_tensors(env_ids)
@@ -280,6 +307,16 @@ class SMPLRobot(LeggedRobot):
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 
+        self._refresh_sim_tensors()
+
+    def _refresh_sim_tensors(self):
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+        self.gym.refresh_dof_force_tensor(self.sim)
+        self.gym.refresh_force_sensor_tensor(self.sim)
+
     def _reset_robot(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
         Positions are randomly selected within 0.5:1.5 x default positions.
@@ -296,6 +333,8 @@ class SMPLRobot(LeggedRobot):
         elif (self._state_init == 'hybrid'):
             self._reset_hybrid_state_init(env_ids)
 
+        self.motion_lengths = self._motion_lib.get_motion_length(self._sampled_motion_ids[env_ids])/ self.dt
+
 
     def _init_buffers(self):
         super()._init_buffers()
@@ -309,6 +348,12 @@ class SMPLRobot(LeggedRobot):
         self.key_rot = self._rigid_body_state_reshaped[..., self.key_body_ids, 3:7]   #4
         self.key_vel = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]   #3
         self.key_ang_vel = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]  #3
+
+        self.contact_history = torch.zeros((3, self.num_envs, self.feet_indices.shape[0]),
+                                           dtype=torch.bool, device=self.device)
+
+        self.last_landing_mask = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.bool,
+                                             device=self.device)
 
     def _reset_default(self, env_ids):
         self.dof_pos[env_ids] = self.default_dof_pos[env_ids]
@@ -327,7 +372,9 @@ class SMPLRobot(LeggedRobot):
 
     def _reset_ref_state_init(self, env_ids):
         num_envs = env_ids.shape[0]
+
         motion_ids = self._motion_lib.sample_motions(num_envs)
+        self._sampled_motion_ids[env_ids] = motion_ids
 
         if (self._state_init == 'random'
                 or self._state_init == 'hybrid'):
@@ -337,17 +384,16 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        # if self.cfg.dev:
-        #     motion_times = torch.zeros(num_envs, device=self.device)
-
-        motion_state = self._motion_lib.get_motion_state(motion_ids, motion_times)
-
         if self.cfg.dev:
-            motion_state["root_rot"] = quat_mul(self.rotation_offset[env_ids], motion_state["root_rot"])
-            motion_state["root_pos"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_pos"])
-            motion_state["root_ang_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_ang_vel"])
-            motion_state["root_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_vel"])
+            motion_times = torch.zeros(num_envs, device=self.device)
 
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
+
+        # if self.cfg.dev:
+        #     motion_state["root_rot"] = quat_mul(self.rotation_offset[env_ids], motion_state["root_rot"])
+        #     motion_state["root_pos"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_pos"])
+        #     motion_state["root_ang_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_ang_vel"])
+        #     motion_state["root_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_vel"])
 
         self._set_env_state(env_ids=env_ids,
                             root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
@@ -358,9 +404,8 @@ class SMPLRobot(LeggedRobot):
                             dof_vel=motion_state["dof_vel"])
 
         self._reset_ref_env_ids = env_ids
-
-        self._sampled_motion_ids[env_ids] = motion_ids
         self._motion_start_times[env_ids] = motion_times
+
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel):
         self.root_states[env_ids, 0:3] = root_pos
@@ -378,15 +423,20 @@ class SMPLRobot(LeggedRobot):
         """
         # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
 
-        fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
-        time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        # fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)  # raw pitch yaw
 
+        time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        if self.eval_mode:
+            progress = self.episode_length_buf.to(torch.float) * self.dt
+            motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+            time_out = progress >= motion_lens
         key_delta_sq = torch.sum((self.key_pos - self.ref_key_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
         key_too_far = torch.any(key_delta_sq > self.early_termination_distance, dim=1)  # → ℝ[num_envs]
 
         # --------- ③ 汇总三个条件 ----------
-        self.reset_buf = fall | time_out | key_too_far
+        # self.reset_buf = fall | time_out | key_too_far
+        self.reset_buf = time_out | key_too_far
         self.time_out_buf = time_out
 
     def _reset_env_tensors(self, env_ids):
@@ -407,28 +457,49 @@ class SMPLRobot(LeggedRobot):
         self.key_ang_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]
         super().post_physics_step()
 
+        if self.cfg.env.land_event_detect:
+            self.land_event_detection()
+
+
+    def land_event_detection(self):   # 还有必要升级
+        # foot_floor_contact detect
+        contact = self.contact_forces[:, self.feet_indices, 2] > 1.
+        # 更新 contact history 缓冲（滑动窗口）
+        self.contact_history = torch.roll(self.contact_history, shifts=-1, dims=0)
+        self.contact_history[-1] = contact
+        # 连续 3 帧都接地
+        all_on = torch.all(self.contact_history, dim=0)  # [num_envs, num_feet]
+        # 检测“离地 → 接地”事件（刚刚完成转变）
+        self.just_landed_event = torch.logical_and(all_on, ~self.last_landing_mask)  # [num_envs, num_feet]
+
+        self.last_contacts = contact
+        if torch.any(self.just_landed_event):
+            print('contact detected! contact force:', self.contact_forces[:, self.feet_indices])
+
+        self.last_landing_mask = all_on.clone()
+
     def _post_physics_step_callback(self):
         progress = self.episode_length_buf.to(torch.float) * self.dt
         motion_times = progress + self._motion_start_times
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
-        motion_times = torch.fmod(motion_times, motion_lens)
+        # motion_times = torch.fmod(motion_times, motion_lens)
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
 
-        if self.cfg.dev:
-            motion_state["root_rot"] = quat_mul(self.rotation_offset, motion_state["root_rot"])
-            motion_state["root_pos"] = quat_apply(self.rotation_offset, motion_state["root_pos"])
-            motion_state["key_rot"] = quat_mul(
-                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_rot"].shape[1], -1),
-                motion_state["key_rot"]
-            )
-            motion_state["key_pos"] = quat_apply(
-                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_pos"].shape[1], -1),
-                motion_state["key_pos"]
-            )
-            motion_state["key_vel"] = quat_apply(
-                self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_vel"].shape[1], -1),
-                motion_state["key_vel"]
-            )
+        # if self.cfg.dev:
+        #     motion_state["root_rot"] = quat_mul(self.rotation_offset, motion_state["root_rot"])
+        #     motion_state["root_pos"] = quat_apply(self.rotation_offset, motion_state["root_pos"])
+        #     motion_state["key_rot"] = quat_mul(
+        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_rot"].shape[1], -1),
+        #         motion_state["key_rot"]
+        #     )
+        #     motion_state["key_pos"] = quat_apply(
+        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_pos"].shape[1], -1),
+        #         motion_state["key_pos"]
+        #     )
+        #     motion_state["key_vel"] = quat_apply(
+        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_vel"].shape[1], -1),
+        #         motion_state["key_vel"]
+        #     )
 
         self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
         self.ref_root_rot[:] = motion_state["root_rot"]
@@ -438,7 +509,7 @@ class SMPLRobot(LeggedRobot):
         self.ref_key_vel = motion_state["key_vel"]
         self.ref_key_ang_vel = motion_state["key_ang_vel"]
 
-        return super()._post_physics_step_callback()
+        # return super()._post_physics_step_callback()
 
     # TODO: 重写 compute_observations，目前只是将参考的 dof_pos 和当前的 dof_pos 相减，还可以引入更多，比如 root
     # key body 也没有加进来
@@ -455,7 +526,7 @@ class SMPLRobot(LeggedRobot):
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
 
     def compute_humanoid_observations(self):
-        root_h = self.dof_pos[:, 2:3]
+        root_h = self.base_pos[:, 2:3]
         heading_rot_inv = calc_heading_quat_inv(self.base_quat)
         heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)
         root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)  # [N, K, 3]
@@ -479,7 +550,7 @@ class SMPLRobot(LeggedRobot):
         diff_global_key_pos = self.ref_key_pos - self.key_pos
         diff_local_key_pos_flat = quat_apply(heading_rot_inv_expand, diff_global_key_pos).view(self.num_envs, -1)
 
-        # TODO： 这个应该相同才对吧，目前不同，反倒是 diff_global_key_rot 相同 # 解决了！
+        # 这个应该相同才对吧，目前不同，反倒是 diff_global_key_rot 相同 # 解决了！
         diff_global_key_rot = quat_mul(self.ref_key_rot, quat_conjugate(
             self.key_rot))
         diff_local_key_rot_flat =quat_mul(
@@ -557,3 +628,62 @@ class SMPLRobot(LeggedRobot):
             "root": self.env_origins.clone(),
             "key_body": self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1),
         }
+
+
+    def reset_with_motion_ids(self, motion_ids):
+        """ Reset all environments with given motion ids. (For Evaluation)
+            This method is used to reset the environment with specific motion ids, e.g. in the training stage.
+        Args:
+            motion_ids (torch.Tensor): Tensor of shape [num_envs] containing motion ids to reset the environments with.
+        """
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        self._sampled_motion_ids = motion_ids
+        self._motion_start_times = torch.zeros(self.num_envs, device=self.device)
+        if len(env_ids) == 0:
+            return
+
+        self.gym.clear_lines(self.viewer)
+        # reset robot states
+        motion_times = torch.zeros(self.num_envs, device=self.device)
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
+
+        self._set_env_state(env_ids=env_ids,
+                            root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
+                            root_rot=motion_state["root_rot"],
+                            dof_pos=motion_state["dof_pos"],
+                            root_vel=motion_state["root_vel"],
+                            root_ang_vel=motion_state["root_ang_vel"],
+                            dof_vel=motion_state["dof_vel"])
+
+        self._reset_ref_env_ids = env_ids
+        self._motion_start_times[env_ids] = motion_times
+        self._reset_env_tensors(env_ids)
+        self._resample_commands(env_ids)
+
+        # reset buffers
+        self.actions[env_ids] = 0.
+        self.last_actions[env_ids] = 0.
+        self.last_dof_vel[env_ids] = 0.
+        self.feet_air_time[env_ids] = 0.  # good idea!
+        self.episode_length_buf[env_ids] = 0
+        self.reset_buf[env_ids] = 1
+        # fill extras
+        self.extras["episode"] = {}
+        for key in self.episode_sums.keys():
+            self.extras["episode"]['rew_' + key] = torch.mean(
+                self.episode_sums[key][env_ids]) / self.max_episode_length_s
+            self.episode_sums[key][env_ids] = 0.
+        if self.cfg.commands.curriculum:
+            self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
+        # send timeout info to the algorithm
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
+
+        self._refresh_sim_tensors()
+
+        motion_lens = self._motion_lib._motion_lengths[motion_ids]
+        self.extras["motion_length"] = motion_lens.clone()
+
+        obs, _, _, _, _ = self.step(
+            torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        return obs
