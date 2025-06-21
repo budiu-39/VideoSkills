@@ -3,8 +3,19 @@ import numpy as np
 import torch
 from tqdm import tqdm
 import wandb
+import os
+import joblib
+from rsl_rl.env import VecEnv
 
 class RunnerWithEval(OnPolicyRunner):
+    def __init__(self, env: VecEnv,
+                 train_cfg,
+                 log_dir=None,
+                 device='cpu'):
+        super().__init__(env, train_cfg, log_dir, device)
+        self.eval_output_path = os.path.join(log_dir,"eval_outputs")
+        os.makedirs(self.eval_output_path, exist_ok=True)
+
     def eval(self, motion_ids=None):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.actor_critic.eval()
@@ -20,12 +31,15 @@ class RunnerWithEval(OnPolicyRunner):
         total_rewards = []
         success_flags = []
         reward_until_fail_list = []
+        failed_keys = []
 
         pbar = tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions", dynamic_ncols=True)
         for i in pbar:
             batch_ids = motion_ids[i: i + num_envs]
             batch_size = len(batch_ids)
-            padded_ids = torch.tensor(batch_ids + [batch_ids[-1]] * (num_envs - batch_size), device=device)
+            num_pad = num_envs - batch_size
+            random_pad = np.random.choice(motion_ids, size=num_pad, replace=True).tolist()
+            padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
             with torch.inference_mode():
                 obs = self.env.reset_with_motion_ids(padded_ids)
@@ -79,7 +93,6 @@ class RunnerWithEval(OnPolicyRunner):
                 if done_flags[:batch_size].all():
                     break
 
-
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()
                 expected_len = motion_lengths[env_id].item()
@@ -89,11 +102,20 @@ class RunnerWithEval(OnPolicyRunner):
 
                 if not success:
                     reward_until_fail_list.append(reward_until_fail[env_id].item())
+                    failed_keys.append(motion_lib._motion_keys[batch_ids[env_id]])
 
         num_success = sum(success_flags)
         num_total = len(success_flags)
         success_rate = num_success / num_total
         mean_rew = np.mean(total_rewards)
+
+        # save failed keys and update soft sampling weight
+        failed_key_path = os.path.join(self.eval_output_path, f"failed_keys_iter{self.current_learning_iteration}.pkl")
+        joblib.dump(failed_keys, failed_key_path, compress=True)
+        motion_lib.update_soft_sampling_weight(failed_keys)
+        motion_sampling_state_path = os.path.join(self.log_dir, f"motion_sampling_state.pkl")
+        motion_lib.export_sampling_state(motion_sampling_state_path)
+
 
         print(f"[Eval] Success rate: {success_rate:.2%}")
         print(f"[Eval] Mean reward across {len(motion_ids)} motions: {mean_rew:.2f}")

@@ -16,8 +16,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
@@ -82,7 +82,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
-        alpha_torques = 10
+        alpha_torques = 5
         class task_w:
             k_pos = 100
             k_rot = 10
@@ -96,7 +96,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             termination = -0.0
             tracking_lin_vel = 0.0
             tracking_ang_vel = 0.0
-            imitation = 1000.0
+            imitation = 2000.0
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
@@ -132,11 +132,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'universal_torque_cache' # 'smpl_ppo'
+        run_name = 'universal_auto_pmcp' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
         # load_run = "universal_large_split"
-        load_run = 'universal_large_split' # -1 = last run
+        load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
         # checkpoint = '6000'
         eval_interval = 2000
 

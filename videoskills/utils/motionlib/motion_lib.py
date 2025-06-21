@@ -12,6 +12,7 @@ from .. import torch_utils
 import copy
 from joblib import load
 import torch
+import joblib
 
 USE_CACHE = False
 print("MOVING MOTION DATA TO GPU, USING CACHE:", USE_CACHE)
@@ -97,6 +98,7 @@ class MotionLib():
         self.gravs = torch.cat([m.global_root_angular_velocity for m in motions], dim=0).float().to(device)
         self.dvs = torch.cat([m.dof_vels for m in motions], dim=0).float().to(device)
         self._termination_history = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)
+        self._sampling_prob = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)/ len(self._motions)
 
         lengths = self._motion_num_frames
         lengths_shifted = lengths.roll(1)
@@ -118,7 +120,7 @@ class MotionLib():
         return self._motions[motion_id]
 
     def sample_motions(self, n):
-        motion_ids = torch.multinomial(self._motion_weights, num_samples=n, replacement=True)
+        motion_ids = torch.multinomial(self._sampling_prob, num_samples=n, replacement=True)
 
         # m = self.num_motions()
         # motion_ids = np.random.choice(m, size=n, replace=True, p=self._motion_weights)
@@ -220,7 +222,6 @@ class MotionLib():
         # TODO: Add support for offset
         self._motions = []
         self._motion_lengths = []
-        self._motion_weights = []
         self._motion_fps = []
         self._motion_dt = []
         self._motion_num_frames = []
@@ -229,7 +230,7 @@ class MotionLib():
 
         total_len = 0.0
 
-        motion_files, motion_weights = self._fetch_motion_files(motion_file)
+        motion_files = self._fetch_motion_files(motion_file)
         num_motion_files = len(motion_files)
         for f in range(num_motion_files):
             curr_file = motion_files[f]
@@ -273,16 +274,12 @@ class MotionLib():
             self._motions.append(curr_motion)
             self._motion_lengths.append(curr_len)
 
-            curr_weight = motion_weights[f]
-            self._motion_weights.append(curr_weight)
             self._motion_files.append(curr_file)
 
         self._sort_motions_by_length()
 
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
 
-        self._motion_weights = torch.tensor(self._motion_weights, dtype=torch.float32, device=self._device)
-        self._motion_weights /= self._motion_weights.sum()
 
         self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
         self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
@@ -316,9 +313,9 @@ class MotionLib():
         #         motion_files.append(curr_file)
         # else:
         motion_files = motion_file
-        motion_weights = [1.0] * len(motion_files)
+        # motion_sampling_prob = [1.0] * len(motion_files)
 
-        return motion_files, motion_weights
+        return motion_files
 
     def _calc_frame_blend(self, time, len, num_frames, dt):
 
@@ -484,7 +481,6 @@ class MotionLib():
         self._motions = [self._motions[i] for i in sorted_indices]
         self._motion_files = [self._motion_files[i] for i in sorted_indices]
         self._motion_lengths = [self._motion_lengths[i] for i in sorted_indices]
-        self._motion_weights = [self._motion_weights[i] for i in sorted_indices]
         self._motion_fps = [self._motion_fps[i] for i in sorted_indices]
         self._motion_dt = [self._motion_dt[i] for i in sorted_indices]
         self._motion_num_frames = [self._motion_num_frames[i] for i in sorted_indices]
@@ -498,8 +494,8 @@ class MotionLib():
         import os
         parts = filepath.split(os.sep)
         if len(parts) >= 4:
-            subset = parts[-4]
-            subfolder = parts[-3]
+            subset = parts[-3]
+            subfolder = parts[-2]
             filename = os.path.splitext(parts[-1])[0]
             return f"{subset}-{subfolder}-{filename}"
         else:
@@ -511,15 +507,33 @@ class MotionLib():
             all_keys = self._motion_keys
             indexes = [all_keys.index(k) for k in failed_keys]
             self._termination_history[indexes] += 1
-            self.update_sampling_prob(self._termination_history)
             self._sampling_prob[:] = self._termination_history / self._termination_history.sum()
 
+    def export_sampling_state(self, filepath):
+        """
+        Export the current termination history, sampling probability, and motion keys to a .pkl file.
+        The keys in the dictionary are motion keys, and each entry is a dict with:
+            - 'termination_count'
+            - 'sampling_prob'
+        """
+        assert hasattr(self, "_termination_history") and hasattr(self, "_sampling_prob"), \
+            "Termination history or sampling probabilities not found"
 
+        export_dict = {}
+        for i, key in enumerate(self._motion_keys):
+            export_dict[key] = {
+                "termination_count": self._termination_history[i].item(),
+                "sampling_prob": self._sampling_prob[i].item(),
+            }
 
-
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        joblib.dump(export_dict, filepath, compress=True)
+        print(f"[MotionLib] Sampling state exported to {filepath}")
 
     def _fix_height_based_on_geom(self, curr_motion):
         return
+
+
 
 
 
