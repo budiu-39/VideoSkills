@@ -1,4 +1,3 @@
-import glob
 import os
 import sys
 import pdb
@@ -12,12 +11,11 @@ import numpy as np
 import joblib
 from tqdm import tqdm
 import argparse
-import cv2
+import glob
 from poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-
-# from phc.isaacgym_utils.vis.api import vis_motion_use_scenepic_animation
+from smpl_sim.smpllib.smpl_parser import SMPL_Parser
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -59,7 +57,7 @@ if __name__ == "__main__":
         ipdb.set_trace()
 
     all_pkls = glob.glob(f"{args.path}/**/*.npz", recursive=True)
-    amass_occlusion = joblib.load("output/Humanoid_motion/amass_copycat_occlusion_v3.pkl")
+    amass_occlusion = joblib.load("output/SMPL_Robot_motion/amass_copycat_occlusion_v3.pkl")
     amass_full_motion_dict = {}
     amass_splits = {
         'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
@@ -74,8 +72,11 @@ if __name__ == "__main__":
         bound = 0
 
         path_parts = data_path.split("/")
-        if "AMASS" in path_parts:
-            amass_index = path_parts.index("AMASS")
+        for _, part in enumerate(path_parts):
+            if 'amass' in path_parts or 'AMASS' in part:
+                amass_parts = part # ['AMASS_processed']
+        if amass_parts in path_parts:
+            amass_index = path_parts.index(amass_parts)
             splits = path_parts[amass_index + 1]  # 获取 AMASS 后的下一个部分作为 split
             key_name = path_parts[amass_index + 1:]
         else:
@@ -134,8 +135,11 @@ if __name__ == "__main__":
         smpl_local_robot.load_from_skeleton(betas=torch.from_numpy(beta[None,]), gender=gender_number, objs_info=None)
         smpl_local_robot.write_xml(f"data/robots/smpl/{robot_cfg['model']}_0_humanoid.xml")
         skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_0_humanoid.xml")
-        root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
+        root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
+        # fixed_height_offset
+        smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
+
 
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
@@ -153,29 +157,48 @@ if __name__ == "__main__":
                                                                             torch.from_numpy(pose_quat_global),
                                                                             root_trans_offset, is_local=False)
 
+        frame_check = 200
+        height_tolorance = 0
+        vertices_curr, joints_curr = smpl_parser_n.get_joints_verts(torch.from_numpy(pose_aa[:frame_check]),
+                                                                    torch.from_numpy(beta[None,]),
+                                                                    torch.from_numpy(root_trans[:frame_check]))
+        offset = joints_curr[:, 0] - root_trans_offset[:frame_check]
+        diff_fix = ((vertices_curr - offset[:, None])[:frame_check, ..., -1].min(
+            dim=-1).values - height_tolorance).min()
+        root_trans -= diff_fix.numpy()
+
         pose_quat_global = new_sk_state.global_rotation.numpy()
         pose_quat = new_sk_state.local_rotation.numpy()
         fps = 30
 
-        new_motion_out = {}
-        new_motion_out['pose_quat_global'] = pose_quat_global
-        new_motion_out['pose_quat'] = pose_quat
-        new_motion_out['trans_orig'] = root_trans
-        new_motion_out['root_trans_offset'] = root_trans_offset
-        new_motion_out['beta'] = beta
-        new_motion_out['gender'] = gender
-        new_motion_out['pose_aa'] = pose_aa
-        new_motion_out['fps'] = fps
-
-        amass_full_motion_dict[key_name_dump] = new_motion_out
+        # new_motion_out = {}
+        # new_motion_out['pose_quat_global'] = pose_quat_global
+        # new_motion_out['pose_quat'] = pose_quat
+        # new_motion_out['trans_orig'] = root_trans
+        # new_motion_out['root_trans_offset'] = root_trans_offset
+        # new_motion_out['fix_height_offset'] = -diff_fix
+        # new_motion_out['beta'] = beta
+        # new_motion_out['gender'] = gender
+        # new_motion_out['pose_aa'] = pose_aa
+        # new_motion_out['fps'] = fps
+        # amass_full_motion_dict[key_name_dump] = new_motion_out
 
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+
+        motion_light = {}
+        motion_light['num_frames'] = N
+        motion_light['fps'] = fps
+        motion_light['local_rotation'] = pose_quat_global
+        motion_light['global_velocity'] = motion_obj.global_velocity.numpy()
+        motion_light['root_trans_offset'] = root_trans_offset.numpy()
+        motion_light['diff_fix'] = (-diff_fix).numpy()
+
+
 
         # 构建保存路径
         rel_path = osp.relpath(data_path, args.path)  # 相对路径，如 CMU/123/xxx.npz
         save_path = osp.join("AMASS_processed", rel_path).replace(".npz", ".npy")
         os.makedirs(osp.dirname(save_path), exist_ok=True)
-
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)
 

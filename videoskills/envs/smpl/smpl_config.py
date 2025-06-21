@@ -13,14 +13,17 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         distance = [0.5] * 24
 
     class motion:
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
         # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
         keybodys = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
-                             'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',
+                             'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                              'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
     class domain_rand:
@@ -46,7 +49,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         eval_mode = False
         land_event_detect = False
-        num_envs = 256
+        num_envs = 4096
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 12 #
         task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
@@ -79,6 +82,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class rewards(LeggedRobotCfg.rewards):
         soft_dof_pos_limit = 0.9
         base_height_target = 0.25
+        alpha_torques = 10
         class task_w:
             k_pos = 100
             k_rot = 10
@@ -96,7 +100,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             lin_vel_z = 0.0
             ang_vel_xy = 0
             orientation = -0.
-            torques = -0.00001
+            torques = -1
             dof_vel = -0.
             dof_acc = -0.
             base_height = -0.
@@ -128,10 +132,12 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'eval_test' # 'smpl_ppo'
+        run_name = 'universal_torque_cache' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
-        load_run = 'universal_eval' # -1 = last run
+
+        # load_run = "universal_large_split"
+        load_run = 'universal_large_split' # -1 = last run
         # checkpoint = '6000'
-        eval_interval = 100
+        eval_interval = 2000
 
 

@@ -1,20 +1,18 @@
 import os
 import yaml
 
-from videoskills.utils.torch_utils import quat_to_exp_map
 from scripts.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
 from scripts.poselib.core.rotation3d import *
 from isaacgym.torch_utils import *
-from videoskills.utils.motionlib.pytorch3d_transforms import quaternion_to_matrix
-import xml.etree.ElementTree as ET
-from scipy.spatial.transform import Rotation as sRot
+
 from .. import torch_utils
-import copy
 from joblib import load
 import torch
 
-USE_CACHE = False
+USE_CACHE = True
 print("MOVING MOTION DATA TO GPU, USING CACHE:", USE_CACHE)
+
+''' This is a light version of MotionLib, which is designed to be more memory efficient and faster.'''
 
 if not USE_CACHE:
     old_numpy = torch.Tensor.numpy
@@ -71,45 +69,36 @@ class DeviceCache:
 class MotionLib():
     def __init__(self, motion_file, dof_body_ids, dof_offsets,
                  key_body_ids, device):
-        #
-        self._rotate_motion = False
-        self._fix_height = False
-        #
         self._dof_body_ids = dof_body_ids
         self._dof_offsets = dof_offsets
         self._num_dof = dof_offsets[-1]
         self._key_body_ids = torch.tensor(key_body_ids, device=device)
         self._device = device
-
-        if self._fix_height:
-            self._xml_tree = ET.parse("videoskills/envs/smpl/smpl.xml")
-
+        self._rotate_motion = False
         self._load_motions(motion_file)
-        # self.preprocess_amass_motion(motion_file,)
 
         motions = self._motions
-        self.gvs = torch.cat([m.global_velocity for m in motions], dim=0).float().to(device)
-        self.gas = torch.cat([m.global_angular_velocity for m in motions], dim=0).float().to(device)
-        self.gts = torch.cat([m.global_translation for m in motions], dim=0).float().to(device)
-        self.grs = torch.cat([m.global_rotation for m in motions], dim=0).float().to(device)
-        self.lrs = torch.cat([m.local_rotation for m in motions], dim=0).float().to(device)
-        self.grvs = torch.cat([m.global_root_velocity for m in motions], dim=0).float().to(device)
-        self.gravs = torch.cat([m.global_root_angular_velocity for m in motions], dim=0).float().to(device)
-        self.dvs = torch.cat([m.dof_vels for m in motions], dim=0).float().to(device)
-        self._termination_history = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)
+        self.gvs = torch.cat([m.global_velocity for m in motions], dim=0).float()
+        self.gas = torch.cat([m.global_angular_velocity for m in motions], dim=0).float()
+        self.gts = torch.cat([m.global_translation for m in motions], dim=0).float()
+        self.grs = torch.cat([m.global_rotation for m in motions], dim=0).float()
+        self.lrs = torch.cat([m.local_rotation for m in motions], dim=0).float()
+        self.grvs = torch.cat([m.global_root_velocity for m in motions], dim=0).float()
+        self.gravs = torch.cat([m.global_root_angular_velocity for m in motions], dim=0).float()
+        self.dvs = torch.cat([m.dof_vels for m in motions], dim=0).float()
 
         lengths = self._motion_num_frames
         lengths_shifted = lengths.roll(1)
         lengths_shifted[0] = 0
-        self._num_motions = len(self._motions)
+        self.num_motions = len(self._motions)
         self.length_starts = lengths_shifted.cumsum(0)
 
-        self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device).to(device)
+        self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device)
 
         return
 
     def num_motions(self):
-        return self._num_motions
+        return self.num_motions
 
     def get_total_length(self):
         return sum(self._motion_lengths)
@@ -142,8 +131,8 @@ class MotionLib():
 
     def get_motion_state(self, motion_ids, motion_times):
         n = len(motion_ids)
-        # num_bodies = self._get_num_bodies()
-        # num_key_bodies = self._key_body_ids.shape[0]
+        num_bodies = self._get_num_bodies()
+        num_key_bodies = self._key_body_ids.shape[0]
 
         motion_len = self._motion_lengths[motion_ids]
         num_frames = self._motion_num_frames[motion_ids]
@@ -218,16 +207,12 @@ class MotionLib():
 
     def _load_motions(self, motion_file, skeleton_trees = None):
         # TODO: Add support for offset
-        self._motions = []
         self._motion_lengths = []
-        self._motion_weights = []
+
         self._motion_fps = []
         self._motion_dt = []
         self._motion_num_frames = []
-        self._motion_files = []
         self._motion_keys = []
-
-        total_len = 0.0
 
         motion_files, motion_weights = self._fetch_motion_files(motion_file)
         num_motion_files = len(motion_files)
@@ -235,13 +220,6 @@ class MotionLib():
             curr_file = motion_files[f]
             print("Loading {:d}/{:d} motion files: {:s}".format(f + 1, num_motion_files, curr_file))
             curr_motion = SkeletonMotion.from_file(curr_file)
-
-            # trans, trans_fix = self.fix_trans_height(pose_aa, trans, 0, mesh_parsers)
-
-            # sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_trees[f], pose_quat_global, trans,
-            #                                                             is_local=False)
-
-            # curr_motion = SkeletonMotion.from_skeleton_state(sk_state, curr_file.get("fps", 30))
 
             if self._rotate_motion:
                 curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
@@ -252,7 +230,6 @@ class MotionLib():
             num_frames = curr_motion.tensor.shape[0]
             curr_len = 1.0 / motion_fps * (num_frames - 1)
 
-            self._motion_keys.append(self._get_amass_key(curr_file))
             self._motion_fps.append(motion_fps)
             self._motion_dt.append(curr_dt)
             self._motion_num_frames.append(num_frames)
@@ -263,12 +240,12 @@ class MotionLib():
             # Moving motion tensors to the GPU
             if USE_CACHE:
                 curr_motion = DeviceCache(curr_motion, self._device)
-            # else:
-            #     curr_motion.tensor = curr_motion.tensor.to(self._device)
-            #     curr_motion._skeleton_tree._parent_indices = curr_motion._skeleton_tree._parent_indices.to(self._device)
-            #     curr_motion._skeleton_tree._local_translation = curr_motion._skeleton_tree._local_translation.to(
-            #         self._device)
-            #     curr_motion._rotation = curr_motion._rotation.to(self._device)
+            else:
+                curr_motion.tensor = curr_motion.tensor.to(self._device)
+                curr_motion._skeleton_tree._parent_indices = curr_motion._skeleton_tree._parent_indices.to(self._device)
+                curr_motion._skeleton_tree._local_translation = curr_motion._skeleton_tree._local_translation.to(
+                    self._device)
+                curr_motion._rotation = curr_motion._rotation.to(self._device)
 
             self._motions.append(curr_motion)
             self._motion_lengths.append(curr_len)
@@ -288,33 +265,12 @@ class MotionLib():
         self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
         self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device)
 
-        num_motions = len(self._motions)
         total_len = self.get_total_length()
-
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
 
         return
 
     def _fetch_motion_files(self, motion_file):
-        # ext = os.path.splitext(motion_file)[1]
-        # if (ext == ".yaml"):
-        #     dir_name = os.path.dirname(motion_file)
-        #     motion_files = []
-        #     motion_weights = []
-        #
-        #     with open(os.path.join(os.getcwd(), motion_file), 'r') as f:
-        #         motion_config = yaml.load(f, Loader=yaml.SafeLoader)
-        #
-        #     motion_list = motion_config['motions']
-        #     for motion_entry in motion_list:
-        #         curr_file = motion_entry['file']
-        #         curr_weight = motion_entry['weight']
-        #         assert (curr_weight >= 0)
-        #
-        #         curr_file = os.path.join(dir_name, curr_file)
-        #         motion_weights.append(curr_weight)
-        #         motion_files.append(curr_file)
-        # else:
         motion_files = motion_file
         motion_weights = [1.0] * len(motion_files)
 
@@ -481,45 +437,8 @@ class MotionLib():
         sorted_indices = torch.argsort(torch.tensor(self._motion_lengths))  # on CPU first
 
         # 如果你已经有 tensor，就用它；否则用原始 list 排序
-        self._motions = [self._motions[i] for i in sorted_indices]
-        self._motion_files = [self._motion_files[i] for i in sorted_indices]
+        self._motion_keys = [self._motion_keys[i] for i in sorted_indices]
         self._motion_lengths = [self._motion_lengths[i] for i in sorted_indices]
-        self._motion_weights = [self._motion_weights[i] for i in sorted_indices]
         self._motion_fps = [self._motion_fps[i] for i in sorted_indices]
         self._motion_dt = [self._motion_dt[i] for i in sorted_indices]
         self._motion_num_frames = [self._motion_num_frames[i] for i in sorted_indices]
-        self._motion_keys = [self._motion_keys[i] for i in sorted_indices]
-
-    def _get_amass_key(self, filepath):
-        """
-        Generate a unique key for each motion file in the format: SUBSET-SUBFOLDER-FILENAME
-        Example: 'CMU-86_05-walk_01'
-        """
-        import os
-        parts = filepath.split(os.sep)
-        if len(parts) >= 4:
-            subset = parts[-4]
-            subfolder = parts[-3]
-            filename = os.path.splitext(parts[-1])[0]
-            return f"{subset}-{subfolder}-{filename}"
-        else:
-            return "UNKNOWN-UNKNOWN-UNKNOWN"
-
-    def update_soft_sampling_weight(self, failed_keys):
-        # sampling weight based on evaluation, only "mostly" trained on "failed" sequences. Auto PMCP.
-        if len(failed_keys) > 0:
-            all_keys = self._motion_keys
-            indexes = [all_keys.index(k) for k in failed_keys]
-            self._termination_history[indexes] += 1
-            self.update_sampling_prob(self._termination_history)
-            self._sampling_prob[:] = self._termination_history / self._termination_history.sum()
-
-
-
-
-
-    def _fix_height_based_on_geom(self, curr_motion):
-        return
-
-
-

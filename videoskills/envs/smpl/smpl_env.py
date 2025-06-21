@@ -5,7 +5,6 @@ from isaacgym import gymtorch, gymapi, gymutil
 import torch
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
-from videoskills.utils.motionlib.motion_lib_smpl import MotionLibSMPL
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree
 from videoskills.utils.motionlib.motion_lib import MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params
@@ -384,8 +383,8 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        if self.cfg.dev:
-            motion_times = torch.zeros(num_envs, device=self.device)
+        # if self.cfg.dev:
+        #     motion_times = torch.zeros(num_envs, device=self.device)
 
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
 
@@ -426,18 +425,23 @@ class SMPLRobot(LeggedRobot):
         # fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)  # raw pitch yaw
 
         time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        if self.eval_mode:
-            progress = self.episode_length_buf.to(torch.float) * self.dt
-            motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
-            time_out = progress >= motion_lens
+        progress = self.episode_length_buf.to(torch.float) * self.dt
+        motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+        ref_out = (progress + self._motion_start_times )>= motion_lens
         key_delta_sq = torch.sum((self.key_pos - self.ref_key_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
         key_too_far = torch.any(key_delta_sq > self.early_termination_distance, dim=1)  # → ℝ[num_envs]
 
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | key_too_far
-        self.reset_buf = time_out | key_too_far
+        self.reset_buf = ref_out | key_too_far | time_out
         self.time_out_buf = time_out
+
+        if self.eval_mode:
+            progress = self.episode_length_buf.to(torch.float) * self.dt
+            motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+            ref_out = progress >= motion_lens
+            self.reset_buf = ref_out | key_too_far
 
     def _reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
@@ -556,9 +560,6 @@ class SMPLRobot(LeggedRobot):
         diff_local_key_rot_flat =quat_mul(
             quat_mul(heading_rot_inv_expand, diff_global_key_rot),
             heading_rot_expand).view(self.num_envs, -1)
-        # diff_local_key_rot_flat = quat_to_tan_norm(quat_mul(
-        #     quat_mul(heading_rot_inv_expand, diff_global_key_rot),
-        #     heading_rot_expand).view(-1,4)).view(self.num_envs, -1)  # Need to be change of basis
 
         diff_global_key_vel = self.ref_key_vel - self.key_vel
         diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_vel).view(self.num_envs, -1)
@@ -571,7 +572,6 @@ class SMPLRobot(LeggedRobot):
 
         local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(
             self.num_envs, -1)
-        # local_ref_key_rot = quat_to_tan_norm(quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(-1,4)).view(self.num_envs, -1)
 
         obs.append(diff_local_key_pos_flat)  # 3
         obs.append(diff_local_key_rot_flat)  # 6
@@ -605,6 +605,11 @@ class SMPLRobot(LeggedRobot):
         reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
         return reward
 
+    def _reward_torques(self):
+        # Penalize torques
+        return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
+
+
     def _initialize_motion_offsets(self):
         """
         For each environment, generate a random heading rotation and compute:
@@ -628,7 +633,6 @@ class SMPLRobot(LeggedRobot):
             "root": self.env_origins.clone(),
             "key_body": self.env_origins.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1),
         }
-
 
     def reset_with_motion_ids(self, motion_ids):
         """ Reset all environments with given motion ids. (For Evaluation)

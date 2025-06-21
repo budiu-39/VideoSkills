@@ -206,10 +206,9 @@ class LeggedRobotCfgPPO(BaseConfig):
 
         # logging
 
-        save_interval = 500 # check for potential saves every this many iterations
+        save_interval = 1000 # check for potential saves every this many iterations
         run_name = ''
         # load and resume
         resume = False
-        load_run = 'Jun13_18-44-41_' # -1 = last run
         checkpoint = -1 # -1 = last saved model
         resume_path = None # updated from load_run and chkpt

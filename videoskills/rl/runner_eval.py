@@ -2,6 +2,7 @@ from rsl_rl.runners import OnPolicyRunner
 import numpy as np
 import torch
 from tqdm import tqdm
+import wandb
 
 class RunnerWithEval(OnPolicyRunner):
     def eval(self, motion_ids=None):
@@ -20,10 +21,10 @@ class RunnerWithEval(OnPolicyRunner):
         success_flags = []
         reward_until_fail_list = []
 
-        for i in tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions"):
+        pbar = tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions", dynamic_ncols=True)
+        for i in pbar:
             batch_ids = motion_ids[i: i + num_envs]
             batch_size = len(batch_ids)
-
             padded_ids = torch.tensor(batch_ids + [batch_ids[-1]] * (num_envs - batch_size), device=device)
 
             with torch.inference_mode():
@@ -39,10 +40,10 @@ class RunnerWithEval(OnPolicyRunner):
             episode_lengths = torch.zeros(num_envs, dtype=torch.int32, device=device)
             done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
 
-
             motion_lengths = (motion_lib._motion_lengths[batch_ids]/self.env.dt).int()
+            max_steps = motion_lengths.max().item()
 
-            for _ in range(motion_lengths.max()):
+            for step in range(max_steps):
                 with torch.inference_mode():
                     action = self.alg.actor_critic.act_inference(obs.to(device))
                     obs, _, rewards, dones, _ = self.env.step(action)
@@ -69,6 +70,16 @@ class RunnerWithEval(OnPolicyRunner):
                     if done_flags[:batch_size].all():
                         break
 
+                alive = ~done_flags[:batch_size]
+
+                max_alive_ref_len = motion_lengths[alive].max().item()
+
+                pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len)
+
+                if done_flags[:batch_size].all():
+                    break
+
+
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()
                 expected_len = motion_lengths[env_id].item()
@@ -89,6 +100,19 @@ class RunnerWithEval(OnPolicyRunner):
         print(f"[Eval] Avg. reward until failure (only failed): {np.mean(reward_until_fail_list):.2f}")
 
         self.env.eval_mode = False
+        with torch.inference_mode():
+            self.env.reset()
+
+        if wandb.run is not None:
+            wandb.log({
+                "Eval/mean_reward": mean_rew,
+                "Eval/success_rate": success_rate,
+                "Eval/reward_until_fail_mean_failed": np.mean(
+                    reward_until_fail_list) if reward_until_fail_list else 0.0,
+                "Eval/num_success": num_success,
+                "Eval/num_total": num_total,
+            })
+
         return {
             "Eval/mean_reward": mean_rew,
             "Eval/success_rate": success_rate,
