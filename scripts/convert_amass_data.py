@@ -16,6 +16,27 @@ from poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonSt
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
+import joblib
+
+
+def fix_trans_height(pose_aa, trans, betas, mesh_parser):
+    with torch.no_grad():
+        frame_check = pose_aa.shape[0]
+        betas = betas
+        mesh_parser = mesh_parser
+        height_tolorance = 0.0
+        vertices_curr, joints_curr = mesh_parser.get_joints_verts(pose_aa[:frame_check], betas[None,],
+                                                                  trans[:frame_check])
+
+        offset = joints_curr[:, 0] - trans[
+                                     :frame_check]  # account for SMPL root offset. since the root trans we pass in has been processed, we have to "add it back".
+
+        diff_fix = ((vertices_curr - offset[:, None])[:frame_check, ..., -1].min(
+            dim=-1).values - height_tolorance).min()  # Only acount the first 30 frames, which usually is a calibration phase.
+
+        trans[..., -1] -= diff_fix
+        return trans, diff_fix
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -67,6 +88,8 @@ if __name__ == "__main__":
     }
     process_set = amass_splits[process_split]
     length_acc = []
+    fix_height_keys = []
+    fix_height_values = []
     for data_path in tqdm(all_pkls):
         print("Processing", data_path)
         bound = 0
@@ -132,14 +155,13 @@ if __name__ == "__main__":
         beta = np.zeros(16)
         gender_number, beta[:], gender = [0], 0, "neutral"
 
-        smpl_local_robot.load_from_skeleton(betas=torch.from_numpy(beta[None,]), gender=gender_number, objs_info=None)
-        smpl_local_robot.write_xml(f"data/robots/smpl/{robot_cfg['model']}_0_humanoid.xml")
-        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_0_humanoid.xml")
+        # smpl_local_robot.load_from_skeleton(betas=torch.from_numpy(beta[None,]), gender=gender_number, objs_info=None)
+        # smpl_local_robot.write_xml(f"data/robots/smpl/{robot_cfg['model']}_0_humanoid.xml")
+        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
+        # 也就是说，机器人和 smpl 的root 几乎一致。
         root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
-        # fixed_height_offset
         smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
-
 
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
@@ -148,74 +170,64 @@ if __name__ == "__main__":
             root_trans_offset,
             is_local=True)
 
+        frame_check = 100
+        height_tolorance = 0
+        fix_height = True
+        if fix_height:
+            with torch.no_grad():
+                frame_check = min(frame_check, N)
+                pose_t = torch.from_numpy(pose_aa[:frame_check])
+                beta_t = torch.from_numpy(beta[None,])
+                trans_t = root_trans_offset[:frame_check]
+
+                verts, joints = smpl_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
+                offset = joints[:, 0] - trans_t # offset is the difference between the smpl root joint and the mujoco root joint
+                feet_z = (verts - offset[:, None])[..., -1]  # Z 轴  # feet_z is the mujoco lower point of each frame
+                diff_fix = feet_z.min().item() # diff_fix is the lowest frame of lowest point in each frame
+
+                root_trans_offset[..., -1] -= diff_fix
+                # we move the mujoco root joint down by the lowest point of the smpl feet, so that the feet are on the ground.
+
+                # if abs(diff_fix) > 0.1:
+                dataset = path_parts[-3]
+                subset = path_parts[-2]
+                filename = path_parts[-1].replace(".npy", "")
+                key_str = f"{dataset}-{subset}-{filename}"
+
+                fix_height_keys.append(key_str)
+                fix_height_values.append(diff_fix)
+
+
+
         if robot_cfg['upright_start']:
             pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
                                 sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
-            # 这个的作用是把 SMPL 的姿态从 Y-up 转换为 Z-up。
 
             new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
                                                                             torch.from_numpy(pose_quat_global),
                                                                             root_trans_offset, is_local=False)
 
-        frame_check = 200
-        height_tolorance = 0
-        vertices_curr, joints_curr = smpl_parser_n.get_joints_verts(torch.from_numpy(pose_aa[:frame_check]),
-                                                                    torch.from_numpy(beta[None,]),
-                                                                    torch.from_numpy(root_trans[:frame_check]))
-        offset = joints_curr[:, 0] - root_trans_offset[:frame_check]
-        diff_fix = ((vertices_curr - offset[:, None])[:frame_check, ..., -1].min(
-            dim=-1).values - height_tolorance).min()
-        root_trans -= diff_fix.numpy()
+        sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree, new_sk_state.global_rotation,
+                                                                    root_trans_offset, is_local=False)
 
         pose_quat_global = new_sk_state.global_rotation.numpy()
         pose_quat = new_sk_state.local_rotation.numpy()
         fps = 30
 
-        # new_motion_out = {}
-        # new_motion_out['pose_quat_global'] = pose_quat_global
-        # new_motion_out['pose_quat'] = pose_quat
-        # new_motion_out['trans_orig'] = root_trans
-        # new_motion_out['root_trans_offset'] = root_trans_offset
-        # new_motion_out['fix_height_offset'] = -diff_fix
-        # new_motion_out['beta'] = beta
-        # new_motion_out['gender'] = gender
-        # new_motion_out['pose_aa'] = pose_aa
-        # new_motion_out['fps'] = fps
-        # amass_full_motion_dict[key_name_dump] = new_motion_out
-
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
-
-        motion_light = {}
-        motion_light['num_frames'] = N
-        motion_light['fps'] = fps
-        motion_light['local_rotation'] = pose_quat_global
-        motion_light['global_velocity'] = motion_obj.global_velocity.numpy()
-        motion_light['root_trans_offset'] = root_trans_offset.numpy()
-        motion_light['diff_fix'] = (-diff_fix).numpy()
-
-
 
         # 构建保存路径
         rel_path = osp.relpath(data_path, args.path)  # 相对路径，如 CMU/123/xxx.npz
-        save_path = osp.join("AMASS_processed", rel_path).replace(".npz", ".npy")
+        save_path = osp.join("AMASS_fixed_height", rel_path).replace(".npz", ".npy")
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)
 
-        # if args.render:
-        #     vis_motion_use_scenepic_animation(
-        #         asset_filename=f"phc/data/assets/mjcf/{robot_cfg['model']}_0_humanoid.xml",
-        #         rigidbody_global_pos=motion_obj.global_translation,
-        #         rigidbody_global_rot=motion_obj.global_rotation,
-        #         fps=fps,
-        #         up_axis="z",
-        #         color= np.array([0.94, 0.97, 1.00]) * 255,
-        #         output_path=osp.join('output/retarget_render', f"{key_name_dump}_render.html"),
-        #     )
+    fix_height_dict = {k: round(v, 5) for k, v in zip(fix_height_keys, fix_height_values)}
+    joblib.dump(fix_height_dict, osp.join("AMASS_valid_fixed_height", "fixed_height_keys.pkl"))
+    fix_height_dict_load = joblib.load(osp.join("AMASS_valid_fixed_height", "fixed_height_keys.pkl"))
 
-    # if upright_start:
-    #     os.makedirs("output/Humanoid_motion/amass", exist_ok=True)
-    #     joblib.dump(amass_full_motion_dict, f"output/Humanoid_motion/amass/amass_selected_{process_split}.pkl", compress=True)
-    # else:
-    #     os.makedirs("output/Humanoid_motion/amass", exist_ok=True)
-    #     joblib.dump(amass_full_motion_dict, "output/Humanoid_motion/amass/amass_train_take6.pkl", compress=True)
+    print("Done")
+
+
+

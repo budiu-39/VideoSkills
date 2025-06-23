@@ -26,10 +26,11 @@ class SMPLRobot(LeggedRobot):
         self.eval_mode = self.cfg.env.eval_mode
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
-        # define motionlib and motion sampling buf
-        motion_file = self.cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
-        motion_file_list = self.get_all_motion_files(motion_file)
-        self._load_motion(motion_file_list)
+        if isinstance(self.cfg.motion.file, list):
+            motion_file = self.cfg.motion.file
+        else:
+            motion_file = self.cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+        self._load_motion(motion_file)
         self._initialize_motion_offsets()
 
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
@@ -42,21 +43,6 @@ class SMPLRobot(LeggedRobot):
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
 
         self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance, device=self.device) ** 2
-
-    def get_all_motion_files(self, amass_processed_dir: str, ext=".npy") -> list:
-        """
-        Recursively collect all motion file paths under AMASS_processed.
-
-        Args:
-            amass_processed_dir (str): e.g. "AMASS_processed"
-            ext (str): extension of the motion files, default ".pkl"
-
-        Returns:
-            List[str]: list of full file paths
-        """
-        motion_paths = glob.glob(os.path.join(amass_processed_dir, f"**/*{ext}"), recursive=True)
-        motion_paths.sort()  # optional: ensure deterministic order
-        return motion_paths
 
     def _create_envs(self):
         """ Creates environments:
@@ -221,7 +207,7 @@ class SMPLRobot(LeggedRobot):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         col_group = env_id
-        col_filter = 0 # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
+        col_filter = self.cfg.asset.self_collisions # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
 
         start_pose = gymapi.Transform()
         char_h = 0.89
@@ -569,16 +555,16 @@ class SMPLRobot(LeggedRobot):
 
         local_ref_key_pos = self.ref_key_pos - self.base_pos.unsqueeze(1).expand(-1, self.ref_key_pos.shape[1], -1)
         local_ref_key_pos = quat_apply(heading_rot_inv_expand, local_ref_key_pos).view(self.num_envs, -1)
-
+        # 这里的 local_ref_key_rot 是在 heading frame 下的，而不是相对父节点的！
         local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(
             self.num_envs, -1)
 
         obs.append(diff_local_key_pos_flat)  # 3
-        obs.append(diff_local_key_rot_flat)  # 6
+        obs.append(diff_local_key_rot_flat)  # 4
         obs.append(diff_local_key_vel_flat)  # 3
         obs.append(diff_local_key_ang_vel_flat) # 3
         obs.append(local_ref_key_pos) # 3
-        obs.append(local_ref_key_rot) # 6
+        obs.append(local_ref_key_rot) # 4
 
         obs = torch.cat(obs, dim=-1)
 
@@ -605,9 +591,9 @@ class SMPLRobot(LeggedRobot):
         reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
         return reward
 
-    def _reward_torques(self):
-        # Penalize torques
-        return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
+    # def _reward_torques(self):
+    #     # Penalize torques
+    #     return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
 
 
     def _initialize_motion_offsets(self):

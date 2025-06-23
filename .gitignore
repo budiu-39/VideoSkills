@@ -168,4 +168,6 @@ AMASS_split_small/
 AMASS_split_large/
 AMASS_split_mid/
 AMASS_split/
+AMASS_fixed_height/
+AMASS_processed/
 .git/

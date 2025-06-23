@@ -5,6 +5,7 @@ import numpy as np
 import random
 from isaacgym import gymapi
 from isaacgym import gymutil
+import joblib
 
 from videoskills import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
 
@@ -168,6 +169,40 @@ def export_policy_as_jit(actor_critic, path):
         model = copy.deepcopy(actor_critic.actor).to('cpu')
         traced_script_module = torch.jit.script(model)
         traced_script_module.save(path)
+
+def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
+    motion_file = env_cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+    if only_failed_key:
+        failed_key_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', cfg.runner.experiment_name, cfg.runner.load_run
+                                      , 'eval_outputs')
+        pkl_files = [file for file in os.listdir(failed_key_dir) if 'failed_keys' in file]
+
+        def extract_iter(filename):
+            # 假设格式始终为 'failed_keys_iterXXXXX.pkl'
+            prefix = "failed_keys_iter"
+            suffix = ".pkl"
+            if filename.startswith(prefix) and filename.endswith(suffix):
+                num_str = filename[len(prefix):-len(suffix)]  # 提取中间部分
+                return int(num_str)
+            return -1  # fallback
+
+        pkl_files.sort(key=extract_iter)
+        failed_keys = joblib.load(os.path.join(failed_key_dir, pkl_files[-1]))
+        npy_paths = []
+        for key in failed_keys:
+            parts = key.split("-")
+            if len(parts) >= 2:
+                dataset = parts[0]
+                subset = parts[1]
+                filename = "-".join(parts[2:])
+                rel_path = os.path.join(motion_file, dataset, subset, filename + ext)
+                npy_paths.append(rel_path)
+        return npy_paths
+    else:
+        return motion_file
+
+
+
 
 
 class PolicyExporterLSTM(torch.nn.Module):

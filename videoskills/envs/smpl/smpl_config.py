@@ -10,14 +10,17 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class early_termination:
         enabled = True
-        distance = [0.5] * 24
+        distance = [0.25] * 24
+        # distance = [0.5] * 24
 
     class motion:
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
@@ -49,7 +52,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         eval_mode = False
         land_event_detect = False
-        num_envs = 4096
+        num_envs = 256
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 12 #
         task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
@@ -79,10 +82,10 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
 
-    class rewards(LeggedRobotCfg.rewards):
-        soft_dof_pos_limit = 0.9
+    class rewards:
+        # soft_dof_pos_limit = 0.9
+        only_positive_rewards = True
         base_height_target = 0.25
-        alpha_torques = 5
         class task_w:
             k_pos = 100
             k_rot = 10
@@ -92,31 +95,18 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_rot = 0.5
             w_vel = 0.1
             w_ang_vel = 0.1
-        class scales(LeggedRobotCfg.rewards.scales):
-            termination = -0.0
-            tracking_lin_vel = 0.0
-            tracking_ang_vel = 0.0
-            imitation = 2000.0
-            lin_vel_z = 0.0
-            ang_vel_xy = 0
-            orientation = -0.
-            torques = -1
-            dof_vel = -0.
-            dof_acc = -0.
-            base_height = -0.
-            feet_air_time =  0.0
-            collision = -1.
-            feet_stumble = -0.0
-            action_rate = -0.00
-            stand_still = -0.
-            dof_pos_limits = -10.0
+        class scales:
+            imitation = 100.0
+            torques = -0.00001
+            # collision = -1.
+            # dof_pos_limits = -10.0
 
 
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class policy:
-        init_noise_std = 1.0
+        init_noise_std = 0.5
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -132,11 +122,14 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'universal_auto_pmcp' # 'smpl_ppo'
+        run_name = 'universal_00001_torque_100_imi_clean_reward' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
-        # load_run = "universal_large_split"
-        load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
+        # load_run = "universal_old_toruqe_new_lr"
+        # load_run = "old_stuff"
+        # load_run = "universal_00001_torque_1000_imi_rotate"
+        load_run = "universal_00001_torque_100_imi"
+        # load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
         # checkpoint = '6000'
         eval_interval = 2000
 

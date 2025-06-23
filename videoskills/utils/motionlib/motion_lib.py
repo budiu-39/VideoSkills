@@ -13,6 +13,7 @@ import copy
 from joblib import load
 import torch
 import joblib
+import glob
 
 USE_CACHE = False
 print("MOVING MOTION DATA TO GPU, USING CACHE:", USE_CACHE)
@@ -73,7 +74,7 @@ class MotionLib():
     def __init__(self, motion_file, dof_body_ids, dof_offsets,
                  key_body_ids, device):
         #
-        self._rotate_motion = False
+        self._rotate_motion = True
         self._fix_height = False
         #
         self._dof_body_ids = dof_body_ids
@@ -291,31 +292,6 @@ class MotionLib():
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
 
         return
-
-    def _fetch_motion_files(self, motion_file):
-        # ext = os.path.splitext(motion_file)[1]
-        # if (ext == ".yaml"):
-        #     dir_name = os.path.dirname(motion_file)
-        #     motion_files = []
-        #     motion_weights = []
-        #
-        #     with open(os.path.join(os.getcwd(), motion_file), 'r') as f:
-        #         motion_config = yaml.load(f, Loader=yaml.SafeLoader)
-        #
-        #     motion_list = motion_config['motions']
-        #     for motion_entry in motion_list:
-        #         curr_file = motion_entry['file']
-        #         curr_weight = motion_entry['weight']
-        #         assert (curr_weight >= 0)
-        #
-        #         curr_file = os.path.join(dir_name, curr_file)
-        #         motion_weights.append(curr_weight)
-        #         motion_files.append(curr_file)
-        # else:
-        motion_files = motion_file
-        # motion_sampling_prob = [1.0] * len(motion_files)
-
-        return motion_files
 
     def _calc_frame_blend(self, time, len, num_frames, dt):
 
@@ -535,5 +511,26 @@ class MotionLib():
 
 
 
+    def _fetch_motion_files(self, input_motion_sequences: str, ext=".npy", amass_root="AMASS_processed") -> list:
+        """
+        Load all motion file paths.
+        - If input is a folder: recursively find all files ending with `ext`.
+        - If input is a .pkl file: load failed_keys and convert to full file paths.
+
+        Args:
+            input_motion_sequences (str): directory or .pkl file
+            ext (str): file extension to match (default: '.npy')
+            amass_root (str): root directory to prefix when generating paths from keys
+
+        Returns:
+            List[str]: list of full file paths
+        """
+
+        if isinstance(input_motion_sequences, list):
+            return input_motion_sequences
+        else:
+            motion_paths = glob.glob(os.path.join(input_motion_sequences, f"**/*{ext}"), recursive=True)
+            motion_paths.sort()
+            return motion_paths
 
 
