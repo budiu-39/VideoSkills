@@ -46,6 +46,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
+    output_dir = "AMASS_valid_fixed_height"
 
     process_split = args.process_split
     upright_start = True
@@ -218,14 +219,15 @@ if __name__ == "__main__":
 
         # 构建保存路径
         rel_path = osp.relpath(data_path, args.path)  # 相对路径，如 CMU/123/xxx.npz
-        save_path = osp.join("AMASS_fixed_height", rel_path).replace(".npz", ".npy")
+        save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)
 
     fix_height_dict = {k: round(v, 5) for k, v in zip(fix_height_keys, fix_height_values)}
-    joblib.dump(fix_height_dict, osp.join("AMASS_valid_fixed_height", "fixed_height_keys.pkl"))
-    fix_height_dict_load = joblib.load(osp.join("AMASS_valid_fixed_height", "fixed_height_keys.pkl"))
+    os.makedirs(output_dir, exist_ok=True)
+    joblib.dump(fix_height_dict, osp.join(output_dir, "fixed_height_keys.pkl"))
+    fix_height_dict_load = joblib.load(osp.join(output_dir, "fixed_height_keys.pkl"))
 
     print("Done")
 

@@ -98,8 +98,6 @@ class LeggedRobot(BaseTask):
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
-        self._post_physics_step_callback()
-
         # compute observations, rewards, resets, ...
         self.check_termination()
         self.compute_reward()
@@ -108,6 +106,8 @@ class LeggedRobot(BaseTask):
         
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
+
+        # self._post_physics_step_callback()
 
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -141,6 +141,7 @@ class LeggedRobot(BaseTask):
         self._reset_root_states(env_ids)
 
         self._resample_commands(env_ids)
+
 
         # reset buffers
         self.actions[env_ids] = 0.

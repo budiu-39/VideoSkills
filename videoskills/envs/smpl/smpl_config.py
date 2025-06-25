@@ -3,24 +3,26 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
         type = 'random'  # 'hybrid' or 'default'
-        pos = [0.0, 0.0, 0.42]  # x,y,z [m]
+        pos = [0.0, 0.0, 0.89]  # x,y,z [m]
 
     class marker:
         file = ('{LEGGED_GYM_ROOT_DIR}/data/marker/')
 
     class early_termination:
         enabled = True
+        # distance = [0.25] * 24
         distance = [0.25] * 24
-        # distance = [0.5] * 24
 
     class motion:
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_split_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_valid')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
+
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
@@ -52,7 +54,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class env(LeggedRobotCfg.env):
         eval_mode = False
         land_event_detect = False
-        num_envs = 256
+        num_envs = 4096
         num_actions = 69
         humanoid_obs = 1 + 23 * 3 + 24 * 12 #
         task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
@@ -81,6 +83,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
+        pd_scale = 0.333
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -101,12 +104,16 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             # collision = -1.
             # dof_pos_limits = -10.0
 
+    class sim(LeggedRobotCfg.sim):
+        # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
+        dt = 0.005
+
 
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class policy:
-        init_noise_std = 0.5
+        init_noise_std = 0.33
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -119,18 +126,21 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
+        learning_rate = 1.e-3 #5.e-4
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'universal_00001_torque_100_imi_clean_reward' # 'smpl_ppo'
+        run_name = 'fixed_obs_00001_torque_100_imi_0001_lr_strict_RT' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
         # load_run = "universal_old_toruqe_new_lr"
         # load_run = "old_stuff"
         # load_run = "universal_00001_torque_1000_imi_rotate"
-        load_run = "universal_00001_torque_100_imi"
+        load_run = "clean_reward_strict_ET"
+        # load_run = "universal_small_lr_noise_rotate_imi_Jun22_11-28-07"
         # load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
         # checkpoint = '6000'
         eval_interval = 2000
+
 
 

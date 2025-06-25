@@ -2,6 +2,8 @@ import os
 from collections import defaultdict
 from scripts.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
 import glob
+import os.path as osp
+import joblib
 
 def find_duplicate_filenames(folder_path):
     # 用来存储文件名映射到路径的列表
@@ -95,9 +97,73 @@ def deduplicate_motion_files_with_loader(motion_files: list):
     for path in duplicates:
         print(f" Skipped: {path}")
 
+def collect_keys(base_dir, ext, allowed_subsets):
+    all_files = glob.glob(osp.join(base_dir, '**', f'*{ext}'), recursive=True)
+    key_map = {}
+    for path in all_files:
+        rel_path = osp.relpath(path, base_dir)
+        key = "0-" + rel_path.replace(ext, '').replace(os.sep, '_')
+        subset = rel_path.split(os.sep)[0]
+        if subset in allowed_subsets:
+            key_map[key] = subset
+    return key_map
 
-# 用法示例
+def compare_keys(orig_keys, proc_keys, occluded_keys, name):
+    missing_total = sorted(set(orig_keys) - set(proc_keys))
+    missing_excluding_occlusion = sorted(set(missing_total) - occluded_keys)
+    missing_due_to_occlusion = sorted(set(missing_total) & occluded_keys)
+
+    print(f"\n=== {name} - Total Missing: {len(missing_total)} ===")
+    print(f"→ Missing but NOT in occlusion list: {len(missing_excluding_occlusion)}")
+    print(f"→ Missing due to occlusion: {len(missing_due_to_occlusion)}")
+
+    print("\n--- Missing not due to occlusion ---")
+    for key in missing_excluding_occlusion:
+        print(f"{key} (subset: {orig_keys[key]})")
+
+    # print("\n--- Missing due to occlusion ---")
+    # for key in missing_due_to_occlusion:
+    #     issue = occlusion_dict[key]["issue"]
+    #     print(f"{key} (subset: {orig_keys[key]}, issue: {issue})")
+
+
 if __name__ == "__main__":
-    folder_to_check = "AMASS_processed"  # ← 改为你要检查的文件夹路径
-    get_all_motion_files = get_all_motion_files(folder_to_check, ext=".npy")
-    deduplicate_motion_files_with_loader(get_all_motion_files)
+    # 设置路径
+    consider_splits = ["train", "valid"]
+
+    # AMASS split 映射
+    amass_splits = {
+        'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
+        'test': ['Transitions_mocap', 'SSM_synced'],
+        'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
+                  "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]
+    }
+
+    allowed_subsets = set(sum([amass_splits[split] for split in consider_splits], []))
+
+    original_dir = "../AMASS"
+    processed1_dir = "AMASS_fixed_height"
+    processed2_dir = "AMASS_processed"
+    occlusion_pkl = "output/SMPL_Robot_motion/amass_copycat_occlusion_v3.pkl"
+
+    # 扫描所有文件
+    orig_keys = collect_keys(original_dir, ".npz", allowed_subsets)
+    proc1_keys = collect_keys(processed1_dir, ".npy", allowed_subsets)
+    proc2_keys = collect_keys(processed2_dir, ".npy", allowed_subsets)
+
+    print(f"\nTotal motions in original set (filtered by split): {len(orig_keys)}")
+    print(f"Total motions in Processed Version 1: {len(proc1_keys)}")
+    print(f"Total motions in Processed Version 2: {len(proc2_keys)}")
+
+    occlusion_dict = joblib.load(occlusion_pkl)
+    occluded_keys = set([k for k in occlusion_dict if k in orig_keys])
+
+    # 对比
+    compare_keys(orig_keys, proc1_keys, occluded_keys, "Fixed_height Version")
+    compare_keys(orig_keys, proc2_keys, occluded_keys, "Processed Version")
+    compare_keys(proc2_keys, proc1_keys, occluded_keys,"Comparison between Fixed_height & Processed")
+# # 用法示例
+# if __name__ == "__main__":
+#     folder_to_check = "AMASS_processed"  # ← 改为你要检查的文件夹路径
+#     get_all_motion_files = get_all_motion_files(folder_to_check, ext=".npy")
+#     deduplicate_motion_files_with_loader(get_all_motion_files)

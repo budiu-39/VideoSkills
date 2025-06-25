@@ -228,8 +228,9 @@ class SMPLRobot(LeggedRobot):
         # configure PD control method
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
         for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i]/3, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i]/3, dtype=torch.float, device=self.device)
+            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i] * self.cfg.asset.pd_scale, dtype=torch.float, device=self.device)
+            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i] * self.cfg.asset.pd_scale, dtype=torch.float, device=self.device)
+
         self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
 
         filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
@@ -255,6 +256,7 @@ class SMPLRobot(LeggedRobot):
                                      device=self.device)
 
     def reset_idx(self, env_ids):
+        # TODO: 需要更新 task obs!!!!
         """ Reset some environments.
             Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids), and self._resample_commands(env_ids)
             [Optional] calls self._update_terrain_curriculum(env_ids), self.update_command_curriculum(env_ids) and
@@ -271,7 +273,7 @@ class SMPLRobot(LeggedRobot):
         # reset robot states
         self._reset_robot(env_ids)
         self._reset_env_tensors(env_ids)
-        self._resample_commands(env_ids)
+        # self._resample_commands(env_ids)
 
         # reset buffers
         self.actions[env_ids] = 0.
@@ -293,6 +295,7 @@ class SMPLRobot(LeggedRobot):
             self.extras["time_outs"] = self.time_out_buf
 
         self._refresh_sim_tensors()
+        self.compute_observations()
 
     def _refresh_sim_tensors(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -369,16 +372,10 @@ class SMPLRobot(LeggedRobot):
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 
-        # if self.cfg.dev:
-        #     motion_times = torch.zeros(num_envs, device=self.device)
+        if self.eval_mode:
+            motion_times = torch.zeros_like(motion_times)
 
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
-
-        # if self.cfg.dev:
-        #     motion_state["root_rot"] = quat_mul(self.rotation_offset[env_ids], motion_state["root_rot"])
-        #     motion_state["root_pos"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_pos"])
-        #     motion_state["root_ang_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_ang_vel"])
-        #     motion_state["root_vel"] = quat_apply(self.rotation_offset[env_ids], motion_state["root_vel"])
 
         self._set_env_state(env_ids=env_ids,
                             root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
@@ -411,7 +408,7 @@ class SMPLRobot(LeggedRobot):
         # fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)  # raw pitch yaw
 
         time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        progress = self.episode_length_buf.to(torch.float) * self.dt
+        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # 在这种情况下已经找不到 ref motion 了！
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         ref_out = (progress + self._motion_start_times )>= motion_lens
         key_delta_sq = torch.sum((self.key_pos - self.ref_key_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
@@ -468,28 +465,39 @@ class SMPLRobot(LeggedRobot):
 
         self.last_landing_mask = all_on.clone()
 
-    def _post_physics_step_callback(self):
-        progress = self.episode_length_buf.to(torch.float) * self.dt
+    # def _post_physics_step_callback(self):
+    #     progress = self.episode_length_buf.to(torch.float) * self.dt
+    #     motion_times = progress + self._motion_start_times
+    #     motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+    #     # motion_times = torch.fmod(motion_times, motion_lens)
+    #     motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
+    #
+    #     self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
+    #     self.ref_root_rot[:] = motion_state["root_rot"]
+    #     self.ref_dof_pos[:] = motion_state["dof_pos"]
+    #     self.ref_key_pos = motion_state["key_pos"] + self.pos_offset['key_body']
+    #     self.ref_key_rot = motion_state["key_rot"]
+    #     self.ref_key_vel = motion_state["key_vel"]
+    #     self.ref_key_ang_vel = motion_state["key_ang_vel"]
+
+        # return super()._post_physics_step_callback()
+
+    # TODO: 重写 compute_observations，目前只是将参考的 dof_pos 和当前的 dof_pos 相减，还可以引入更多，比如 root
+    # key body 也没有加进来
+    # hieght 于 rotation 应该也是有关系的吧？
+    # 是 local 的
+    def compute_observations(self):
+        # 应该在这里更新 ref
+        ## 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
+        ## 此外还有一个 actions 的 obs
+        # TODO： 不过有一个事情是！这个 humanoid_obs 其实非常难以获得。所以如果目的是实机的话，obs 是要重写的
+        ## task obs 参考 compute_imitation_observations
+
+        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt
         motion_times = progress + self._motion_start_times
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         # motion_times = torch.fmod(motion_times, motion_lens)
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
-
-        # if self.cfg.dev:
-        #     motion_state["root_rot"] = quat_mul(self.rotation_offset, motion_state["root_rot"])
-        #     motion_state["root_pos"] = quat_apply(self.rotation_offset, motion_state["root_pos"])
-        #     motion_state["key_rot"] = quat_mul(
-        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_rot"].shape[1], -1),
-        #         motion_state["key_rot"]
-        #     )
-        #     motion_state["key_pos"] = quat_apply(
-        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_pos"].shape[1], -1),
-        #         motion_state["key_pos"]
-        #     )
-        #     motion_state["key_vel"] = quat_apply(
-        #         self.rotation_offset.unsqueeze(1).expand(-1, motion_state["key_vel"].shape[1], -1),
-        #         motion_state["key_vel"]
-        #     )
 
         self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
         self.ref_root_rot[:] = motion_state["root_rot"]
@@ -499,17 +507,6 @@ class SMPLRobot(LeggedRobot):
         self.ref_key_vel = motion_state["key_vel"]
         self.ref_key_ang_vel = motion_state["key_ang_vel"]
 
-        # return super()._post_physics_step_callback()
-
-    # TODO: 重写 compute_observations，目前只是将参考的 dof_pos 和当前的 dof_pos 相减，还可以引入更多，比如 root
-    # key body 也没有加进来
-    # hieght 于 rotation 应该也是有关系的吧？
-    # 是 local 的
-    def compute_observations(self):
-        ## 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
-        ## 此外还有一个 actions 的 obs
-        # TODO： 不过有一个事情是！这个 humanoid_obs 其实非常难以获得。所以如果目的是实机的话，obs 是要重写的
-        ## task obs 参考 compute_imitation_observations
         humanoid_obs = self.compute_humanoid_observations()
         task_obs = self.compute_task_observations()
 
@@ -674,6 +671,9 @@ class SMPLRobot(LeggedRobot):
         motion_lens = self._motion_lib._motion_lengths[motion_ids]
         self.extras["motion_length"] = motion_lens.clone()
 
-        obs, _, _, _, _ = self.step(
-            torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
-        return obs
+
+        self.compute_observations()
+
+        # obs, _, _, _, _ = self.step(
+        #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        return self.obs_buf

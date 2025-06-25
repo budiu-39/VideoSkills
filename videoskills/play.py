@@ -15,7 +15,7 @@ import torch
 
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
-    env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=True)
+    env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)
     # override some parameters for testing
     env_cfg.env.num_envs = min(env_cfg.env.num_envs, 32)
     env_cfg.terrain.num_rows = 5

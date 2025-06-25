@@ -42,10 +42,10 @@ class RunnerWithEval(OnPolicyRunner):
             padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
             with torch.inference_mode():
+                self.env.reset_with_motion_ids(padded_ids)
+                self.env.gym.simulate(self.env.sim)    # safe reset
                 obs = self.env.reset_with_motion_ids(padded_ids)
-            # self.env.compute_observations()
-            # obs = self.env.get_observations()
-            #     obs = self.env.reset_with_motion_ids(padded_ids)
+                torch.cuda.empty_cache()
 
             cum_rewards = torch.zeros(num_envs, device=device)
             reward_until_fail = torch.zeros(num_envs, device=device)
@@ -57,7 +57,7 @@ class RunnerWithEval(OnPolicyRunner):
             motion_lengths = (motion_lib._motion_lengths[batch_ids]/self.env.dt).int()
             max_steps = motion_lengths.max().item()
 
-            for step in range(max_steps):
+            for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.inference_mode():
                     action = self.alg.actor_critic.act_inference(obs.to(device))
                     obs, _, rewards, dones, _ = self.env.step(action)
@@ -96,7 +96,7 @@ class RunnerWithEval(OnPolicyRunner):
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()
                 expected_len = motion_lengths[env_id].item()
-                success = ep_len >= (expected_len - 1)
+                success = ep_len >= expected_len
                 success_flags.append(success)
                 total_rewards.append(cum_rewards[env_id].item())
 

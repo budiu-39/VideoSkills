@@ -163,11 +163,5 @@ logs
 
 data/AMASS_test
 data/smpl
-AMASS_valid/
-AMASS_split_small/
-AMASS_split_large/
-AMASS_split_mid/
-AMASS_split/
-AMASS_fixed_height/
-AMASS_processed/
+dataset/
 .git/
