@@ -23,7 +23,6 @@ class SMPLRobot(LeggedRobot):
         self.debug_viz = False
         self.init_done = False
         self._parse_cfg(self.cfg)
-        self.eval_mode = self.cfg.env.eval_mode
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         if isinstance(self.cfg.motion.file, list):
@@ -284,6 +283,7 @@ class SMPLRobot(LeggedRobot):
         self.reset_buf[env_ids] = 1
         # fill extras
         self.extras["episode"] = {}
+        self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(
                 self.episode_sums[key][env_ids]) / self.max_episode_length_s
@@ -295,7 +295,7 @@ class SMPLRobot(LeggedRobot):
             self.extras["time_outs"] = self.time_out_buf
 
         self._refresh_sim_tensors()
-        self.compute_observations()
+
 
     def _refresh_sim_tensors(self):
         self.gym.refresh_actor_root_state_tensor(self.sim)
@@ -486,6 +486,14 @@ class SMPLRobot(LeggedRobot):
     # key body 也没有加进来
     # hieght 于 rotation 应该也是有关系的吧？
     # 是 local 的
+
+    def reset(self):
+        """ Reset all robots"""
+        self.reset_idx(torch.arange(self.num_envs, device=self.device))
+        self.compute_observations()
+        obs, privileged_obs, _, _, _ = self.step(torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        return obs, privileged_obs
+
     def compute_observations(self):
         # 应该在这里更新 ref
         ## 有 2 个 大的 obs 分别是 smpl 的自身感知 humanoid obs 和 task obs，其中 humanoid obs 参考 compute_humanoid_observations
@@ -677,3 +685,4 @@ class SMPLRobot(LeggedRobot):
         # obs, _, _, _, _ = self.step(
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
+

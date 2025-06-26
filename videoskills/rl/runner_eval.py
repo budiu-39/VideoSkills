@@ -6,6 +6,8 @@ import wandb
 import os
 import joblib
 from rsl_rl.env import VecEnv
+from collections import defaultdict
+from videoskills.utils.metrics import compute_metrics
 
 class RunnerWithEval(OnPolicyRunner):
     def __init__(self, env: VecEnv,
@@ -20,6 +22,8 @@ class RunnerWithEval(OnPolicyRunner):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.actor_critic.eval()
         self.env.eval_mode = True
+        self.env.early_termination_distance = torch.tensor([0.5] * len(self.env.early_termination_distance)
+                                                           , device=self.device) ** 2
 
         num_envs = self.env.num_envs
         motion_lib = self.env._motion_lib
@@ -32,9 +36,12 @@ class RunnerWithEval(OnPolicyRunner):
         success_flags = []
         reward_until_fail_list = []
         failed_keys = []
-
+        global_metrics = defaultdict(list)
+        metrics_success = defaultdict(list)
         pbar = tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions", dynamic_ncols=True)
         for i in pbar:
+            self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
+            self.env.enable_data_recording() # enable recording during evaluation
             batch_ids = motion_ids[i: i + num_envs]
             batch_size = len(batch_ids)
             num_pad = num_envs - batch_size
@@ -56,12 +63,12 @@ class RunnerWithEval(OnPolicyRunner):
 
             motion_lengths = (motion_lib._motion_lengths[batch_ids]/self.env.dt).int()
             max_steps = motion_lengths.max().item()
+            done_flags[batch_size:] = True
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.inference_mode():
                     action = self.alg.actor_critic.act_inference(obs.to(device))
-                    obs, _, rewards, dones, _ = self.env.step(action)
-
+                    obs, _, rewards, dones, extras = self.env.step(action)
                     rewards = rewards.squeeze()
                     rewards[done_flags] = 0.0
                     cum_rewards += rewards
@@ -93,6 +100,8 @@ class RunnerWithEval(OnPolicyRunner):
                 if done_flags[:batch_size].all():
                     break
 
+                self.env.done_flags = done_flags.clone().detach()
+
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()
                 expected_len = motion_lengths[env_id].item()
@@ -103,6 +112,44 @@ class RunnerWithEval(OnPolicyRunner):
                 if not success:
                     reward_until_fail_list.append(reward_until_fail[env_id].item())
                     failed_keys.append(motion_lib._motion_keys[batch_ids[env_id]])
+
+            motion_id_to_data = defaultdict(list)
+            for env_id in range(batch_size):
+                motion_id = batch_ids[env_id]
+                motion_id_to_data[motion_id].extend(self.env.recorded_data[env_id])
+                self.env.recorded_data[env_id].clear()  # 清空缓存，避免污染下一个 batch
+
+            pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all = [], [], [], []
+
+            for motion_id in sorted(motion_id_to_data.keys()):
+                frames = motion_id_to_data[motion_id]
+                if len(frames) == 0:
+                    continue  # skip empty
+                pred_pos_all.append(np.stack([f["key_pos"] for f in frames], axis=0))  # (T, J, 3)
+                gt_pos_all.append(np.stack([f["ref_key_pos"] for f in frames], axis=0))  # (T, J, 3)
+                pred_rot_all.append(np.stack([f["key_rot"] for f in frames], axis=0))  # (T, J, 4)
+                gt_rot_all.append(np.stack([f["ref_key_rot"] for f in frames], axis=0))  # (T, J, 4)
+
+            # 3. 计算并打印指标
+            batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
+            motion_ids_sorted = sorted(motion_id_to_data.keys())
+
+            for k, v in batch_metrics.items():
+                global_metrics[k].extend(v)
+                for j, valid in enumerate(valid_mask):
+                    if not valid:
+                        continue
+                    key = motion_lib._motion_keys[motion_ids_sorted[j]]
+                    if key not in failed_keys:
+                        metrics_success[k].append(v.pop(0))
+
+        print("\n[Eval] Overall Metrics:")
+        for k, v in global_metrics.items():
+            print(f"   {k}: {np.mean(v):.3f}")
+
+        print("\n[Eval] Metrics for Successful Motions:")
+        for k, v in metrics_success.items():
+            print(f"   {k}: {np.mean(v):.3f}")
 
         num_success = sum(success_flags)
         num_total = len(success_flags)
@@ -121,6 +168,8 @@ class RunnerWithEval(OnPolicyRunner):
         print(f"[Eval] Mean reward across {len(motion_ids)} motions: {mean_rew:.2f}")
         print(f"[Eval] Avg. reward until failure (only failed): {np.mean(reward_until_fail_list):.2f}")
 
+        self.env.disable_data_recording()
+        self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
         with torch.inference_mode():
             self.env.reset()
@@ -134,6 +183,17 @@ class RunnerWithEval(OnPolicyRunner):
                 "Eval/num_success": num_success,
                 "Eval/num_total": num_total,
             })
+
+            wandb_metric_dict = {}
+            for k, v in global_metrics.items():
+                if len(v) > 0:
+                    wandb_metric_dict[f"Eval/{k}"] = np.mean(v).item()
+
+            for k, v in metrics_success.items():
+                if len(v) > 0:
+                    wandb_metric_dict[f"Eval/{k}_success"] = np.mean(v).item()
+
+            wandb.log(wandb_metric_dict)
 
         return {
             "Eval/mean_reward": mean_rew,

@@ -15,11 +15,12 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_split_small')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_test_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_valid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
 
@@ -84,6 +85,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
         pd_scale = 0.333
+        # pd_scale = 0.1
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -126,18 +128,22 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
-        learning_rate = 1.e-3 #5.e-4
+        learning_rate = 0.001 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
         entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'fixed_obs_00001_torque_100_imi_0001_lr_strict_RT' # 'smpl_ppo'
+        run_name = '033pd_00001torque_1e-3lr_resume' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
         # load_run = "universal_old_toruqe_new_lr"
         # load_run = "old_stuff"
         # load_run = "universal_00001_torque_1000_imi_rotate"
-        load_run = "clean_reward_strict_ET"
+        # load_run = "01pd_strictET_100imi"
+        # load_run = "universal_old_torque_small_lr_noise_rotate_Jun22_10-17-04"
         # load_run = "universal_small_lr_noise_rotate_imi_Jun22_11-28-07"
+        # load_run = "fixed_obs_fixed_height_100_imi_033_pd_00001_torque_1e-3_lr_Jun25_03-09-04"
+        # load_run = "universal_00001_torque_1000_imi_rotate"
+        load_run = "01pd"
         # load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
         # checkpoint = '6000'
         eval_interval = 2000
