@@ -22,6 +22,15 @@ class SMPLRobot(LeggedRobot):
         self.height_samples = None
         self.debug_viz = False
         self.init_done = False
+
+        # quat_to_tan_norm ablation study
+        self.activate_quat_to_tan_norm = True
+        if self.activate_quat_to_tan_norm:
+            self.cfg.env.num_observations = 358 + 576 + 69
+
+
+
+
         self._parse_cfg(self.cfg)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
@@ -332,6 +341,10 @@ class SMPLRobot(LeggedRobot):
         bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
         self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
 
+        dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dof)
+
         self.key_pos = self._rigid_body_state_reshaped[..., self.key_body_ids, 0:3]   #3
         self.key_rot = self._rigid_body_state_reshaped[..., self.key_body_ids, 3:7]   #4
         self.key_vel = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]   #3
@@ -442,7 +455,16 @@ class SMPLRobot(LeggedRobot):
         self.key_rot[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 3:7]
         self.key_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]
         self.key_ang_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]
+
+
+        # self.gym.refresh_force_sensor_tensor(self.sim)
+        # tau_cmd = self.dof_force_tensor
+        # tau_react = self.torques
+        # torque_gap = tau_cmd - tau_react
+
         super().post_physics_step()
+
+
 
         if self.cfg.env.land_event_detect:
             self.land_event_detection()
@@ -527,7 +549,8 @@ class SMPLRobot(LeggedRobot):
         root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.key_pos.shape[1], -1)  # [N, K, 3]
         local_body_pos = quat_apply(heading_rot_inv_expand, self.key_pos - root_base_expand)[:,1:].view(self.num_envs, -1)
         local_body_rot = quat_mul(heading_rot_inv_expand, self.key_rot).view(self.num_envs, -1)
-        # local_body_rot = quat_to_tan_norm(quat_mul(heading_rot_inv_expand, self.key_rot).view(-1,4)).view(self.num_envs, -1) # [N, K, 4]
+        if self.activate_quat_to_tan_norm:
+            local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(self.num_envs, -1) # [N, K, 4]
         local_body_vel = quat_apply(heading_rot_inv_expand, self.key_vel).view(self.num_envs, -1)
         local_body_ang_vel = quat_apply(heading_rot_inv_expand, self.key_ang_vel).view(self.num_envs, -1)
 
@@ -551,6 +574,8 @@ class SMPLRobot(LeggedRobot):
         diff_local_key_rot_flat =quat_mul(
             quat_mul(heading_rot_inv_expand, diff_global_key_rot),
             heading_rot_expand).view(self.num_envs, -1)
+        if self.activate_quat_to_tan_norm:
+            diff_local_key_rot_flat = quat_to_tan_norm(diff_local_key_rot_flat.view(-1, 4)).view(self.num_envs, -1)
 
         diff_global_key_vel = self.ref_key_vel - self.key_vel
         diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_vel).view(self.num_envs, -1)
@@ -563,6 +588,8 @@ class SMPLRobot(LeggedRobot):
         # 这里的 local_ref_key_rot 是在 heading frame 下的，而不是相对父节点的！
         local_ref_key_rot = quat_mul(heading_rot_inv_expand, self.ref_key_rot).view(
             self.num_envs, -1)
+        if self.activate_quat_to_tan_norm:
+            local_ref_key_rot = quat_to_tan_norm(local_ref_key_rot.view(-1, 4)).view(self.num_envs, -1)
 
         obs.append(diff_local_key_pos_flat)  # 3
         obs.append(diff_local_key_rot_flat)  # 4
@@ -593,8 +620,28 @@ class SMPLRobot(LeggedRobot):
         reward_rot = self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err)
         reward_vel = self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err)
         reward_ang_vel = self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
+
         reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
+        self.extras['reward_pos'] = reward_pos
+        self.extras['reward_rot'] = reward_rot
+        self.extras['reward_vel'] = reward_vel
+        self.extras['reward_ang_vel'] = reward_ang_vel
+        self.extras['pos_err'] = pos_err
+        self.extras['rot_err'] = rot_err
+        self.extras['vel_err'] = vel_err
+        self.extras['ang_vel_err'] = ang_vel_err
+
         return reward
+
+    def _reward_power(self):
+        # reward 是不需要 heading 归一化 的！
+        """
+        Computes the imitation reward based on the difference between the current and reference key body positions and rotations.
+        The reward is computed in the heading frame of the root body.
+        """
+        reward = torch.abs(torch.multiply(self.torques, self.dof_vel)).sum(dim=-1)
+        return reward
+
 
     # def _reward_torques(self):
     #     # Penalize torques
