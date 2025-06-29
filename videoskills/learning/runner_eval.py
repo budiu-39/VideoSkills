@@ -5,12 +5,17 @@ from tqdm import tqdm
 import wandb
 import os
 import joblib
+import time
 from rsl_rl.env import VecEnv
 import statistics
 from collections import defaultdict
 from videoskills.utils.metrics import compute_metrics
+from collections import deque
+from torch.utils.tensorboard import SummaryWriter
 
-class RunnerWithEval(OnPolicyRunner):
+
+
+class OnPolicyRunnerEval(OnPolicyRunner):
     def __init__(self, env: VecEnv,
                  train_cfg,
                  log_dir=None,
@@ -49,11 +54,11 @@ class RunnerWithEval(OnPolicyRunner):
             random_pad = np.random.choice(motion_ids, size=num_pad, replace=True).tolist()
             padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
-            with torch.inference_mode():
-                self.env.reset_with_motion_ids(padded_ids)
-                self.env.gym.simulate(self.env.sim)    # safe reset
-                obs = self.env.reset_with_motion_ids(padded_ids)
-                torch.cuda.empty_cache()
+            # with torch.inference_mode():
+            self.env.reset_with_motion_ids(padded_ids)
+            self.env.gym.simulate(self.env.sim)    # safe reset
+            obs = self.env.reset_with_motion_ids(padded_ids)
+            torch.cuda.empty_cache()
 
             cum_rewards = torch.zeros(num_envs, device=device)
             reward_until_fail = torch.zeros(num_envs, device=device)
@@ -67,7 +72,7 @@ class RunnerWithEval(OnPolicyRunner):
             done_flags[batch_size:] = True
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
-                with torch.inference_mode():
+                with torch.no_grad():
                     action = self.alg.actor_critic.act_inference(obs.to(device))
                     obs, _, rewards, dones, extras = self.env.step(action)
                     rewards = rewards.squeeze()
@@ -172,8 +177,9 @@ class RunnerWithEval(OnPolicyRunner):
         self.env.disable_data_recording()
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
-        with torch.inference_mode():
-            self.env.reset()
+
+        # with torch.inference_mode():
+        self.env.reset()
 
         if wandb.run is not None:
             wandb.log({

@@ -9,6 +9,7 @@ from scripts.poselib.skeleton.skeleton3d import SkeletonTree
 from videoskills.utils.motionlib.motion_lib import MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
+from torch import Tensor
 import xml.etree.ElementTree as ET
 import glob
 
@@ -28,8 +29,7 @@ class SMPLRobot(LeggedRobot):
         if self.activate_quat_to_tan_norm:
             self.cfg.env.num_observations = 358 + 576 + 69
 
-
-
+        self.activate_amp = True
 
         self._parse_cfg(self.cfg)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
@@ -456,15 +456,12 @@ class SMPLRobot(LeggedRobot):
         self.key_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 7:10]
         self.key_ang_vel[:] = self._rigid_body_state_reshaped[..., self.key_body_ids, 10:13]
 
-
         # self.gym.refresh_force_sensor_tensor(self.sim)
         # tau_cmd = self.dof_force_tensor
         # tau_react = self.torques
         # torque_gap = tau_cmd - tau_react
 
         super().post_physics_step()
-
-
 
         if self.cfg.env.land_event_detect:
             self.land_event_detection()
@@ -504,11 +501,6 @@ class SMPLRobot(LeggedRobot):
 
         # return super()._post_physics_step_callback()
 
-    # TODO: 重写 compute_observations，目前只是将参考的 dof_pos 和当前的 dof_pos 相减，还可以引入更多，比如 root
-    # key body 也没有加进来
-    # hieght 于 rotation 应该也是有关系的吧？
-    # 是 local 的
-
     def reset(self):
         """ Reset all robots"""
         self.reset_idx(torch.arange(self.num_envs, device=self.device))
@@ -537,10 +529,38 @@ class SMPLRobot(LeggedRobot):
         self.ref_key_vel = motion_state["key_vel"]
         self.ref_key_ang_vel = motion_state["key_ang_vel"]
 
-        humanoid_obs = self.compute_humanoid_observations()
-        task_obs = self.compute_task_observations()
+        humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
+                                                        self.key_pos, self.key_rot,
+                                                        self.key_vel, self.key_ang_vel,
+                                                        activate_quat_to_tan_norm=self.activate_quat_to_tan_norm
+                                                        )
+
+
+        task_obs = compute_task_observations_jit(self.base_pos, self.base_quat,
+                                                       self.key_pos, self.key_rot,
+                                                       self.key_vel, self.key_ang_vel,
+                                                       self.ref_key_pos, self.ref_key_rot,
+                                                       self.ref_key_vel, self.ref_key_ang_vel,
+                                                       activate_quat_to_tan_norm=self.activate_quat_to_tan_norm
+                                                       )
 
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
+
+
+        if self.activate_amp:
+            amp_obs_ref = compute_humanoid_observations_jit(
+                base_pos=self.ref_root_pos,
+                base_quat=self.ref_root_rot,
+                key_pos=self.ref_key_pos,
+                key_rot=self.ref_key_rot,
+                key_vel=self.ref_key_vel,
+                key_ang_vel=self.ref_key_ang_vel,
+                activate_quat_to_tan_norm=self.activate_quat_to_tan_norm
+            )
+            self.extras["amp_state"] = {
+                "sim": humanoid_obs,  # agent 当前状态（通过 compute_amp_observations() 得到）
+                "ref": amp_obs_ref  # 对应的参考状态（通过 get_ref_observations() 得到）
+            }
 
     def compute_humanoid_observations(self):
         root_h = self.base_pos[:, 2:3]
@@ -733,3 +753,83 @@ class SMPLRobot(LeggedRobot):
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
 
+
+@torch.jit.script
+def compute_humanoid_observations_jit(
+    base_pos: Tensor,
+    base_quat: Tensor,
+    key_pos: Tensor,
+    key_rot: Tensor,
+    key_vel: Tensor,
+    key_ang_vel: Tensor,
+    activate_quat_to_tan_norm: bool = False
+) -> Tensor:
+    root_h = base_pos[:, 2:3]
+    heading_rot_inv = calc_heading_quat_inv(base_quat)
+    heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, key_pos.shape[1], -1)
+    root_base_expand = base_pos.unsqueeze(1).expand(-1, key_pos.shape[1], -1)
+    local_body_pos = quat_apply(heading_rot_inv_expand, key_pos - root_base_expand)[:, 1:].reshape(base_pos.shape[0], -1)
+    local_body_rot = quat_mul(heading_rot_inv_expand, key_rot).reshape(base_pos.shape[0], -1)
+    if activate_quat_to_tan_norm:
+        local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(base_pos.shape[0], -1)
+    local_body_vel = quat_apply(heading_rot_inv_expand, key_vel).reshape(base_pos.shape[0], -1)
+    local_body_ang_vel = quat_apply(heading_rot_inv_expand, key_ang_vel).reshape(base_pos.shape[0], -1)
+    return torch.cat((root_h, local_body_pos, local_body_rot, local_body_vel, local_body_ang_vel), dim=-1)
+
+
+@torch.jit.script
+def compute_task_observations_jit(
+    base_pos: Tensor,             # [N, 3]
+    base_quat: Tensor,            # [N, 4]
+    key_pos: Tensor,              # [N, K, 3]
+    key_rot: Tensor,              # [N, K, 4]
+    key_vel: Tensor,              # [N, K, 3]
+    key_ang_vel: Tensor,          # [N, K, 3]
+    ref_key_pos: Tensor,          # [N, K, 3]
+    ref_key_rot: Tensor,          # [N, K, 4]
+    ref_key_vel: Tensor,          # [N, K, 3]
+    ref_key_ang_vel: Tensor,      # [N, K, 3]
+    activate_quat_to_tan_norm: bool = False
+) -> Tensor:
+    # 引用 jit-safe 工具函数
+    heading_rot_inv = calc_heading_quat_inv(base_quat)         # [N, 4]
+    heading_rot = calc_heading_quat(base_quat)                 # [N, 4]
+    N, K, _ = key_pos.shape
+
+    heading_rot_expand = heading_rot.unsqueeze(1).expand(N, K, 4)
+    heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(N, K, 4)
+
+    diff_global_key_pos = ref_key_pos - key_pos
+    diff_local_key_pos_flat = quat_apply(heading_rot_inv_expand, diff_global_key_pos).reshape(N, -1)
+
+    diff_global_key_rot = quat_mul(ref_key_rot, quat_conjugate(key_rot))
+    diff_local_key_rot_flat = quat_mul(
+        quat_mul(heading_rot_inv_expand, diff_global_key_rot),
+        heading_rot_expand
+    ).reshape(N, -1)
+    if activate_quat_to_tan_norm:
+        diff_local_key_rot_flat = quat_to_tan_norm(diff_local_key_rot_flat.view(-1, 4)).view(N, -1)
+
+    diff_global_key_vel = ref_key_vel - key_vel
+    diff_local_key_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_vel).reshape(N, -1)
+
+    diff_global_key_ang_vel = ref_key_ang_vel - key_ang_vel
+    diff_local_key_ang_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_key_ang_vel).reshape(N, -1)
+
+    local_ref_key_pos = ref_key_pos - base_pos.unsqueeze(1).expand(N, K, 3)
+    local_ref_key_pos = quat_apply(heading_rot_inv_expand, local_ref_key_pos).reshape(N, -1)
+
+    local_ref_key_rot = quat_mul(heading_rot_inv_expand, ref_key_rot).reshape(N, -1)
+    if activate_quat_to_tan_norm:
+        local_ref_key_rot = quat_to_tan_norm(local_ref_key_rot.view(-1, 4)).view(N, -1)
+
+    obs = torch.cat([
+        diff_local_key_pos_flat,
+        diff_local_key_rot_flat,
+        diff_local_key_vel_flat,
+        diff_local_key_ang_vel_flat,
+        local_ref_key_pos,
+        local_ref_key_rot
+    ], dim=-1)
+
+    return obs

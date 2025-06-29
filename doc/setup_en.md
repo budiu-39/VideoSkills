@@ -35,13 +35,13 @@ source ~/.bashrc
 Use the following command to create a virtual environment:
 
 ```bash
-conda create -n unitree-rl python=3.8
+conda create -n unitree-learning python=3.8
 ```
 
 ### 1.3 Activate the Virtual Environment
 
 ```bash
-conda activate unitree-rl
+conda activate unitree-learning
 ```
 
 ---

@@ -90,22 +90,18 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
-        base_height_target = 0.25
         class task_w:
+            k_ang_vel = 0.1
             k_pos = 100
             k_rot = 10
             k_vel = 0.1
-            k_ang_vel = 0.1
+            w_ang_vel = 0.1
             w_pos = 0.5
             w_rot = 0.5
             w_vel = 0.1
-            w_ang_vel = 0.1
         class scales:
             imitation = 1.0
-            # torques = -0.00001
-            power = - 0.00005
-            # collision = -1.
-            # dof_pos_limits = -10.0
+            torques = -0.0000001
 
     class sim(LeggedRobotCfg.sim):
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
@@ -130,10 +126,10 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
-        entropy_coef = 0.01
+        entropy_coef = 0.002
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_w_power_reg' # 'smpl_ppo'
+        run_name = 'SOTA_w_0002amp' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
         # load_run = "universal_old_toruqe_new_lr"
@@ -149,5 +145,23 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # checkpoint = '6000'
         eval_interval = 2000
 
+    amp_cfg = {
+        "disc_batch": 512,
+        "disc_updates": 1,
+        "reward_coef": 0.002,
+
+        "state_dim": 358,             # 请替换为实际 amp_obs 维度
+        "hidden_dims": [1024, 512],
+        "normalize_input": True,
+        "lr": 3e-4,
+        "grad_penalty_coef": 1.0,
+        "logit_l2_coef": 1e-5,
+        "weight_decay": 1e-6,
+
+        "dataset_cfg": {
+            "replay_buffer_size": 200000,
+            "demo_buffer_size": 200000
+        }
+    }
 
 

@@ -116,7 +116,6 @@ class LeggedRobot(BaseTask):
         #                 'key_rot': self.key_rot[env_id].detach().cpu().numpy(),
         #                 'ref_key_rot': self.ref_key_rot[env_id].detach().cpu().numpy(),}
 
-        # TODO: 目前这个逻辑还有问题，就是也会记录失败的数据！
         if self.is_recording_data:
             key_pos_cpu = self.key_pos.detach().cpu().numpy()
             ref_key_pos_cpu = self.ref_key_pos.detach().cpu().numpy()
@@ -138,8 +137,6 @@ class LeggedRobot(BaseTask):
 
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
-
-        # self._post_physics_step_callback()
 
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -230,6 +227,8 @@ class LeggedRobot(BaseTask):
         # add noise if needed
         if self.add_noise:
             self.obs_buf += (2 * torch.rand_like(self.obs_buf) - 1) * self.noise_scale_vec
+
+
 
     def create_sim(self):
         """ Creates simulation, terrain and evironments

@@ -35,13 +35,13 @@ source ~/.bashrc
 使用以下命令创建虚拟环境：
 
 ```bash
-conda create -n unitree-rl python=3.8
+conda create -n unitree-learning python=3.8
 ```
 
 ### 1.3 激活虚拟环境
 
 ```bash
-conda activate unitree-rl
+conda activate unitree-learning
 ```
 
 ---
