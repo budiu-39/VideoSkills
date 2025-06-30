@@ -22,7 +22,6 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
         self.amp_disc = AMPDiscriminator(
             state_dim=amp_cfg["state_dim"],
             hidden_dims=amp_cfg["hidden_dims"],
-            normalize_input=amp_cfg.get("normalize_input", False),
             lr=amp_cfg.get("lr", 3e-4),
             grad_penalty_coef=amp_cfg.get("grad_penalty_coef", 1.0),
             logit_l2_coef=amp_cfg.get("logit_l2_coef", 1e-5),
@@ -62,8 +61,9 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
                 obs = obs.to(self.device)
 
                 # AMP reward
-                amp_obs_sim = infos["amp_state"]["sim"].to(self.device)
-                amp_obs_demo = infos["amp_state"]["ref"].to(self.device)
+                # 思考了一下这样设计会导致 disc 总是能同时看到同一帧的 sim 和 ref，这样会导致 disc 过拟合（？）总之非常严格。
+                amp_obs_sim = infos["amp_state"].to(self.device)
+                amp_obs_demo = self.env.fetch_amp_obs_demo(self.env.num_envs)
 
                 self.replay_buf.store({"state": amp_obs_sim})
                 self.demo_buf.store({"state": amp_obs_demo})

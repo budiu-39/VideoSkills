@@ -109,18 +109,13 @@ class LeggedRobot(BaseTask):
 
         # TODO: 意识到了一个问题，自己并没有把很多重要的函数和参数写在这个通用的类里面，而是放在了SMPL子类里。虽然他们明明是通用的，比如这个
         #  key_pos
-        # if self.eval_mode:
-        #     for env_id in range(self.num_envs):
-        #         self.extras['recorded_data'][env_id] = { 'key_pos': self.key_pos[env_id].detach().cpu().numpy(),
-        #                 'ref_key_pos': self.ref_key_pos[env_id].detach().cpu().numpy(),
-        #                 'key_rot': self.key_rot[env_id].detach().cpu().numpy(),
-        #                 'ref_key_rot': self.ref_key_rot[env_id].detach().cpu().numpy(),}
+
 
         if self.is_recording_data:
-            key_pos_cpu = self.key_pos.detach().cpu().numpy()
-            ref_key_pos_cpu = self.ref_key_pos.detach().cpu().numpy()
-            key_rot_cpu = self.key_rot.detach().cpu().numpy()
-            ref_key_rot_cpu = self.ref_key_rot.detach().cpu().numpy()
+            body_pos_cpu = self.body_pos.detach().cpu().numpy()
+            ref_body_pos_cpu = self.ref_body_pos.detach().cpu().numpy()
+            body_rot_cpu = self.body_rot.detach().cpu().numpy()
+            ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
             done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
 
             # 取所有 still-alive 的环境索引
@@ -129,10 +124,10 @@ class LeggedRobot(BaseTask):
             # 批量记录，不用 for-loop 判断
             for env_id in alive_ids:
                 self.recorded_data[env_id].append({
-                    'key_pos': key_pos_cpu[env_id],
-                    'ref_key_pos': ref_key_pos_cpu[env_id],
-                    'key_rot': key_rot_cpu[env_id],
-                    'ref_key_rot': ref_key_rot_cpu[env_id],
+                    'body_pos': body_pos_cpu[env_id],
+                    'ref_body_pos': ref_body_pos_cpu[env_id],
+                    'body_rot': body_rot_cpu[env_id],
+                    'ref_body_rot': ref_body_rot_cpu[env_id],
                 })
 
         if self.cfg.domain_rand.push_robots:
@@ -780,15 +775,15 @@ class LeggedRobot(BaseTask):
         os.makedirs(output_dir, exist_ok=True)
         for env_id, motion_id in enumerate(motion_ids):
             data = self.recorded_data[env_id]
-            key_pos = np.stack([f['key_pos'] for f in data], axis=0)
-            ref_pos = np.stack([f['ref_key_pos'] for f in data], axis=0)
-            key_rot = np.stack([f['key_rot'] for f in data], axis=0)
-            ref_rot = np.stack([f['ref_key_rot'] for f in data], axis=0)
+            body_pos = np.stack([f['body_pos'] for f in data], axis=0)
+            ref_pos = np.stack([f['ref_body_pos'] for f in data], axis=0)
+            body_rot = np.stack([f['body_rot'] for f in data], axis=0)
+            ref_rot = np.stack([f['ref_body_rot'] for f in data], axis=0)
 
             filename = f"motion_{motion_id}_env_{env_id}.npz"
             filepath = os.path.join(output_dir, filename)
             np.savez_compressed(filepath,
-                                pred_pos=key_pos,
+                                pred_pos=body_pos,
                                 gt_pos=ref_pos,
-                                pred_rot=key_rot,
+                                pred_rot=body_rot,
                                 gt_rot=ref_rot)

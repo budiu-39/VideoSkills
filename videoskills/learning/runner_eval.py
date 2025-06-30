@@ -131,10 +131,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 frames = motion_id_to_data[motion_id]
                 if len(frames) == 0:
                     continue  # skip empty
-                pred_pos_all.append(np.stack([f["key_pos"] for f in frames], axis=0))  # (T, J, 3)
-                gt_pos_all.append(np.stack([f["ref_key_pos"] for f in frames], axis=0))  # (T, J, 3)
-                pred_rot_all.append(np.stack([f["key_rot"] for f in frames], axis=0))  # (T, J, 4)
-                gt_rot_all.append(np.stack([f["ref_key_rot"] for f in frames], axis=0))  # (T, J, 4)
+                pred_pos_all.append(np.stack([f["body_pos"] for f in frames], axis=0))  # (T, J, 3)
+                gt_pos_all.append(np.stack([f["ref_body_pos"] for f in frames], axis=0))  # (T, J, 3)
+                pred_rot_all.append(np.stack([f["body_rot"] for f in frames], axis=0))  # (T, J, 4)
+                gt_rot_all.append(np.stack([f["ref_body_rot"] for f in frames], axis=0))  # (T, J, 4)
 
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
