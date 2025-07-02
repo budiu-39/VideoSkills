@@ -77,7 +77,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
-        decimation = 4
+        decimation = 2
 
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
@@ -86,8 +86,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
-        pd_scale = 0.333
-        # pd_scale = 0.1
+        # pd_scale = 0.333
+        pd_scale = 0.1
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -102,15 +102,16 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_rot = 0.5
             w_vel = 0.1
         class scales:
-            imitation = 10.0
-            torques = -0.000001
+            imitation = 1.0
+            # torques = -0.0000001
+            torques = -0.0000001
 
     class sim(LeggedRobotCfg.sim):
-        # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
-        dt = 0.005
+        dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
+        # dt = 0.005
 
     class amp:
-        activate = True
+        activate = False
         num_amp_obs_steps = 10
         num_amp_obs = 232
 
@@ -136,7 +137,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.002
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_w_0002amp' # 'smpl_ppo'
+        run_name = '60hz_01pd_1e-6' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
 
         # load_run = "universal_old_toruqe_new_lr"
@@ -155,9 +156,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     amp_cfg = {
         "disc_batch": 512,
         "disc_updates": 1,
-        "reward_coef": 0.5,
-
-        "state_dim": 2320,             # 请替换为实际 amp_obs 维度
+        "reward_coef": 1,
+        "state_dim": 2320,
         "hidden_dims": [1024, 512],
         "normalize_input": True,
         "lr": 3e-4,

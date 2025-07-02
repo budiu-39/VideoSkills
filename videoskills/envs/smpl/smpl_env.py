@@ -761,6 +761,8 @@ class SMPLRobot(LeggedRobot):
         self._resample_commands(env_ids)
 
         # reset buffers
+        # if self.actions.is_inference():  # PyTorch ≥2.2
+        #     self.actions = self.actions.clone()
         self.actions[env_ids] = 0.
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.

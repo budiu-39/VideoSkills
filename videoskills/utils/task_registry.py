@@ -121,7 +121,7 @@ class TaskRegistry():
         
         train_cfg_dict = class_to_dict(train_cfg)
         # OnPolicyRunnerAMP
-        runner = OnPolicyRunnerAMP(env, train_cfg_dict, log_dir, device=args.rl_device)
+        runner = OnPolicyRunnerEval(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
         resume = train_cfg.runner.resume
         if resume:

@@ -19,7 +19,7 @@ def train(args):
         run_name = train_cfg.runner.run_name
         wandb.init(project=args.wandb_project, name=run_name,
                    dir=log_dir,
-                   config={**vars(args), **train_cfg_dict, **env_cfg_dict}, sync_tensorboard=True)
+                   config={**vars(args), **train_cfg_dict, **env_cfg_dict})
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)

@@ -54,10 +54,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             random_pad = np.random.choice(motion_ids, size=num_pad, replace=True).tolist()
             padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
-            # with torch.inference_mode():
-            self.env.reset_with_motion_ids(padded_ids)
-            self.env.gym.simulate(self.env.sim)    # safe reset
-            obs = self.env.reset_with_motion_ids(padded_ids)
+            with torch.inference_mode():
+                self.env.reset_with_motion_ids(padded_ids)
+            self.env.gym.simulate(self.env.sim)
+            with torch.inference_mode():# safe reset
+                obs = self.env.reset_with_motion_ids(padded_ids)
             torch.cuda.empty_cache()
 
             cum_rewards = torch.zeros(num_envs, device=device)
@@ -72,7 +73,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             done_flags[batch_size:] = True
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
-                with torch.no_grad():
+                with torch.inference_mode():
                     action = self.alg.actor_critic.act_inference(obs.to(device))
                     obs, _, rewards, dones, extras = self.env.step(action)
                     rewards = rewards.squeeze()
@@ -169,7 +170,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         motion_sampling_state_path = os.path.join(self.log_dir, f"motion_sampling_state.pkl")
         motion_lib.export_sampling_state(motion_sampling_state_path)
 
-
         print(f"[Eval] Success rate: {success_rate:.2%}")
         print(f"[Eval] Mean reward across {len(motion_ids)} motions: {mean_rew:.2f}")
         print(f"[Eval] Avg. reward until failure (only failed): {np.mean(reward_until_fail_list):.2f}")
@@ -177,9 +177,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.disable_data_recording()
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
-
-        # with torch.inference_mode():
-        self.env.reset()
+        with torch.inference_mode():
+            self.env.reset()
 
         if wandb.run is not None:
             wandb.log({
@@ -200,89 +199,149 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 if len(v) > 0:
                     wandb_metric_dict[f"Eval/{k}_success"] = np.mean(v).item()
 
-            wandb.log(wandb_metric_dict)
+            wandb.log(wandb_metric_dict, step=self.current_learning_iteration)
 
-        return {
-            "Eval/mean_reward": mean_rew,
-            "Eval/success_rate": success_rate,
-            "Eval/reward_per_motion": total_rewards,
-            "Eval/success_flags": success_flags,
-            "Eval/reward_until_fail": reward_until_fail_list
-        }
+        return
+
+    # def log(self, locs, width=80, pad=35):
+    #     self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
+    #     self.tot_time += locs['collection_time'] + locs['learn_time']
+    #     iteration_time = locs['collection_time'] + locs['learn_time']
+    #
+    #     ep_string = f''
+    #     if locs['ep_infos']:
+    #         for key in locs['ep_infos'][0]:
+    #             infotensor = torch.tensor([], device=self.device)
+    #             for ep_info in locs['ep_infos']:
+    #                 # handle scalar and zero dimensional tensor infos
+    #                 if not isinstance(ep_info[key], torch.Tensor):
+    #                     ep_info[key] = torch.Tensor([ep_info[key]])
+    #                 if len(ep_info[key].shape) == 0:
+    #                     ep_info[key] = ep_info[key].unsqueeze(0)
+    #                 infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
+    #             value = torch.mean(infotensor)
+    #             self.writer.add_scalar('Episode/' + key, value, locs['it'])
+    #             ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
+    #     mean_std = self.alg.actor_critic.std.mean()
+    #     fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
+    #
+    #     self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
+    #     self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
+    #     self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
+    #     self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
+    #     self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
+    #     self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
+    #     self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
+    #     if len(locs['rewbuffer']) > 0:
+    #         self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
+    #         self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
+    #         self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
+    #         self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+    #
+    #
+    #         log_reward_pos = statistics.mean(locs['infos']['reward_pos'].cpu().numpy().tolist())
+    #         log_reward_rot = statistics.mean(locs['infos']['reward_rot'].cpu().numpy().tolist())
+    #         log_reward_vel = statistics.mean(locs['infos']['reward_vel'].cpu().numpy().tolist())
+    #         log_reward_ang_vel = statistics.mean(locs['infos']['reward_ang_vel'].cpu().numpy().tolist())
+    #         self.writer.add_scalar('Imitation/reward_pos', log_reward_pos, locs['it'])
+    #         self.writer.add_scalar('Imitation/reward_rot', log_reward_rot, locs['it'])
+    #         self.writer.add_scalar('Imitation/reward_vel', log_reward_vel, locs['it'])
+    #         self.writer.add_scalar('Imitation/reward_ang_vel', log_reward_ang_vel, locs['it'])
+    #
+    #         log_pos_err = statistics.mean(locs['infos']['pos_err'].cpu().numpy().tolist())
+    #         log_rot_err = statistics.mean(locs['infos']['rot_err'].cpu().numpy().tolist())
+    #         log_vel_err = statistics.mean(locs['infos']['vel_err'].cpu().numpy().tolist())
+    #         log_ang_vel_err = statistics.mean(locs['infos']['ang_vel_err'].cpu().numpy().tolist())
+    #         self.writer.add_scalar('Imitation/pos_err', log_pos_err, locs['it'])
+    #         self.writer.add_scalar('Imitation/rot_err', log_rot_err, locs['it'])
+    #         self.writer.add_scalar('Imitation/vel_err', log_vel_err, locs['it'])
+    #         self.writer.add_scalar('Imitation/ang_vel_err', log_ang_vel_err, locs['it'])
+    #
+    #     str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
+    #
+    #     if len(locs['rewbuffer']) > 0:
+    #         log_string = (f"""{'#' * width}\n"""
+    #                       f"""{str.center(width, ' ')}\n\n"""
+    #                       f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
+    #                         'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+    #                       f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+    #                       f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
+    #                       f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
+    #                       f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
+    #     else:
+    #         log_string = (f"""{'#' * width}\n"""
+    #                       f"""{str.center(width, ' ')}\n\n"""
+    #                       f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
+    #                         'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
+    #                       f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
+    #                       f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n""")
+    #
+    #     log_string += ep_string
+    #     log_string += (f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n""")
+    #     print(log_string)
 
     def log(self, locs, width=80, pad=35):
+        it = locs['it']
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']
-        iteration_time = locs['collection_time'] + locs['learn_time']
 
-        ep_string = f''
+        # ========== 构建 wandb metrics ==========
+        wandb_metrics = {
+            "Loss/value_function": locs['mean_value_loss'],
+            "Loss/surrogate": locs['mean_surrogate_loss'],
+            "Loss/learning_rate": self.alg.learning_rate,
+            "Perf/collection_time": locs['collection_time'],
+            "Perf/learning_time": locs['learn_time'],
+            "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
+                        locs['collection_time'] + locs['learn_time']),
+            "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
+        }
+
+        # 训练指标
+        if len(locs['rewbuffer']) > 0:
+            mean_rew = statistics.mean(locs['rewbuffer'])
+            mean_len = statistics.mean(locs['lenbuffer'])
+            wandb_metrics.update({
+                "Train/mean_reward": mean_rew,
+                "Train/mean_episode_length": mean_len,
+            })
+
+        # imitation rewards
+        for key in ['reward_pos', 'reward_rot', 'reward_vel', 'reward_ang_vel']:
+            if key in locs['infos']:
+                val = locs['infos'][key]
+                wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+                    np.mean(val))
+
+        # imitation errors
+        for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
+            if key in locs['infos']:
+                val = locs['infos'][key]
+                wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+                    np.mean(val))
+
+        # ep_infos
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:
-                infotensor = torch.tensor([], device=self.device)
-                for ep_info in locs['ep_infos']:
-                    # handle scalar and zero dimensional tensor infos
-                    if not isinstance(ep_info[key], torch.Tensor):
-                        ep_info[key] = torch.Tensor([ep_info[key]])
-                    if len(ep_info[key].shape) == 0:
-                        ep_info[key] = ep_info[key].unsqueeze(0)
-                    infotensor = torch.cat((infotensor, ep_info[key].to(self.device)))
-                value = torch.mean(infotensor)
-                self.writer.add_scalar('Episode/' + key, value, locs['it'])
-                ep_string += f"""{f'Mean episode {key}:':>{pad}} {value:.4f}\n"""
-        mean_std = self.alg.actor_critic.std.mean()
-        fps = int(self.num_steps_per_env * self.env.num_envs / (locs['collection_time'] + locs['learn_time']))
+                vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
+                wandb_metrics[f"Episode/{key}"] = sum(vals) / len(vals)
 
-        self.writer.add_scalar('Loss/value_function', locs['mean_value_loss'], locs['it'])
-        self.writer.add_scalar('Loss/surrogate', locs['mean_surrogate_loss'], locs['it'])
-        self.writer.add_scalar('Loss/learning_rate', self.alg.learning_rate, locs['it'])
-        self.writer.add_scalar('Policy/mean_noise_std', mean_std.item(), locs['it'])
-        self.writer.add_scalar('Perf/total_fps', fps, locs['it'])
-        self.writer.add_scalar('Perf/collection time', locs['collection_time'], locs['it'])
-        self.writer.add_scalar('Perf/learning_time', locs['learn_time'], locs['it'])
-        if len(locs['rewbuffer']) > 0:
-            self.writer.add_scalar('Train/mean_reward', statistics.mean(locs['rewbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_episode_length', statistics.mean(locs['lenbuffer']), locs['it'])
-            self.writer.add_scalar('Train/mean_reward/time', statistics.mean(locs['rewbuffer']), self.tot_time)
-            self.writer.add_scalar('Train/mean_episode_length/time', statistics.mean(locs['lenbuffer']), self.tot_time)
+        # ========== wandb 记录 ==========
+        if wandb.run is not None:
+            wandb.log(wandb_metrics, step=it)
 
+        ep_info_str = ""
+        if locs['ep_infos']:
+            for key in locs['ep_infos'][0]:
+                vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
+                ep_mean = sum(vals) / len(vals)
+                wandb_metrics[f"Episode/{key}"] = ep_mean
+                if key in ["rew_imitation", "rew_torques"]:
+                    ep_info_str += f"  {key}: {ep_mean:.4f}"
 
-            log_reward_pos = statistics.mean(locs['infos']['reward_pos'].cpu().numpy().tolist())
-            log_reward_rot = statistics.mean(locs['infos']['reward_rot'].cpu().numpy().tolist())
-            log_reward_vel = statistics.mean(locs['infos']['reward_vel'].cpu().numpy().tolist())
-            log_reward_ang_vel = statistics.mean(locs['infos']['reward_ang_vel'].cpu().numpy().tolist())
-            self.writer.add_scalar('Imitation/reward_pos', log_reward_pos, locs['it'])
-            self.writer.add_scalar('Imitation/reward_rot', log_reward_rot, locs['it'])
-            self.writer.add_scalar('Imitation/reward_vel', log_reward_vel, locs['it'])
-            self.writer.add_scalar('Imitation/reward_ang_vel', log_reward_ang_vel, locs['it'])
-
-            log_pos_err = statistics.mean(locs['infos']['pos_err'].cpu().numpy().tolist())
-            log_rot_err = statistics.mean(locs['infos']['rot_err'].cpu().numpy().tolist())
-            log_vel_err = statistics.mean(locs['infos']['vel_err'].cpu().numpy().tolist())
-            log_ang_vel_err = statistics.mean(locs['infos']['ang_vel_err'].cpu().numpy().tolist())
-            self.writer.add_scalar('Imitation/pos_err', log_pos_err, locs['it'])
-            self.writer.add_scalar('Imitation/rot_err', log_rot_err, locs['it'])
-            self.writer.add_scalar('Imitation/vel_err', log_vel_err, locs['it'])
-            self.writer.add_scalar('Imitation/ang_vel_err', log_ang_vel_err, locs['it'])
-
-        str = f" \033[1m Learning iteration {locs['it']}/{self.current_learning_iteration + locs['num_learning_iterations']} \033[0m "
-
-        if len(locs['rewbuffer']) > 0:
-            log_string = (f"""{'#' * width}\n"""
-                          f"""{str.center(width, ' ')}\n\n"""
-                          f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                            'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                          f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
-                          f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n"""
-                          f"""{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}\n"""
-                          f"""{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}\n""")
-        else:
-            log_string = (f"""{'#' * width}\n"""
-                          f"""{str.center(width, ' ')}\n\n"""
-                          f"""{'Computation:':>{pad}} {fps:.0f} steps/s (collection: {locs[
-                            'collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)\n"""
-                          f"""{'Value function loss:':>{pad}} {locs['mean_value_loss']:.4f}\n"""
-                          f"""{'Surrogate loss:':>{pad}} {locs['mean_surrogate_loss']:.4f}\n""")
-
-        log_string += ep_string
-        log_string += (f"""{'Iteration time:':>{pad}} {iteration_time:.2f}s\n""")
-        print(log_string)
+        summary = f"[It {it:05d}]"
+        if mean_rew is not None and mean_len is not None:
+            summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+        summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
+        summary += ep_info_str
+        print(summary)
