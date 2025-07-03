@@ -17,17 +17,12 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_test_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split_mid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_split')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_valid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
-        # keybodys = ["R_Hand", "L_Hand", "R_Ankle", "L_Ankle"]
         bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
                              'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                              'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
@@ -77,7 +72,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
-        decimation = 2
+        decimation = 4
 
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
@@ -86,8 +81,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
-        # pd_scale = 0.333
-        pd_scale = 0.1
+        pd_scale = 0.333
+        # pd_scale = 0.1
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -103,12 +98,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_vel = 0.1
         class scales:
             imitation = 1.0
-            # torques = -0.0000001
             torques = -0.0000001
 
     class sim(LeggedRobotCfg.sim):
-        dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
-        # dt = 0.005
+        # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
+        dt = 0.005
 
     class amp:
         activate = False
@@ -126,54 +120,33 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
-        # only for 'ActorCriticRecurrent':
-        # rnn_type = 'lstm'
-        # rnn_hidden_size = 512
-        # rnn_num_layers = 1
-
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
-        entropy_coef = 0.002
+        entropy_coef = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = '60hz_01pd_1e-6' # 'smpl_ppo'
+        run_name = 'SOTA_obs_value_norm' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
+        use_amp_runner = False  # 可以联动！和 amp
+        normalize_value = True
+        normalize_obs = True
 
-        # load_run = "universal_old_toruqe_new_lr"
-        # load_run = "old_stuff"
-        # load_run = "universal_00001_torque_1000_imi_rotate"
-        # load_run = "01pd_strictET_100imi"
-        # load_run = "universal_old_torque_small_lr_noise_rotate_Jun22_10-17-04"
-        # load_run = "universal_small_lr_noise_rotate_imi_Jun22_11-28-07"
-        # load_run = "fixed_obs_00001_torque_100_imi_0001_lr_strict_RT_Jun25_03-29-39"
-        # load_run = "universal_00001_torque_1000_imi_rotate"
-        # load_run = "01pd"
-        # load_run = 'universal_smpl_ref_out_Jun21_01-33-52' # -1 = last run
         # checkpoint = '6000'
         eval_interval = 2000
 
-    amp_cfg = {
-        "disc_batch": 512,
-        "disc_updates": 1,
-        "reward_coef": 1,
-        "state_dim": 2320,
-        "hidden_dims": [1024, 512],
-        "normalize_input": True,
-        "lr": 3e-4,
-        "grad_penalty_coef": 1.0,
-        "logit_l2_coef": 1e-5,
-        "weight_decay": 0.0001,
+    class amp_config:
+        disc_batch = 512
+        disc_updates = 1
+        reward_coef = 1
+        state_dim = 2320
+        hidden_dims = [1024, 512]
+        normalize_input = True
+        lr = 3e-4
+        grad_penalty_coef = 1.0
+        logit_l2_coef = 1e-5
+        weight_decay = 0.0001
 
-        "dataset_cfg": {
-            "replay_buffer_size": 200000,
-            "demo_buffer_size": 200000
-        }
-    }
-
-
-# disc_coef: 5
-# disc_logit_reg: 0.01
-# disc_grad_penalty: 5
-# disc_reward_scale: 2
-# disc_weight_decay: 0.0001
+        class dataset_cfg:
+            replay_buffer_size = 200000
+            demo_buffer_size = 200000

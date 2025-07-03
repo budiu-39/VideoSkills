@@ -1,19 +1,17 @@
-from rsl_rl.runners import OnPolicyRunner
-from videoskills.learning.runner_eval import OnPolicyRunnerEval
-from videoskills.learning.algorithms.amp_discriminator import AMPDiscriminator
-from videoskills.learning.algorithms.replay_buffer import ReplayBuffer
+from videoskills.runner.runner_eval import OnPolicyRunnerEval
+from videoskills.learning.amp_discriminator import AMPDiscriminator
+from videoskills.learning.replay_buffer import ReplayBuffer
 from collections import deque
 import torch
 import os
 import time
 import statistics
 
-
 class OnPolicyRunnerAMP(OnPolicyRunnerEval):
     def __init__(self, env, train_cfg, log_dir, device):
         super().__init__(env, train_cfg, log_dir, device)
 
-        amp_cfg = train_cfg["amp_cfg"]
+        amp_cfg = train_cfg["amp_config"]
         self.disc_batch = amp_cfg.get("disc_batch", 512)
         self.n_disc_updates = amp_cfg.get("disc_updates", 1)
         self.disc_coef = amp_cfg.get("reward_coef", 0.5)
@@ -53,42 +51,42 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             roll_start = time.time()
+            with torch.inference_mode():
+                for i in range(self.num_steps_per_env):
+                    act = self.alg.act(obs, critic_obs)
+                    obs, _, env_rew, done, infos = self.env.step(act)
+                    critic_obs = obs.to(self.device)
+                    obs = obs.to(self.device)
 
-            for i in range(self.num_steps_per_env):
-                act = self.alg.act(obs, critic_obs)
-                obs, _, env_rew, done, infos = self.env.step(act)
-                critic_obs = obs.to(self.device)
-                obs = obs.to(self.device)
+                    # AMP reward
+                    # 思考了一下这样设计会导致 disc 总是能同时看到同一帧的 sim 和 ref，这样会导致 disc 过拟合（？）总之非常严格。
+                    amp_obs_sim = infos["amp_state"].to(self.device)
+                    amp_obs_demo = self.env.fetch_amp_obs_demo(self.env.num_envs)
 
-                # AMP reward
-                # 思考了一下这样设计会导致 disc 总是能同时看到同一帧的 sim 和 ref，这样会导致 disc 过拟合（？）总之非常严格。
-                amp_obs_sim = infos["amp_state"].to(self.device)
-                amp_obs_demo = self.env.fetch_amp_obs_demo(self.env.num_envs)
+                    self.replay_buf.store({"state": amp_obs_sim})
+                    self.demo_buf.store({"state": amp_obs_demo})
 
-                self.replay_buf.store({"state": amp_obs_sim})
-                self.demo_buf.store({"state": amp_obs_demo})
+                    with torch.no_grad():
+                        disc_rew = self.amp_disc.compute_reward(amp_obs_sim)
 
-                with torch.no_grad():
-                    disc_rew = self.amp_disc.compute_reward(amp_obs_sim)
+                    env_rew = env_rew + self.disc_coef * disc_rew.squeeze(-1)
+                    self.alg.process_env_step(env_rew, done, infos)
 
-                env_rew = env_rew + self.disc_coef * disc_rew.squeeze(-1)
-                self.alg.process_env_step(env_rew, done, infos)
+                    # 统计
+                    cur_reward_sum += env_rew.squeeze(-1)
+                    cur_episode_length += 1
+                    new_ids = (done > 0).nonzero(as_tuple=False)
+                    rewbuffer.extend(cur_reward_sum[new_ids].cpu().tolist())
+                    lenbuffer.extend(cur_episode_length[new_ids].cpu().tolist())
+                    cur_reward_sum[new_ids] = 0
+                    cur_episode_length[new_ids] = 0
 
-                # 统计
-                cur_reward_sum += env_rew.squeeze(-1)
-                cur_episode_length += 1
-                new_ids = (done > 0).nonzero(as_tuple=False)
-                rewbuffer.extend(cur_reward_sum[new_ids].cpu().tolist())
-                lenbuffer.extend(cur_episode_length[new_ids].cpu().tolist())
-                cur_reward_sum[new_ids] = 0
-                cur_episode_length[new_ids] = 0
+                    if 'episode' in infos:
+                        ep_infos.append(infos['episode'])
 
-                if 'episode' in infos:
-                    ep_infos.append(infos['episode'])
+                collection_time = time.time() - roll_start
+                self.alg.compute_returns(obs)
 
-            collection_time = time.time() - roll_start
-
-            self.alg.compute_returns(obs)
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             learn_time = time.time() - roll_start - collection_time
 
