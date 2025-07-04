@@ -11,9 +11,10 @@ from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, qu
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
 from torch import Tensor
+import xml.etree.ElementTree as ET
+import glob
 
-
-class G1Robot(LeggedRobot):
+class LeggedRobotImi(LeggedRobot):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         self.cfg = cfg
         if self.cfg.dev:
@@ -251,14 +252,14 @@ class G1Robot(LeggedRobot):
 
         self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
 
-        # filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-        # props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
-        # assert (len(filter_ints) == len(props))
-        #
-        # for p_idx in range(len(props)):
-        #     props[p_idx].filter = filter_ints[p_idx]
-        # self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
+        props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
+        assert (len(filter_ints) == len(props))
+
+        for p_idx in range(len(props)):
+            props[p_idx].filter = filter_ints[p_idx]
+        self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
 
         self.robot_handles.append(robot_handle)
 

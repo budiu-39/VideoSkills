@@ -20,6 +20,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         }
     
     class env(LeggedRobotCfg.env):
+        eval_mode = False
         num_observations = 47
         num_privileged_obs = 50
         num_actions = 12
@@ -57,7 +58,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         decimation = 4
 
     class asset( LeggedRobotCfg.asset ):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_12dof.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_29dof_rev_1_0.xml'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
@@ -70,34 +71,40 @@ class G1RoughCfg( LeggedRobotCfg ):
         base_height_target = 0.78
         
         class scales( LeggedRobotCfg.rewards.scales ):
-            tracking_lin_vel = 1.0
-            tracking_ang_vel = 0.5
-            lin_vel_z = -2.0
-            ang_vel_xy = -0.05
-            orientation = -1.0
-            base_height = -10.0
-            dof_acc = -2.5e-7
-            dof_vel = -1e-3
-            feet_air_time = 0.0
-            collision = 0.0
-            action_rate = -0.01
-            dof_pos_limits = -5.0
-            alive = 0.15
-            hip_pos = -1.0
-            contact_no_vel = -0.2
-            feet_swing_height = -20.0
-            contact = 0.18
+            imitation = 1.0
+            torques = -0.00000002
+            # tracking_lin_vel = 1.0
+            # tracking_ang_vel = 0.5
+            # lin_vel_z = -2.0
+            # ang_vel_xy = -0.05
+            # orientation = -1.0
+            # base_height = -10.0
+            # dof_acc = -2.5e-7
+            # dof_vel = -1e-3
+            # feet_air_time = 0.0
+            # collision = 0.0
+            # action_rate = -0.01
+            # dof_pos_limits = -5.0
+            # alive = 0.15
+            # hip_pos = -1.0
+            # contact_no_vel = -0.2
+            # feet_swing_height = -20.0
+            # contact = 0.18
+    class amp:
+        activate = False
+        num_amp_obs_steps = 10
+        num_amp_obs = 232
 
 class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         init_noise_std = 0.8
-        actor_hidden_dims = [32]
-        critic_hidden_dims = [32]
+        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         # only for 'ActorCriticRecurrent':
-        rnn_type = 'lstm'
-        rnn_hidden_size = 64
-        rnn_num_layers = 1
+        # rnn_type = 'lstm'
+        # rnn_hidden_size = 64
+        # rnn_num_layers = 1
         
     class algorithm( LeggedRobotCfgPPO.algorithm ):
         entropy_coef = 0.01
@@ -106,5 +113,8 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
         max_iterations = 10000
         run_name = ''
         experiment_name = 'g1'
+        use_amp_runner = False
+        normalize_value = False
+        normalize_obs = False
 
   

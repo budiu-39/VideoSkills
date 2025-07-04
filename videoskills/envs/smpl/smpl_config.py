@@ -98,7 +98,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_vel = 0.1
         class scales:
             imitation = 1.0
-            torques = -0.0000001
+            torques = -0.00000002
 
     class sim(LeggedRobotCfg.sim):
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
@@ -108,7 +108,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         activate = False
         num_amp_obs_steps = 10
         num_amp_obs = 232
-
 
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
@@ -124,15 +123,21 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
         entropy_coef = 0.01
-
+        normalize_value = False
+        normalize_obs = True
+        
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_obs_value_norm' # 'smpl_ppo'
+        run_name = 'SOTA_obs_num_fixed' # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
-        normalize_value = True
-        normalize_obs = True
+
+        # load_run = 'SOTA_2e-8torque'
+        # load_run = 'obs_norm'
+        # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
+        # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
+        save_interval = 1000 # check for potential saves every this many iterations
         eval_interval = 2000
 
     class amp_config:

@@ -39,9 +39,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                                                        num_critic_obs,
                                                        self.env.num_actions,
                                                        **self.policy_cfg).to(self.device)
+        self.alg_cfg['num_obs'] = self.env.num_obs
+        self.alg_cfg['num_critic_obs'] = num_critic_obs
         # alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
-        self.alg = PPONorm(actor_critic, device=self.device,
-                           normalize_value= self.cfg['normalize_value'], **self.alg_cfg)
+        self.alg = PPONorm(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
@@ -58,18 +59,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         _, _ = self.env.reset()
 
-        ###
-
         self.normalize_obs = train_cfg["runner"].get("normalize_obs", True)
 
-        if self.normalize_obs:
-            obs_shape = (self.env.num_obs,)  # assuming 1D vector input
-            self.running_mean_std = RunningMeanStd(obs_shape).to(self.device)
-            self.running_mean_std_temp = None
-
-        self.normalize_value = train_cfg["runner"].get("normalize_value", False)
-        if self.normalize_value:
-            self.value_mean_std = RunningMeanStd((1,)).to(self.device)
+        # if self.normalize_obs:
+        #     obs_shape = (self.env.num_obs,)  # assuming 1D vector input
+        #     self.running_mean_std = RunningMeanStd(obs_shape).to(self.device)
+        #     self.running_mean_std_temp = None
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
         os.makedirs(self.eval_output_path, exist_ok=True)
@@ -96,18 +91,19 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
-            self._refresh_temp_rms()
+            # self._refresh_temp_rms()
+            self.alg._refresh_temp_rms()  # refresh temp running mean std
             # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
 
-                    if self.normalize_obs:
-                        obs_proc = self.running_mean_std_temp(obs)
-                        critic_proc = self.running_mean_std_temp(critic_obs)
-                    else:
-                        obs_proc, critic_proc = obs, critic_obs
+                    # if self.normalize_obs:
+                    #     obs_proc = self.running_mean_std_temp(obs)
+                    #     critic_proc = self.running_mean_std_temp(critic_obs)
+                    # else:
+                    #     obs_proc, critic_proc = obs, critic_obs
 
-                    actions = self.alg.act(obs_proc, critic_proc)
+                    actions = self.alg.act(obs, critic_obs)
 
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
 
@@ -116,9 +112,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     dones = dones.to(self.device)
                     critic_obs = privileged_obs.to(self.device) if privileged_obs is not None else obs
 
-                    if self.normalize_obs:
-                        self.running_mean_std.train()  # ensure in update mode
-                        self.running_mean_std(obs)
+                    # if self.normalize_obs:
+                    #     self.running_mean_std.train()  # ensure in update mode
+                    #     self.running_mean_std(obs)
 
                     self.alg.process_env_step(rewards, dones, infos)
 
@@ -140,12 +136,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 # Learning step
                 start = stop
 
-                if self.normalize_obs:
-                    critic_proc = self.running_mean_std_temp(critic_obs)
-                else:
-                    critic_proc = critic_obs.to(self.device)
+                # if self.normalize_obs:
+                #     critic_proc = self.running_mean_std_temp(critic_obs)
+                # else:
+                #     critic_proc = critic_obs.to(self.device)
 
-                self.alg.compute_returns(critic_proc)
+                self.alg.compute_returns(critic_obs)
 
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
@@ -173,7 +169,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         if motion_ids is None:
             motion_ids = list(range(motion_lib.num_motions()))
 
-        self._refresh_temp_rms()
+        # self._refresh_temp_rms()
 
         total_rewards = []
         success_flags = []
@@ -211,8 +207,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.inference_mode():
-                    if self.normalize_obs:
-                        obs = self.running_mean_std_temp(obs)
+                    if self.alg.normalize_obs:
+                        obs = self.alg.running_mean_std(obs)
 
                     action = self.alg.actor_critic.act_inference(obs)
                     obs, _, rewards, dones, extras = self.env.step(action)
@@ -343,12 +339,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         return
 
-    def _refresh_temp_rms(self):
-        # 深拷贝后冻结，让 rollout 期间使用的均值方差保持不变
-        if not self.normalize_obs:
-            return
-        self.running_mean_std_temp = copy.deepcopy(self.running_mean_std)
-        self.running_mean_std_temp.freeze()
+    # def _refresh_temp_rms(self):
+    #     # 深拷贝后冻结，让 rollout 期间使用的均值方差保持不变
+    #     if not self.normalize_obs:
+    #         return
+    #     self.running_mean_std_temp = copy.deepcopy(self.running_mean_std)
+    #     self.running_mean_std_temp.freeze()
 
     def log(self, locs, width=80, pad=35):
         it = locs['it']

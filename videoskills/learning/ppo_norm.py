@@ -1,22 +1,58 @@
 from rsl_rl.algorithms import PPO              # 假设原 PPO 放在这里
 from videoskills.utils.running_mean_std import RunningMeanStd
 import torch, torch.nn as nn
+import copy
 
 class PPONorm(PPO):
-    def __init__(self, *args, normalize_value=True, **kwargs):
+    def __init__(self, *args, num_obs, normalize_value=False, normalize_obs=False,**kwargs):
+        kwargs.pop('normalize_obs', None)  # remove normalize_obs from kwargs if it exists
+        kwargs.pop('normalize_value', None)
+        kwargs.pop('num_obs', None)
+        kwargs.pop('num_critic_obs', None)
         super().__init__(*args, **kwargs)
-        self.use_value_norm = normalize_value
-        if self.use_value_norm:
-            self.value_rms = RunningMeanStd((1,)).to(self.device)
+        self.normalize_value = normalize_value
+        self.normalize_obs = normalize_obs
+        if self.normalize_value:
+            self.value_mean_std = RunningMeanStd((1,)).to(self.device)
+
+        if self.normalize_obs:
+            self.obs_mean_std = RunningMeanStd((num_obs,)).to(self.device)
+            self.obs_mean_std_temp = None
 
     def compute_returns(self, last_critic_obs):
+        if self.normalize_obs:
+            last_critic_obs = self.obs_mean_std_temp(last_critic_obs)
+
         super().compute_returns(last_critic_obs)
-        if self.use_value_norm:
-            self.value_rms.train()
+        if self.normalize_value:
+            self.value_mean_std.train()
             # self.storage.returns = self.value_rms(self.storage.returns)
             # self.storage.values  = self.value_rms(self.storage.values)
-            self.storage.returns = self.value_rms(self.storage.returns.view(-1, 1)).view_as(self.storage.returns)
-            self.storage.values  = self.value_rms(self.storage.values.view(-1, 1)).view_as(self.storage.values)
+            self.storage.returns = self.value_mean_std(self.storage.returns.view(-1, 1)).view_as(self.storage.returns)
+            self.storage.values  = self.value_mean_std(self.storage.values.view(-1, 1)).view_as(self.storage.values)
+
+
+    def act(self, obs, critic_obs):
+        if self.normalize_obs:
+            self.obs_mean_std.train()  # ensure in update mode
+            self.obs_mean_std(obs)
+
+        if self.normalize_obs:
+            obs = self.obs_mean_std_temp(obs)
+            critic_obs = self.obs_mean_std_temp(critic_obs)
+
+        if self.actor_critic.is_recurrent:
+            self.transition.hidden_states = self.actor_critic.get_hidden_states()
+        # Compute the actions and values
+        self.transition.actions = self.actor_critic.act(obs).detach()
+        self.transition.values = self.actor_critic.evaluate(critic_obs).detach()
+        self.transition.actions_log_prob = self.actor_critic.get_actions_log_prob(self.transition.actions).detach()
+        self.transition.action_mean = self.actor_critic.action_mean.detach()
+        self.transition.action_sigma = self.actor_critic.action_std.detach()
+        # need to record obs and critic_obs before env.step()
+        self.transition.observations = obs
+        self.transition.critic_observations = critic_obs
+        return self.transition.actions
 
     def update(self):
         mean_value_loss = 0
@@ -37,10 +73,10 @@ class PPONorm(PPO):
             value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch,
                                                      hidden_states=hid_states_batch[1])
 
-            if self.use_value_norm:
-                self.value_rms.eval()
-                value_batch = self.value_rms(value_batch)
-                self.value_rms.train()
+            if self.normalize_value:
+                self.value_mean_std.eval()
+                value_batch = self.value_mean_std(value_batch)
+                self.value_mean_std.train()
 
             mu_batch = self.actor_critic.action_mean
             sigma_batch = self.actor_critic.action_std
@@ -97,3 +133,9 @@ class PPONorm(PPO):
         self.storage.clear()
 
         return mean_value_loss, mean_surrogate_loss
+
+    def _refresh_temp_rms(self):
+        if not self.normalize_obs:
+            return
+        self.obs_mean_std_temp = copy.deepcopy(self.obs_mean_std)
+        self.obs_mean_std_temp.freeze()
