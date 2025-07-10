@@ -1,18 +1,18 @@
-from videoskills.envs.base.legged_robot import LeggedRobot
+
 import os
 from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
 import torch
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
-from scripts.poselib.skeleton.skeleton3d import SkeletonTree
+from videoskills.envs.base.legged_robot import LeggedRobot
+from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree
 from videoskills.utils.motionlib.motion_lib import MotionLib
-from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis, get_axis_params
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
 from torch import Tensor
-import xml.etree.ElementTree as ET
-import glob
+
 
 class LeggedRobotImi(LeggedRobot):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -26,9 +26,9 @@ class LeggedRobotImi(LeggedRobot):
         self.init_done = False
 
         # quat_to_tan_norm ablation study
-        self.activate_quat_to_tan_norm = True
-        if self.activate_quat_to_tan_norm:
-            self.cfg.env.num_observations = 358 + 576 + 69
+        self.activate_quat_to_tan_norm = self.cfg.env.activate_quat_to_tan_norm
+        if self.cfg.env.activate_quat_to_tan_norm:
+            self.cfg.env.num_observations = self.cfg.env.norm_num_observations
 
         self.activate_amp = self.cfg.amp.activate
         if self.activate_amp:
@@ -82,7 +82,7 @@ class LeggedRobotImi(LeggedRobot):
         asset_file = os.path.basename(asset_path)
 
         # asset is a xml resource
-        robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file , asset_options)
+        robot_asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
 
         # marker
         if not self.headless:
@@ -92,28 +92,18 @@ class LeggedRobotImi(LeggedRobot):
                 num_lons=12,  # “经线”数
                 color=(1.0, 0.2, 0.2))
 
-        self.num_dof = self.gym.get_asset_dof_count(robot_asset)
+        self.num_dofs = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         self.body_names = self.gym.get_asset_rigid_body_names(robot_asset)
         self.skeleton_tree = SkeletonTree.from_mjcf(asset_path)
         self.dof_names = self.gym.get_asset_dof_names(robot_asset)
-        self.num_dofs = len(self.dof_names)
         self.dof_body_ids = np.arange(1, len(self.body_names)).tolist()
+        # TODO: 要改的 因为不一定是 3 dof
         self.dof_offsets = np.linspace(0, len(self.dof_names), len(self.body_names)).astype(int)
         self.cfg.init_state.default_joint_angles = {dof_name: 0.0 for dof_name in self.dof_names}
 
-        feet_names = [s for s in self.body_names if self.cfg.asset.foot_name in s]
-        penalized_contact_names = []
-        for name in self.cfg.asset.penalize_contacts_on:
-            penalized_contact_names.extend([s for s in self.body_names if name in s])
-        termination_contact_names = []
-        for name in self.cfg.asset.terminate_after_contacts_on:
-            termination_contact_names.extend([s for s in self.body_names if name in s])
-
         base_init_state_list = self.cfg.init_state.pos + self.cfg.init_state.rot + self.cfg.init_state.lin_vel + self.cfg.init_state.ang_vel
         self.base_init_state = to_torch(base_init_state_list, device=self.device, requires_grad=False)
-        start_pose = gymapi.Transform()
-        start_pose.p = gymapi.Vec3(*self.base_init_state[:3])
 
         self._get_env_origins()
 
@@ -132,55 +122,31 @@ class LeggedRobotImi(LeggedRobot):
             self.envs.append(env_handle)
 
         # regularization?
-        dof_prop = self.gym.get_actor_dof_properties(self.envs[0], self.robot_handles[0])
-        self.dof_limits_lower = []
-        self.dof_limits_upper = []
-        for j in range(self.num_dofs):
-            if dof_prop['lower'][j] > dof_prop['upper'][j]:
-                self.dof_limits_lower.append(dof_prop['upper'][j])
-                self.dof_limits_upper.append(dof_prop['lower'][j])
-            elif dof_prop['lower'][j] == dof_prop['upper'][j]:
-                print("Warning: DOF limits are the same")
-                if dof_prop['lower'][j] == 0:
-                    self.dof_limits_lower.append(-np.pi)
-                    self.dof_limits_upper.append(np.pi)
-            else:
-                self.dof_limits_lower.append(dof_prop['lower'][j])
-                self.dof_limits_upper.append(dof_prop['upper'][j])
+        self._build_pd_action_offset_scale()
 
-        self.dof_limits_lower = to_torch(self.dof_limits_lower, device=self.device)
-        self.dof_limits_upper = to_torch(self.dof_limits_upper, device=self.device)
-        self.dof_pos_limits = torch.stack([self.dof_limits_lower, self.dof_limits_upper], dim=-1)
-        self.torque_limits = to_torch(dof_prop['effort'], device=self.device)
+        # Hacky for trained smpl model
+        if hasattr(self.cfg.control, "action_scale"):
+            self.pd_action_scale = 3.14 * torch.ones_like(self.dof_limits_lower).to(self.device)
 
-        key_body_ids = []
-        for body_name in self.cfg.motion.key_bodies:
-            body_id = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0], body_name)
-            assert(body_id != -1)
-            key_body_ids.append(body_id)
+        self.body_ids = torch.arange(len(self.body_names), device=self.device, dtype=torch.long)
 
-        self.body_ids = torch.arange(len(self.cfg.motion.bodies), device=self.device, dtype=torch.long)
-        self.key_body_ids = key_body_ids
+        if self.activate_amp:
+            key_body_ids = []
+            for body_name in self.cfg.motion.key_bodies:
+                body_id = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0], body_name)
+                assert (body_id != -1)
+                key_body_ids.append(body_id)
 
-        # TODO： need to be test
-        self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
-        for i in range(len(feet_names)):
-            self.feet_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0],
-                                                                         feet_names[i])
+            self.key_body_ids = key_body_ids
 
-        self.penalised_contact_indices = torch.zeros(len(penalized_contact_names), dtype=torch.long, device=self.device,
-                                                     requires_grad=False)
-        for i in range(len(penalized_contact_names)):
-            self.penalised_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0],
-                                                                                      self.robot_handles[0],
-                                                                                      penalized_contact_names[i])
+        # Test
+        body_props = self.gym.get_actor_rigid_body_properties(self.envs[0], self.robot_handles[0])  # 获取刚体属性
+        total_mass = 0.0
+        for i, prop in enumerate(body_props):
+            print(f"Body {i} mass:", prop.mass)
+            total_mass += prop.mass
+        print("Total mass of the robot:", total_mass)
 
-        self.termination_contact_indices = torch.zeros(len(termination_contact_names), dtype=torch.long,
-                                                       device=self.device, requires_grad=False)
-        for i in range(len(termination_contact_names)):
-            self.termination_contact_indices[i] = self.gym.find_actor_rigid_body_handle(self.envs[0],
-                                                                                        self.robot_handles[0],
-                                                                                        termination_contact_names[i])
 
     def render(self):
         if not self.headless and hasattr(self, "ref_body_pos"):
@@ -223,48 +189,6 @@ class LeggedRobotImi(LeggedRobot):
         super().render()
 
 
-
-    def _build_env(self, env_id, env_ptr, humanoid_asset):
-        col_group = env_id
-        col_filter = self.cfg.asset.self_collisions # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
-
-        start_pose = gymapi.Transform()
-        char_h = 0.89
-        pos = torch.tensor(get_axis_params(char_h, self.up_axis_idx)).to(self.device)
-        pos[:2] += torch_rand_float(-1., 1., (2, 1), device=self.device).squeeze(
-            1)
-        start_pose.p = gymapi.Vec3(*pos)
-        start_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-
-        # here is the instance of the humanoid asset
-        robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
-                                                0)
-        self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
-
-        for j in range(self.num_bodies):
-            self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
-
-        # configure PD control method
-        dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-        for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i] * self.cfg.asset.pd_scale, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i] * self.cfg.asset.pd_scale, dtype=torch.float, device=self.device)
-
-        self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
-
-        filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-
-        props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
-        assert (len(filter_ints) == len(props))
-
-        for p_idx in range(len(props)):
-            props[p_idx].filter = filter_ints[p_idx]
-        self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
-
-        self.robot_handles.append(robot_handle)
-
-        return
-
     # TODO: 重写 reset dof 和 load motion， 把 root 和 dof 和在一起
     def _load_motion(self, motion_file):
 
@@ -272,6 +196,7 @@ class LeggedRobotImi(LeggedRobot):
                                      dof_body_ids=self.dof_body_ids,
                                      dof_offsets=self.dof_offsets,
                                      key_body_ids=self.body_ids,
+                                     rotate_motion=self.cfg.motion.rotate_motion,
                                      device=self.device)
 
     def reset_idx(self, env_ids):
@@ -297,7 +222,7 @@ class LeggedRobotImi(LeggedRobot):
         self.actions[env_ids] = 0.
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
-        self.feet_air_time[env_ids] = 0.  # good idea!
+        # self.feet_air_time[env_ids] = 0.  # good idea!
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
         # fill extras
@@ -376,18 +301,18 @@ class LeggedRobotImi(LeggedRobot):
 
         dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dof)
+        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dofs)
 
         self.body_pos = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]   #3
         self.body_rot = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]   #4
         self.body_vel = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]   #3
         self.body_ang_vel = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]  #3
 
-        self.contact_history = torch.zeros((3, self.num_envs, self.feet_indices.shape[0]),
-                                           dtype=torch.bool, device=self.device)
-
-        self.last_landing_mask = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.bool,
-                                             device=self.device)
+        # self.contact_history = torch.zeros((3, self.num_envs, self.feet_indices.shape[0]),
+        #                                    dtype=torch.bool, device=self.device)
+        #
+        # self.last_landing_mask = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.bool,
+        #                                      device=self.device)
 
     def _reset_default(self, env_ids):
         self.dof_pos[env_ids] = self.default_dof_pos[env_ids]
@@ -766,7 +691,7 @@ class LeggedRobotImi(LeggedRobot):
         self.actions[env_ids] = 0.
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.
-        self.feet_air_time[env_ids] = 0.  # good idea!
+        # self.feet_air_time[env_ids] = 0.  # good idea!
         self.episode_length_buf[env_ids] = 0
         self.reset_buf[env_ids] = 1
         # fill extras

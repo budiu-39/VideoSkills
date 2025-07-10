@@ -5,20 +5,19 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         type = 'random'  # 'hybrid' or 'default'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]
 
-    class marker:
-        file = ('{LEGGED_GYM_ROOT_DIR}/data/marker/')
-
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 24
 
     class motion:
+        rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_test_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
-        file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
@@ -50,29 +49,26 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             height_measurements = 0.1
 
     class env(LeggedRobotCfg.env):
+        episode_length_s = 20  # 5 秒应该有 1000 步
         eval_mode = False
         land_event_detect = False
         num_envs = 4096
         num_actions = 69
-        humanoid_obs = 1 + 23 * 3 + 24 * 12 #
-        task_obs = 24 * 24  # (6 + 3 + 3 + 6 + 3 + 3)
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
-        # base_pos 1 + base_lin_vel 3 + base_ang_vel 3 + projected_gravity 3 + dof_pos 23 * 3
-        # + dof_vel 23 * 3 + actions 69
+        activate_quat_to_tan_norm = True
+        norm_num_observations = 358 + 576 + 69
 
-        # filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33,
-        #                 128, 0, 192, 0, 64, 0, 0, 0,
-        #                 0, 0, 0, 0, 0, 0, 0]
-
-    class control(LeggedRobotCfg.control):
+    class control:
         # PD Drive parameters:
         control_type = 'P'# [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
-        action_scale = 3.14
+        # action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
+        pd_scale = 0.333
+        # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
@@ -80,8 +76,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 1  # 1 to disable, 0 to enable...bitwise filter
-        pd_scale = 0.333
+        self_collisions = 1
         # pd_scale = 0.1
 
     class rewards:
@@ -113,7 +108,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class policy:
-        init_noise_std = 0.33
+        # init_noise_std = 0.33
+        init_noise_std = 0.055
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -127,11 +123,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
         
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_obs_num_fixed' # 'smpl_ppo'
+        run_name = 'SOTA_055std'    # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
-
-        # load_run = 'SOTA_2e-8torque'
+        max_iterations = 38000 # number of policy updates
+        # load_run = 'SOTA_obs_num'
         # load_run = 'obs_norm'
         # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
         # load_run = 'SOTA_2e-8torque_norm_obs'
@@ -139,6 +135,14 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # checkpoint = '6000'
         save_interval = 1000 # check for potential saves every this many iterations
         eval_interval = 2000
+
+        # num_steps_per_env = 32 # per iteration
+        # num_learning_epochs = 8
+        # num_mini_batches = 6
+
+        # num_steps_per_env = 24 # per iteration
+        # num_learning_epochs = 4
+        # num_mini_batches = 5
 
     class amp_config:
         disc_batch = 512

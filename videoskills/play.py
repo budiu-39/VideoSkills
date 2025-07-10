@@ -1,16 +1,9 @@
-import sys
-from videoskills import LEGGED_GYM_ROOT_DIR
 import os
-import sys
-from videoskills import LEGGED_GYM_ROOT_DIR
 
-import isaacgym
 from videoskills.envs import *
 from videoskills.utils import  get_args, export_policy_as_jit, task_registry, Logger
 from videoskills.utils.helpers import parse_motion_file_path
 
-import numpy as np
-import torch
 
 
 def play(args):

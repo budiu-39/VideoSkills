@@ -1,13 +1,14 @@
 import os
 import copy
-import torch
 import numpy as np
 import random
 from isaacgym import gymapi
 from isaacgym import gymutil
+import torch
 import joblib
 
 from videoskills import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
+# LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 def class_to_dict(obj) -> dict:
     if not  hasattr(obj,"__dict__"):

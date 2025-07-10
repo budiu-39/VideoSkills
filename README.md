@@ -41,7 +41,7 @@ The basic workflow for using reinforcement learning to achieve motion control is
 Run the following command to start training:
 
 ```bash
-python videoskills/scripts/train.py --task=xxx
+python videoskills/retarget/train.py --task=xxx
 ```
 
 #### ⚙️ Parameter Description
@@ -67,7 +67,7 @@ python videoskills/scripts/train.py --task=xxx
 To visualize the training results in Gym, run the following command:
 
 ```bash
-python videoskills/scripts/play.py --task=xxx
+python videoskills/retarget/play.py --task=xxx
 ```
 
 **Description**:

@@ -1,6 +1,6 @@
 import os
 from collections import defaultdict
-from scripts.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
+from retarget.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
 import glob
 import os.path as osp
 import joblib

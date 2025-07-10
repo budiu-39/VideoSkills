@@ -4,10 +4,14 @@ from datetime import datetime
 import sys
 
 import isaacgym
-from videoskills.envs import *
 from videoskills.utils import get_args, task_registry
 import wandb
-from utils.helpers import class_to_dict
+from videoskills.utils.helpers import class_to_dict
+sys.path.append(os.getcwd())
+
+import sys, os, inspect
+print("argv[0] :", sys.argv[0])
+print("sys.path[0] :", sys.path[0])
 
 def train(args):
     env, env_cfg = task_registry.make_env(name=args.task, args=args)

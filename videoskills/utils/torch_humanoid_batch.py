@@ -4,13 +4,11 @@ import sys
 import pdb
 import os.path as osp
 sys.path.append(os.getcwd())
-import torch 
+
 from collections import defaultdict
-
-
 import numpy as np
 # import smpl_sim.utils.rotation_conversions as tRot
-import videoskills.utils.rotation_conversions as tRot
+import videoskills.utils.motionlib.rotation_conversions as tRot
 from scipy.spatial.transform import Rotation as sRot
 import xml.etree.ElementTree as ETree
 from easydict import EasyDict
@@ -27,6 +25,7 @@ from tqdm import tqdm
 from stl import mesh
 import logging
 import open3d as o3d
+import torch
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -35,7 +34,7 @@ class Humanoid_Batch:
 
     def __init__(self, cfg, device = torch.device("cpu")):
         self.cfg = cfg
-        self.mjcf_file = cfg.asset.assetFileName
+        self.mjcf_file = cfg.file
         
         parser = XMLParser(remove_blank_text=True)
         tree = parse(BytesIO(open(self.mjcf_file, "rb").read()), parser=parser,)
@@ -358,7 +357,6 @@ class Humanoid_Batch:
             if 'mesh' not in geom.attrib:
                 continue
             parent_name = geom.attrib['mesh']
-            
 
             k = self.mesh_to_body[geom].attrib['name']
             mesh_names = self.body_to_mesh[k]

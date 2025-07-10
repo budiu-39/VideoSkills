@@ -161,7 +161,8 @@ cython_debug/
 # logs
 logs
 
-data/AMASS_test
 data/smpl
 dataset/
 .git/
+
+output/

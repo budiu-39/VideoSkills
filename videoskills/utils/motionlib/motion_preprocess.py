@@ -4,8 +4,8 @@
 ''' preprocess motions with SkeletonMotion, SkeletonState, only output Information that MotionLib needs '''
 import os
 import pickle
-from videoskills.envs.smpl.smpl_config import SMPLRobotCfg
-from videoskills.utils.motionlib.motion_lib import MotionLib
+
+from utils.motionlib.motion_lib import MotionLib
 import torch
 
 # 修改这些路径和参数以适应你的环境

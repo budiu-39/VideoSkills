@@ -12,7 +12,6 @@ from collections import defaultdict
 from videoskills.utils.metrics import compute_metrics
 from collections import deque
 from torch.utils.tensorboard import SummaryWriter
-from videoskills.utils.running_mean_std import RunningMeanStd
 import copy
 
 from rsl_rl.algorithms import PPO
@@ -208,7 +207,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.inference_mode():
                     if self.alg.normalize_obs:
-                        obs = self.alg.running_mean_std(obs)
+                        obs = self.alg.obs_mean_std(obs)
 
                     action = self.alg.actor_critic.act_inference(obs)
                     obs, _, rewards, dones, extras = self.env.step(action)

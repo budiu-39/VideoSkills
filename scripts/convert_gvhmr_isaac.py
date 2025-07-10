@@ -1,27 +1,17 @@
-import glob
 import os
 import sys
-import pdb
 import os.path as osp
 sys.path.append(os.getcwd())
 
-import torch
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
-import joblib
 
-from tqdm import tqdm
 import argparse
-import cv2
-from poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 import torch
-import mujoco
 import mujoco.viewer
-
-import time
-
 
 import os
 
@@ -166,28 +156,6 @@ def process_folder(folder_path, output_path):
 
     return amass_full_motion_dict
 
-def vis_mujoco(motion_traj):
-    import mujoco
-    import time
-
-    xml_path = f"phc/data/assets/mjcf/smpl_humanoid.xml"
-
-    mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_data = mujoco.MjData(mj_model)
-    num_frames = len(motion_traj['root_trans_offset'])
-
-    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
-        for t in range(num_frames):
-            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
-            mj_data.qpos[3:7] = motion_traj['pose_quat'][t][0][[3, 0, 1, 2]]
-            mj_data.qpos[7:] = sRot.from_quat(motion_traj['pose_quat'][t][1:].reshape(-1,4)).as_euler(
-                "XYZ").flatten()
-
-            mujoco.mj_forward(mj_model, mj_data)
-            viewer.sync()
-            time.sleep(1/30)
-
-
 def quaternion_distance(q1, q2):
     # Ensure the quaternions are normalized
     q1 = q1 / np.linalg.norm(q1)
@@ -214,16 +182,17 @@ output_path = args.output_path
 pkl_per_motoin = args.pkl_per_motoin
 result = process_folder(folder_path, output_path)
 # pkl_per_motoin = True
-# if pkl_per_motoin is True:
-#     for key in result.keys():
-#         motion = {}
-#         motion[key] = result[key]
-#         output_path = os.path.join(args.output_path, key + ".pkl")
-#         if not os.path.exists(output_path):
-#             os.makedirs(os.path.dirname(output_path), exist_ok=True)
-#         with open(output_path, 'wb') as f:
-#             joblib.dump(motion, f)
-        # vis_mujoco(motion[key])
+vis = True
+if vis:
+    for key in result.keys():
+        motion = {}
+        motion[key] = result[key]
+        output_path = os.path.join(args.output_path, key + ".pkl")
+        if not os.path.exists(output_path):
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, 'wb') as f:
+            joblib.dump(motion, f)
+        vis_mujoco(motion[key])
 
 # joblib.dump(result, output_path, compress=True)
 # print(f"Processing is complete and the data has been saved to {output_path}")

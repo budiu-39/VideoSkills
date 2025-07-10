@@ -1,7 +1,7 @@
 import joblib
 import os
 import re
-# from scripts.poselib.skeleton.skeleton3d import SkeletonMotion
+# from retarget.poselib.skeleton.skeleton3d import SkeletonMotion
 #
 # log_dir = '/home/miku/Documents/VideoSkills/logs/smpl_ppo'
 # run_name = 'universal_00001_torque_100_imi'

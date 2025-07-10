@@ -1,23 +1,22 @@
 import os
 import sys
-import pdb
 import os.path as osp
 
 sys.path.append(os.getcwd())
 
-import torch
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
-import joblib
 from tqdm import tqdm
 import argparse
 import glob
-from poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
 import joblib
-
+import torch
+import mujoco
+import time
 
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
@@ -37,6 +36,23 @@ def fix_trans_height(pose_aa, trans, betas, mesh_parser):
         trans[..., -1] -= diff_fix
         return trans, diff_fix
 
+def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
+
+    print(mujoco.__version__)  # 应该输出 3.2.3
+    print(hasattr(mujoco, "viewer"))
+
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+    mj_data = mujoco.MjData(mj_model)
+    num_frames = len(motion_traj['root_trans_offset'])
+
+    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+        for t in range(num_frames):
+            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
+            mj_data.qpos[3:7] = motion_traj['root_rotation'][t][[3, 0, 1, 2]]  # Convert from wxyz to xyzw
+            mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
+            mujoco.mj_forward(mj_model, mj_data)
+            viewer.sync()
+            time.sleep(1 / 30)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -79,7 +95,7 @@ if __name__ == "__main__":
         ipdb.set_trace()
 
     all_pkls = glob.glob(f"{args.path}/**/*.npz", recursive=True)
-    amass_occlusion = joblib.load("output/SMPL_Robot_motion/amass_copycat_occlusion_v3.pkl")
+    amass_occlusion = joblib.load("data/amass_copycat_occlusion_v3.pkl")
     amass_full_motion_dict = {}
     amass_splits = {
         'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
@@ -199,7 +215,6 @@ if __name__ == "__main__":
                 fix_height_values.append(diff_fix)
 
 
-
         if robot_cfg['upright_start']:
             pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
                                 sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
@@ -208,11 +223,6 @@ if __name__ == "__main__":
                                                                             torch.from_numpy(pose_quat_global),
                                                                             root_trans_offset, is_local=False)
 
-        sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree, new_sk_state.global_rotation,
-                                                                    root_trans_offset, is_local=False)
-
-        pose_quat_global = new_sk_state.global_rotation.numpy()
-        pose_quat = new_sk_state.local_rotation.numpy()
         fps = 30
 
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
@@ -223,6 +233,11 @@ if __name__ == "__main__":
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)
+        motion_traj = {}
+        motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
+        motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
+        motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
+        vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
 
     fix_height_dict = {k: round(v, 5) for k, v in zip(fix_height_keys, fix_height_values)}
     os.makedirs(output_dir, exist_ok=True)

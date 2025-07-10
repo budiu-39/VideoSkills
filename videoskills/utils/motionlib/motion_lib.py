@@ -1,16 +1,10 @@
 import os
-import yaml
 
-from videoskills.utils.torch_utils import quat_to_exp_map
-from scripts.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
-from scripts.poselib.core.rotation3d import *
+from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
+from videoskills.utils.poselib.core.rotation3d import *
 from isaacgym.torch_utils import *
-from videoskills.utils.motionlib.pytorch3d_transforms import quaternion_to_matrix
 import xml.etree.ElementTree as ET
-from scipy.spatial.transform import Rotation as sRot
 from .. import torch_utils
-import copy
-from joblib import load
 import torch
 import joblib
 import glob
@@ -72,19 +66,15 @@ class DeviceCache:
 
 class MotionLib():
     def __init__(self, motion_file, dof_body_ids, dof_offsets,
-                 key_body_ids, device):
+                 key_body_ids, rotate_motion, device):
         #
-        self._rotate_motion = True
-        self._fix_height = False
+        self._rotate_motion = rotate_motion
         #
         self._dof_body_ids = dof_body_ids
         self._dof_offsets = dof_offsets
         self._num_dof = dof_offsets[-1]
-        self._key_body_ids = torch.tensor(key_body_ids, device=device)
+        self._key_body_ids = key_body_ids.to(device)
         self._device = device
-
-        if self._fix_height:
-            self._xml_tree = ET.parse("videoskills/envs/smpl/smpl.xml")
 
         self._load_motions(motion_file)
         # self.preprocess_amass_motion(motion_file,)

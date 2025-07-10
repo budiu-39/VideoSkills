@@ -41,7 +41,7 @@
 运行以下命令进行训练：
 
 ```bash
-python videoskills/scripts/train.py --task=xxx
+python videoskills/retarget/train.py --task=xxx
 ```
 
 #### ⚙️  参数说明
@@ -67,7 +67,7 @@ python videoskills/scripts/train.py --task=xxx
 如果想要在 Gym 中查看训练效果，可以运行以下命令：
 
 ```bash
-python videoskills/scripts/play.py --task=xxx
+python videoskills/retarget/play.py --task=xxx
 ```
 
 **说明**：

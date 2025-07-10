@@ -1,5 +1,5 @@
 
-from videoskills.envs.base.legged_robot import LeggedRobot
+from envs.base.legged_robot import LeggedRobot
 
 from isaacgym.torch_utils import *
 from isaacgym import gymtorch, gymapi, gymutil
