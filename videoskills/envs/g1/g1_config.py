@@ -21,7 +21,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         #    'right_ankle_pitch_joint': -0.2,
         #    'right_ankle_roll_joint' : 0,
         #    'torso_joint' : 0.
-        # }
+        # }   29 30 30
 
     class early_termination:
         enabled = True
@@ -51,7 +51,7 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_xs')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
 
         bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
               'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -62,7 +62,7 @@ class G1RoughCfg( LeggedRobotCfg ):
               'right_shoulder_yaw_link','right_elbow_link','right_wrist_roll_link','right_wrist_pitch_link',
               'right_wrist_yaw_link']
 
-    class control( LeggedRobotCfg.control ):
+    class control:
         # PD Drive parameters:
         control_type = 'P'
         # action scale: target angle = actionScale * action + defaultAngle
@@ -70,6 +70,8 @@ class G1RoughCfg( LeggedRobotCfg ):
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
         pd_scale = 1.0
+        stiffness = 12 * [100] + 3 * [60] + 14 * [100]
+        damping = 12 * [10] + 3 * [6] + 14 * [4]
 
     class noise:
         add_noise = False
@@ -108,7 +110,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         class scales:
             imitation = 1.0
             # torques = -0.00000002
-            torques = -0.0000000002
+            torques = -0.00000002
 
     class amp:
         activate = False
@@ -119,9 +121,9 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class retarget:
         fitting_iterations = 500
-        output_dir = ('{LEGGED_GYM_ROOT_DIR}/output/g1_motion')
+        output_dir = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion')
         amass_root = '/mnt/lustre/work/ponsmoll/pba936/AMASS'   # replace it with amass root in your workspace
-        process_split = 'valid'
+        process_split = 'train'
         # amass_root = '/home/miku/Documents/AMASS_test'
         # process_split = 'test'
         humanoid_type = 'g1'
@@ -194,9 +196,9 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = '300pd'
+        run_name = '100pd_AMASS_split_mid'
         use_amp_runner = False
-        load_run = '300pd_Jul09_04-15-42'
+        load_run = '300pd'
         experiment_name = 'g1_ppo'
 
         save_interval = 1000 # check for potential saves every this many iterations

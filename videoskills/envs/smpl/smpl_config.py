@@ -17,7 +17,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
@@ -64,10 +64,13 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # PD Drive parameters:
         control_type = 'P'# [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
-        # action_scale = 3.14
+        action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 0.333
+        pd_scale = 0.25
+        stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [500] + 6 * [300]
+        damping = 9 * [80] + 3 * [50] + 9 * [80] + 3 * [50] + 9 * [100] + 15 * [50] + 6 * [30] + 9 * [50] + 6 * [30]
+        # pd_scale = 0.333
         # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
@@ -77,7 +80,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
-        # pd_scale = 0.1
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -109,7 +111,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class policy:
         # init_noise_std = 0.33
-        init_noise_std = 0.055
+        init_noise_std = 0.33
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -123,11 +125,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
         
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_055std'    # 'smpl_ppo'
+        run_name = 'SOTA_train'    # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
         max_iterations = 38000 # number of policy updates
-        # load_run = 'SOTA_obs_num'
+        load_run = 'test'
         # load_run = 'obs_norm'
         # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
         # load_run = 'SOTA_2e-8torque_norm_obs'

@@ -12,6 +12,7 @@ from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, qu
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
 from torch import Tensor
+from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 
 
 class LeggedRobotImi(LeggedRobot):
@@ -24,6 +25,9 @@ class LeggedRobotImi(LeggedRobot):
         self.height_samples = None
         self.debug_viz = False
         self.init_done = False
+        self.early_termination = self.cfg.early_termination.enabled
+        self.stiffness = [v * self.cfg.control.pd_scale for v in self.cfg.control.stiffness]
+        self.damping = [v * self.cfg.control.pd_scale for v in self.cfg.control.damping]
 
         # quat_to_tan_norm ablation study
         self.activate_quat_to_tan_norm = self.cfg.env.activate_quat_to_tan_norm
@@ -292,7 +296,58 @@ class LeggedRobotImi(LeggedRobot):
 
 
     def _init_buffers(self):
-        super()._init_buffers()
+        actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
+        dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
+        net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+
+        # create some wrapper tensors for different slices
+        # 13 + dof * (1 + 1)
+        self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+        self.dof_pos = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 0]
+        self.dof_vel = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 1]
+        self.base_quat = self.root_states[:, 3:7]
+        self.rpy = get_euler_xyz_in_tensor(self.base_quat)
+        self.base_pos = self.root_states[:self.num_envs, 0:3]
+        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1,
+                                                                            3)  # shape: num_envs, num_bodies, xyz axis
+
+        # initialize some data used later on
+        self.common_step_counter = 0
+        self.extras = {}
+        self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
+        self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat(
+            (self.num_envs, 1))
+        self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
+        self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
+                                   requires_grad=False)
+        self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
+                                   requires_grad=False)
+        self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
+                                        requires_grad=False)
+        self.last_dof_vel = torch.zeros_like(self.dof_vel)
+        self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
+        self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float,
+                                    device=self.device, requires_grad=False)  # x vel, y vel, yaw vel, heading
+        self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
+                                           device=self.device, requires_grad=False, )  # TODO change this
+        # self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
+        # self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
+        self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
+        self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+        self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+
+        # joint positions offsets and PD gains
+        self.default_dof_pos = torch.zeros(self.num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
+
+        self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
+        self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
+
+        self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
+
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self._rigid_body_state = gymtorch.wrap_tensor(rigid_body_state)
@@ -390,6 +445,9 @@ class LeggedRobotImi(LeggedRobot):
         # self.reset_buf = fall | time_out | body_too_far
         self.reset_buf = ref_out | body_too_far | time_out
         self.time_out_buf = time_out
+
+        if not self.early_termination:
+            self.reset_buf = time_out
 
         if self.eval_mode:
             progress = self.episode_length_buf.to(torch.float) * self.dt

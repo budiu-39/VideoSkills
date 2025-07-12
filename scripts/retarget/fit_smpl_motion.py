@@ -22,6 +22,9 @@ import time
 import os
 import mujoco
 import imageio
+# import open3d as o3d
+# from scripts.open3d_vis import TwoCloudViewerSphere
+
 LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 
 @dataclass
@@ -259,6 +262,7 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
         kernel_size = 5  # Size of the Gaussian kernel
         sigma = 0.75  # Standard deviation of the Gaussian kernel
 
+        # viewer = TwoCloudViewerSphere()
 
         for iteration in range(cfg.fitting_iterations):
             pose_aa_new = torch.cat([root_rot_new[None, :, None], humanoid_fk.dof_axis * dof_pos_new,
@@ -269,7 +273,11 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
                 diff = fk_return.global_translation_extend[:, :, robot_joint_pick_idx] - joints[:, smpl_joint_pick_idx]
             else:
                 diff = fk_return.global_translation[:, :, robot_joint_pick_idx] - joints[:, smpl_joint_pick_idx]
-                
+
+            # if iteration % 10 == 0:
+            #     viewer.update(fk_return.global_translation_extend[:, :, robot_joint_pick_idx].squeeze()[0].detach().numpy(),
+            #                   joints[:, smpl_joint_pick_idx].squeeze()[0].detach().numpy())
+
             loss_g = diff.norm(dim = -1).mean() + 0.01 * torch.mean(torch.square(dof_pos_new))
             loss = loss_g
             
@@ -328,17 +336,22 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
         # self.body_names_augment = copy.deepcopy(mjcf_data['node_names'])
         # self._offsets = mjcf_data['local_translation'][None, ].to(device)
         # self._local_rotation = mjcf_data['local_rotation'][None, ].to(device)
+
+
         acutated_pose_aa = pose_aa_new.squeeze()[:, humanoid_fk.actuated_joints_idx, :]
+        # acutated_pose_aa = pose_aa_new.squeeze()
 
-        local_roation = (sRot.from_euler('z', np.pi / 2) * sRot.from_rotvec(acutated_pose_aa.detach().reshape(-1,3)
-                                         )).as_quat().reshape(acutated_pose_aa.shape[0], -1,4 )
+        local_roation = sRot.from_rotvec(acutated_pose_aa.detach().reshape(-1, 3)).as_quat().reshape(acutated_pose_aa.shape[0], -1, 4)
 
-        # 用 4x4 矩阵做变换
-        R = torch.tensor(
-            sRot.from_euler('z', np.pi / 2).as_matrix())  # 3×3 torch
-
-        # ★ 对 (B×3) 位置向量做旋转
-        root_trans_offset_dump = (R @ root_trans_offset_dump.T).T
+        # local_roation = (sRot.from_euler('z', np.pi / 2) * sRot.from_rotvec(acutated_pose_aa.detach().reshape(-1,3)
+        #                                  )).as_quat().reshape(acutated_pose_aa.shape[0], -1,4 )
+        #
+        # # 用 4x4 矩阵做变换
+        # R = torch.tensor(
+        #     sRot.from_euler('z', np.pi / 2).as_matrix())  # 3×3 torch
+        #
+        # # ★ 对 (B×3) 位置向量做旋转
+        # root_trans_offset_dump = (R @ root_trans_offset_dump.T).T
 
         new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
                                                                         torch.from_numpy(local_roation).float(),
@@ -354,6 +367,7 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)
+        # viewer.close()
 
     return all_data
 
@@ -404,8 +418,9 @@ def main() -> None:
         amass_splits = {
             'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
             'test': ['Transitions_mocap', 'SSM_synced'],
-            'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
-                    "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
+            'train':
+                # ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB"]
+                    ["ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]   # Adding ACCAD
         }
         all_datasets = set(sum(amass_splits.values(), []))  # flatten list
         # ==== AMASS check ====

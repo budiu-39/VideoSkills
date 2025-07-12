@@ -11,7 +11,7 @@ class G1Robot(LeggedRobotImi):
         start_pose = gymapi.Transform()
         # 检查一下是不是这里有问题
         start_pose.p = gymapi.Vec3(*(self.base_init_state[:3] + self.env_origins[env_id]))
-        start_pose.r = gymapi.Quat(*self.base_init_state[3:6])
+        start_pose.r = gymapi.Quat(*self.base_init_state[3:7])
 
         # here is the instance of the humanoid asset
         robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
@@ -23,27 +23,15 @@ class G1Robot(LeggedRobotImi):
             self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
 
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-        #
-        # dof_prop["stiffness"] = [80 for _ in range(12)] + [45 for _ in range(3)] + [30 for _ in range(14)]
-        # dof_prop["damping"] = [8 for _ in range(12)] + [4.5 for _ in range(3)] + [3 for _ in range(14)]
 
-        # dof_prop["stiffness"] = [100 for _ in range(12)] + [60 for _ in range(3)] + [40 for _ in range(14)]
-        # dof_prop["damping"] = [10 for _ in range(12)] + [6 for _ in range(3)] + [4 for _ in range(14)]
+        dof_prop["stiffness"] = self.stiffness
+        dof_prop["damping"] = self.damping
 
-        # dof_prop["stiffness"] = [200 for _ in range(12)] + [120 for _ in range(3)] + [80 for _ in range(14)]
-        # dof_prop["damping"] = [20 for _ in range(12)] + [12 for _ in range(3)] + [8 for _ in range(14)]
-        #
-        dof_prop["stiffness"] = [300 for _ in range(12)] + [180 for _ in range(3)] + [120 for _ in range(14)]
-        dof_prop["damping"] = [30 for _ in range(12)] + [18 for _ in range(3)] + [12 for _ in range(14)]
-
-        # dof_prop["stiffness"] = [500 for _ in range(12)] + [300 for _ in range(3)] + [200 for _ in range(14)]
-        # dof_prop["damping"] = [50 for _ in range(12)] + [30 for _ in range(3)] + [20 for _ in range(14)]
-
-        self.cfg.control.stiffness = {}
-        self.cfg.control.damping = {}
-        for i, dof_name in enumerate(self.dof_names):
-            self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
-            self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
+        # self.cfg.control.stiffness = {}
+        # self.cfg.control.damping = {}
+        # for i, dof_name in enumerate(self.dof_names):
+        #     self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
+        #     self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
 
         self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
 

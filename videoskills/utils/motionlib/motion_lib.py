@@ -335,7 +335,7 @@ class MotionLib():
             elif (joint_size == 1):
                 joint_q = local_rot[:, body_id]
                 joint_theta, joint_axis = torch_utils.quat_to_angle_axis(joint_q)
-                joint_theta = joint_theta * joint_axis[..., 1]  # assume joint is always along y axis
+                joint_theta = (joint_theta.unsqueeze(-1) * joint_axis).sum(dim = -1)
 
                 joint_theta = normalize_angle(joint_theta)
                 dof_pos[:, joint_offset] = joint_theta

@@ -1,9 +1,8 @@
 import os
 import numpy as np
 
-from isaacgym import gymapi, gymtorch
-
 from utils.motionlib.motion_lib import MotionLib
+from isaacgym import gymapi, gymtorch, gymutil
 from envs.g1.g1_config import G1RoughCfg
 from videoskills import LEGGED_GYM_ROOT_DIR
 import torch
@@ -21,6 +20,12 @@ gym = gymapi.acquire_gym()
 sim_params = gymapi.SimParams()
 sim_params.dt = 1.0 / 60.0
 
+sphere_geom = gymutil.WireframeSphereGeometry(
+    radius=0.03,          # 球半径
+    num_lats=12, num_lons=12,
+    color=(1.0, 0.2, 0.2) # RGB 小红球
+)
+
 sim_params.up_axis = gymapi.UP_AXIS_Z
 sim_params.gravity = gymapi.Vec3(0.0, 0.0, -9.81)
 
@@ -35,6 +40,7 @@ env = gym.create_env(sim, gymapi.Vec3(-1, -1, 0), gymapi.Vec3(1, 1, 1), 1)
 
 asset_options = gymapi.AssetOptions()
 asset_options.fix_base_link = False
+asset_options.flip_visual_attachments = G1RoughCfg.asset.flip_visual_attachments
 asset = gym.load_asset(sim, asset_root, asset_file, asset_options)
 pose = gymapi.Transform()
 actor_handle = gym.create_actor(env, asset, pose, "humanoid", 0, 1)
@@ -68,7 +74,8 @@ motion_lib = MotionLib(
     dof_body_ids=dof_body_ids,
     dof_offsets=dof_offsets,
     key_body_ids=torch.tensor(key_body_ids),
-    device=device
+    device=device,
+    rotate_motion=True
 )
 
 motion_lengths = motion_lib.get_motion_length(torch.arange(len(motion_files), device=device))
@@ -124,6 +131,21 @@ for motion_id in range(len(motion_files)):
         cam_pos = gymapi.Vec3(*(root_np + follow_offset))
         cam_lookat = gymapi.Vec3(*(root_np + lookat_shift))
         gym.viewer_camera_look_at(viewer, None, cam_pos, cam_lookat)
+
+        key_pos = motion_state["key_pos"][0]  # Tensor [K,3]，K = len(body_names)
+
+        # 先把上一帧残留线条清掉（防止拖影）
+        gym.clear_lines(viewer)
+
+        # 把 Tensor 挪到 CPU，循环画
+        for p in key_pos.cpu().numpy():
+            T = gymapi.Transform()
+            T.p = gymapi.Vec3(*p)  # 世界坐标
+            gymutil.draw_lines(  # 其实它画的是线框球
+                sphere_geom,  # 几何体模板
+                gym, viewer, env,  # 目标 viewer / env
+                T  # 变换
+            )
 
         # 模拟并渲染
         gym.simulate(sim)
