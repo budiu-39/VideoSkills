@@ -51,7 +51,8 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_test')
 
         bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
               'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -70,8 +71,8 @@ class G1RoughCfg( LeggedRobotCfg ):
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
         pd_scale = 1.0
-        stiffness = 12 * [100] + 3 * [60] + 14 * [100]
-        damping = 12 * [10] + 3 * [6] + 14 * [4]
+        stiffness = 12 * [100.] + 3 * [60.] + 14 * [40.]
+        damping = 12 * [10.] + 3 * [6.] + 14 * [4.]
 
     class noise:
         add_noise = False
@@ -196,9 +197,9 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = '100pd_AMASS_split_mid'
+        run_name = '100pd_amass_test_reproduced'
         use_amp_runner = False
-        load_run = '300pd'
+        load_run = ''
         experiment_name = 'g1_ppo'
 
         save_interval = 1000 # check for potential saves every this many iterations

@@ -1,0 +1,79 @@
+# ------------------ PyTorch & CUDA ------------------
+--extra-index-url https://download.pytorch.org/whl/cu118
+
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
+
+# ------------------ Torch extensions ------------------
+--find-links https://data.pyg.org/whl/torch-2.3.0+cu121.html
+torch-scatter
+
+pytorch3d @ https://dl.fbaipublicfiles.com/pytorch3d/packaging/wheels/py38_cu118_pyt201/pytorch3d-0.7.4-cp38-cp38-linux_x86_64.whl
+
+# ------------------ Lightning + Hydra ------------------
+pytorch-lightning==2.3.0
+hydra-core==1.3
+hydra-zen
+hydra_colorlog
+rich
+
+# ------------------ PHC Core Dependencies ------------------
+mujoco
+numpy-stl
+numpy==1.23.5
+vtk
+patchelf
+termcolor
+torchgeometry
+scikit-image
+scipy
+ipdb
+joblib>=1.2.0
+opencv-python==4.6.0.66
+tqdm 
+pyyaml
+wandb
+gym
+lxml
+autograd
+scikit-learn
+chumpy
+rl-games==1.1.4
+pyvirtualdisplay
+chardet
+cchardet
+imageio-ffmpeg
+easydict
+open3d
+gdown
+
+# ------------------ Git-based Dependencies ------------------
+git+https://github.com/ZhengyiLuo/smplx.git@master
+git+https://github.com/ZhengyiLuo/SMPLSim.git@master
+
+# ------------------ HMR2 / GVHMR Dependencies ------------------
+timm==0.9.12
+jupyter
+matplotlib
+setuptools>=68.0
+black
+tensorboardX
+ffmpeg-python
+einops
+imageio==2.34.1
+av
+trimesh
+smplx
+wis3d
+pycolmap
+
+# ------------------ 2D Pose Estimation ------------------
+ultralytics==8.2.42
+cython_bbox
+lapx
+
+# ------------------ Others ------------------
+numba
+gdown
+pypose

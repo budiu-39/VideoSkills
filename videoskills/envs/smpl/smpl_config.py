@@ -12,12 +12,13 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_split_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_split_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/AMASS_test_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
@@ -49,7 +50,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             height_measurements = 0.1
 
     class env(LeggedRobotCfg.env):
-        episode_length_s = 20  # 5 秒应该有 1000 步
+        episode_length_s = 5  # 5 秒应该有 1000 步
         eval_mode = False
         land_event_detect = False
         num_envs = 4096
@@ -67,7 +68,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 0.25
+        pd_scale = 0.333
         stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [500] + 6 * [300]
         damping = 9 * [80] + 3 * [50] + 9 * [80] + 3 * [50] + 9 * [100] + 15 * [50] + 6 * [30] + 9 * [50] + 6 * [30]
         # pd_scale = 0.333
@@ -125,11 +126,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
         
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_train'    # 'smpl_ppo'
+        run_name = 'SOTA_origin_reproduce_small'    # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
         max_iterations = 38000 # number of policy updates
-        load_run = 'test'
+        load_run = 'origin_test'
         # load_run = 'obs_norm'
         # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
         # load_run = 'SOTA_2e-8torque_norm_obs'

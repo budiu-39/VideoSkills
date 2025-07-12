@@ -24,8 +24,8 @@ class G1Robot(LeggedRobotImi):
 
         dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
 
-        dof_prop["stiffness"] = self.stiffness
-        dof_prop["damping"] = self.damping
+        # dof_prop["stiffness"] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
+        # dof_prop["damping"] =  torch.tensor(self.damping, dtype=torch.float, device=self.device)
 
         # self.cfg.control.stiffness = {}
         # self.cfg.control.damping = {}

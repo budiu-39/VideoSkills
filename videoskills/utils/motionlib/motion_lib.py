@@ -369,7 +369,7 @@ class MotionLib():
             elif (joint_size == 1):
                 assert (joint_size == 1)
                 joint_vel = local_vel[body_id]
-                dof_vel[joint_offset] = joint_vel[1]  # assume joint is always along y axis
+                dof_vel[joint_offset] = joint_vel.sum() # assume joint is always along y axis
 
             else:
                 print("Unsupported joint type")
