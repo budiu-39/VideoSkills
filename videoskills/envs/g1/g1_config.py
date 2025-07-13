@@ -3,6 +3,38 @@ from dataclasses import dataclass
 from typing import List
 import numpy as np
 
+class G1RoughCfgPPO( LeggedRobotCfgPPO ):
+    class policy:
+        init_noise_std = 0.33
+        # actor_hidden_dims = [1024, 512, 256]
+        # critic_hidden_dims =[1024, 512, 256]
+        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+
+    class algorithm(LeggedRobotCfgPPO.algorithm):
+        learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
+        entropy_coef = 0.01
+        normalize_value = False
+        normalize_obs = True
+        schedule = 'fixed'
+
+    class runner( LeggedRobotCfgPPO.runner ):
+        policy_class_name = 'ActorCritic'
+        max_iterations = 30000
+        run_name = '2e-7G1_universal'
+        use_amp_runner = False
+        load_run = ''
+        experiment_name = 'g1_ppo'
+
+        save_interval = 1000 # check for potential saves every this many iterations
+        eval_interval = 2000
+
+        num_steps_per_env = 32  # per iteration
+        num_learning_epochs = 6
+        num_mini_batches = 8
+
+
 class G1RoughCfg( LeggedRobotCfg ):
     class init_state( LeggedRobotCfg.init_state ):
         pos = [0.0, 0.0, 0.89] # x,y,z [m]
@@ -52,7 +84,7 @@ class G1RoughCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_train')
 
         bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
               'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -70,7 +102,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         # action_scale = 0.25
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 1.0
+        pd_scale = 2
         stiffness = 12 * [100.] + 3 * [60.] + 14 * [40.]
         damping = 12 * [10.] + 3 * [6.] + 14 * [4.]
 
@@ -88,6 +120,7 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class asset( LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_29dof.xml'
+        file_urdf = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_29dof.urdf'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]
@@ -111,7 +144,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         class scales:
             imitation = 1.0
             # torques = -0.00000002
-            torques = -0.00000002
+            torques = -0.0000002
 
     class amp:
         activate = False
@@ -178,31 +211,5 @@ class G1RoughCfg( LeggedRobotCfg ):
            'R_Elbow':[0, np.pi/2, 0]
         }
 
-class G1RoughCfgPPO( LeggedRobotCfgPPO ):
-    class policy:
-        init_noise_std = 0.33
-        # actor_hidden_dims = [1024, 512, 256]
-        # critic_hidden_dims =[1024, 512, 256]
-        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
-
-    class algorithm(LeggedRobotCfgPPO.algorithm):
-        learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
-        entropy_coef = 0.01
-        normalize_value = False
-        normalize_obs = True
-        schedule = 'fixed'
-
-    class runner( LeggedRobotCfgPPO.runner ):
-        policy_class_name = 'ActorCritic'
-        max_iterations = 30000
-        run_name = '100pd_amass_test_reproduced'
-        use_amp_runner = False
-        load_run = ''
-        experiment_name = 'g1_ppo'
-
-        save_interval = 1000 # check for potential saves every this many iterations
-        eval_interval = 2000
 
   

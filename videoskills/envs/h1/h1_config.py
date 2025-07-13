@@ -30,6 +30,7 @@ class H1RoughCfg( LeggedRobotCfg ):
         num_observations = 41
         num_privileged_obs = 44
         num_actions = 10
+        eval_mode = False
       
 
     class domain_rand(LeggedRobotCfg.domain_rand):

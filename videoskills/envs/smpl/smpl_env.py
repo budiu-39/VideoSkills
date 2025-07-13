@@ -4,6 +4,8 @@ from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 
 
 class SMPLRobot(LeggedRobotImi):
+
+
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         col_group = env_id
         col_filter = self.cfg.asset.self_collisions # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
@@ -15,18 +17,21 @@ class SMPLRobot(LeggedRobotImi):
         # here is the instance of the humanoid asset
         robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
                                                 0)
-        self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
+        # self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
 
         for j in range(self.num_bodies):
             self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
 
         # configure PD control method
         # dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
+        # dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
+        # dof_prop["driveMode"][:] = gymapi.DOF_MODE_EFFORT
 
-        # dof_prop["stiffness"] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
-        # dof_prop["damping"] = torch.tensor(self.damping, dtype=torch.float, device=self.device)
+        # dof_prop["stiffness"] = torch.zeros(len(self.stiffness), dtype=torch.float, device=self.device)
+        # dof_prop["damping"] =  torch.zeros(len(self.damping), dtype=torch.float, device=self.device)
 
-        # self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
+        self.gym.set_actor_dof_properties(env_ptr, robot_handle, self.dof_props)
+        # props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
 
         filter_ints = [0, 0, 7, 16, 12, 0, 56, 2, 33, 128, 0, 192, 0, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 

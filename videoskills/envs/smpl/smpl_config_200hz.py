@@ -1,61 +1,7 @@
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
-    class policy:
-        init_noise_std = 0.33
-        # init_noise_std = 0.055
-        # actor_hidden_dims = [1024, 512, 256]
-        # critic_hidden_dims =[1024, 512, 256]
-        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        activation = 'elu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
 
-    class algorithm(LeggedRobotCfgPPO.algorithm):
-        learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
-        entropy_coef = 0.01
-        normalize_value = False
-        normalize_obs = True
-
-    class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_reboot'  # 'smpl_ppo'
-
-        experiment_name = 'smpl_ppo'
-        use_amp_runner = False  # 可以联动！和 amp
-        max_iterations = 38000  # number of policy updates
-        load_run = 'SOTA_2e-8torque_obs_num'
-        # load_run = 'obs_norm'
-        # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
-        # load_run = 'SOTA_2e-8torque_norm_obs'
-
-        # checkpoint = '6000'
-        save_interval = 1000  # check for potential saves every this many iterations
-        eval_interval = 2000
-
-        num_steps_per_env = 32  # per iteration
-        num_learning_epochs = 6
-        num_mini_batches = 8
-
-        # num_steps_per_env = 24 # per iteration
-        # num_learning_epochs = 4
-        # num_mini_batches = 5
-
-    class amp_config:
-        disc_batch = 512
-        disc_updates = 1
-        reward_coef = 1
-        state_dim = 2320
-        hidden_dims = [1024, 512]
-        normalize_input = True
-        lr = 3e-4
-        grad_penalty_coef = 1.0
-        logit_l2_coef = 1e-5
-        weight_decay = 0.0001
-
-        class dataset_cfg:
-            replay_buffer_size = 200000
-            demo_buffer_size = 200000
-
-class SMPLRobotCfg( LeggedRobotCfg ):
+class SMPLRobotCfg(LeggedRobotCfg):
     class init_state(LeggedRobotCfg.init_state):
         type = 'random'  # 'hybrid' or 'default'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]
@@ -72,17 +18,17 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
-        bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
-                             'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
-                             'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+        bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',  # 9
+                  'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+                  'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']  # 7
 
-        key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist",  "L_Wrist"]
+        key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist", "L_Wrist"]
 
     class domain_rand:
         randomize_friction = False
@@ -95,7 +41,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class noise:
         add_noise = False
-        noise_level = 1.0 # scales other values
+        noise_level = 1.0  # scales other values
+
         class noise_scales:
             dof_pos = 0.01
             dof_vel = 1.5
@@ -118,13 +65,14 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class control:
         # PD Drive parameters:
-        control_type = 'P'# [N*m*s/rad]
+        control_type = 'P'  # [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
         pd_scale = 0.333
-        stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [500] + 6 * [300]
+        stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [
+            500] + 6 * [300]
         damping = 9 * [80] + 3 * [50] + 9 * [80] + 3 * [50] + 9 * [100] + 15 * [50] + 6 * [30] + 9 * [50] + 6 * [30]
         # pd_scale = 0.333
         # pd_scale = 0.2
@@ -136,11 +84,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
-        default_dof_drive_mode = 3
 
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
+
         class task_w:
             k_ang_vel = 0.1
             k_pos = 100
@@ -150,6 +98,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_pos = 0.5
             w_rot = 0.5
             w_vel = 0.1
+
         class scales:
             imitation = 1.0
             torques = -0.00000002
@@ -162,3 +111,58 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         activate = False
         num_amp_obs_steps = 10
         num_amp_obs = 232
+
+
+class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
+    class policy:
+        init_noise_std = 0.33
+        # init_noise_std = 0.055
+        # actor_hidden_dims = [1024, 512, 256]
+        # critic_hidden_dims =[1024, 512, 256]
+        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
+        activation = 'elu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+
+    class algorithm(LeggedRobotCfgPPO.algorithm):
+        learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
+        entropy_coef = 0.01
+        normalize_value = False
+        normalize_obs = True
+
+    class runner(LeggedRobotCfgPPO.runner):
+        run_name = 'full_aligned_test_w_std'  # 'smpl_ppo'
+        experiment_name = 'smpl_ppo'
+        use_amp_runner = False  # 可以联动！和 amp
+        max_iterations = 38000  # number of policy updates
+        load_run = 'test_small'
+        # load_run = 'obs_norm'
+        # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
+        # load_run = 'SOTA_2e-8torque_norm_obs'
+
+        # checkpoint = '6000'
+        save_interval = 1000  # check for potential saves every this many iterations
+        eval_interval = 2000
+
+        num_steps_per_env = 32  # per iteration
+        num_learning_epochs = 6
+        num_mini_batches = 6
+
+        # num_steps_per_env = 24 # per iteration
+        # num_learning_epochs = 4
+        # num_mini_batches = 5
+
+    class amp_config:
+        disc_batch = 512
+        disc_updates = 1
+        reward_coef = 1
+        state_dim = 2320
+        hidden_dims = [1024, 512]
+        normalize_input = True
+        lr = 3e-4
+        grad_penalty_coef = 1.0
+        logit_l2_coef = 1e-5
+        weight_decay = 0.0001
+
+        class dataset_cfg:
+            replay_buffer_size = 200000
+            demo_buffer_size = 200000

@@ -1,10 +1,15 @@
 from isaacgym import gymapi
 import torch
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
+import os
+import numpy as np
+from isaacgym import gymapi, gymutil
+from videoskills.utils.torch_utils import to_torch
+from videoskills import LEGGED_GYM_ROOT_DIR
 
 
 class G1Robot(LeggedRobotImi):
-    def _build_env(self, env_id, env_ptr, humanoid_asset):
+    def _build_env(self, env_id, env_ptr, robot_asset):
         col_group = env_id
         col_filter = self.cfg.asset.self_collisions # Setting the collision filter to 0 will enable collisions between all shapes in the actor.
 
@@ -14,27 +19,17 @@ class G1Robot(LeggedRobotImi):
         start_pose.r = gymapi.Quat(*self.base_init_state[3:7])
 
         # here is the instance of the humanoid asset
-        robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
+        robot_handle = self.gym.create_actor(env_ptr, robot_asset, start_pose, "humanoid", col_group, col_filter,
                                                 0)
 
-        self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
+        # self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
+
 
         for j in range(self.num_bodies):
             self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
 
-        dof_prop = self.gym.get_asset_dof_properties(humanoid_asset)
-
-        # dof_prop["stiffness"] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
-        # dof_prop["damping"] =  torch.tensor(self.damping, dtype=torch.float, device=self.device)
-
-        # self.cfg.control.stiffness = {}
-        # self.cfg.control.damping = {}
-        # for i, dof_name in enumerate(self.dof_names):
-        #     self.cfg.control.stiffness[dof_name] = torch.tensor(dof_prop['stiffness'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
-        #     self.cfg.control.damping[dof_name] =  torch.tensor(dof_prop['damping'][i] * self.cfg.control.pd_scale, dtype=torch.float, device=self.device)
-
-        self.gym.set_actor_dof_properties(env_ptr, robot_handle, dof_prop)
-
+        self.gym.set_actor_dof_properties(env_ptr, robot_handle, self.dof_props)
+        # self.gym.get_actor_dof_properties(env_ptr, robot_handle)
         props = self.gym.get_actor_rigid_shape_properties(env_ptr, robot_handle)
         body2shape = self.gym.get_actor_rigid_body_shape_indices(env_ptr, robot_handle)
         body_names = self.body_names

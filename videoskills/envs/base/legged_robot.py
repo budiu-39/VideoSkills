@@ -359,9 +359,8 @@ class LeggedRobot(BaseTask):
         lim_low = self.dof_limits_lower.cpu().numpy()
         lim_high = self.dof_limits_upper.cpu().numpy()
 
-        self.pd_action_offset = 0.5 * (lim_high + lim_low)
+        self.pd_action_offset = torch.zeros_like(self.dof_pos_limits[:, 0], device=self.device, dtype=torch.float)
         self.pd_action_scale = 0.5 * (lim_high - lim_low)
-        self.pd_action_offset = to_torch(self.pd_action_offset, device=self.device)
         self.pd_action_scale = to_torch(self.pd_action_scale, device=self.device)
         return
 

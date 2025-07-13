@@ -79,7 +79,7 @@ class LeggedRobotImi(LeggedRobot):
         asset_options = gymapi.AssetOptions()
         asset_options.angular_damping = 0.01
         asset_options.max_angular_velocity = 100.0
-        asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
+        asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
 
         asset_path = self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         asset_root = os.path.dirname(asset_path)
@@ -99,7 +99,6 @@ class LeggedRobotImi(LeggedRobot):
         self.num_dofs = self.gym.get_asset_dof_count(robot_asset)
         self.num_bodies = self.gym.get_asset_rigid_body_count(robot_asset)
         self.body_names = self.gym.get_asset_rigid_body_names(robot_asset)
-        self.skeleton_tree = SkeletonTree.from_mjcf(asset_path)
         self.dof_names = self.gym.get_asset_dof_names(robot_asset)
         self.dof_body_ids = np.arange(1, len(self.body_names)).tolist()
         # TODO: 要改的 因为不一定是 3 dof
@@ -117,6 +116,14 @@ class LeggedRobotImi(LeggedRobot):
         self.envs = []
         max_agg_bodies = 160
         max_agg_shapes = 160
+
+        if hasattr(self.cfg.asset,'file_urdf'):
+            # If the asset is a URDF, we need to copy some properties from the URDF to the MJCF asset.
+            self.dof_props = self._build_dof_properties_from_urdf(asset_options, robot_asset)
+        else:
+            self.dof_props = self.gym.get_asset_dof_properties(robot_asset)
+
+
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
@@ -127,6 +134,8 @@ class LeggedRobotImi(LeggedRobot):
 
         # regularization?
         self._build_pd_action_offset_scale()
+
+
 
         # Hacky for trained smpl model
         if hasattr(self.cfg.control, "action_scale"):
@@ -151,6 +160,32 @@ class LeggedRobotImi(LeggedRobot):
             total_mass += prop.mass
         print("Total mass of the robot:", total_mass)
 
+    def _build_dof_properties_from_urdf(self, asset_options, robot_asset):
+        urdf_path = self.cfg.asset.file_urdf.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+        ref_asset = self.gym.load_asset(self.sim,
+                                        os.path.dirname(urdf_path),
+                                        os.path.basename(urdf_path),
+                                        asset_options)
+
+        ref_dof_names = self.gym.get_asset_dof_names(ref_asset)
+        ref_dof_props = self.gym.get_asset_dof_properties(ref_asset)
+
+        # 建立名字 → index 映射
+        name2idx_ref = {n: i for i, n in enumerate(ref_dof_names)}
+
+        dof_props = self.gym.get_asset_dof_properties(robot_asset).copy()
+
+        fields_to_copy = ["velocity", "effort",
+                          "stiffness", "damping"]  # 你想同步的字段
+
+        for i_mjcf, name in enumerate(self.dof_names):
+            if name not in name2idx_ref:
+                continue  # URDF 没有：留原值
+            j_ref = name2idx_ref[name]
+            for field in fields_to_copy:
+                dof_props[field][i_mjcf] = ref_dof_props[field][j_ref]
+
+        return dof_props
 
     def render(self):
         if not self.headless and hasattr(self, "ref_body_pos"):
@@ -273,7 +308,7 @@ class LeggedRobotImi(LeggedRobot):
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
-        self.gym.refresh_dof_force_tensor(self.sim)
+        # self.gym.refresh_dof_force_tensor(self.sim)
         self.gym.refresh_force_sensor_tensor(self.sim)
 
     def _reset_robot(self, env_ids):
@@ -354,9 +389,9 @@ class LeggedRobotImi(LeggedRobot):
         bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
         self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
 
-        dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dofs)
+        # dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
+        # self.gym.refresh_rigid_body_state_tensor(self.sim)
+        # self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dofs)
 
         self.body_pos = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]   #3
         self.body_rot = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]   #4
