@@ -77,7 +77,7 @@ class LeggedRobotImi(LeggedRobot):
         """
 
         asset_options = gymapi.AssetOptions()
-        asset_options.angular_damping = 0.01
+        asset_options.angular_damping = 0.0
         asset_options.max_angular_velocity = 100.0
         asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
 
@@ -122,7 +122,10 @@ class LeggedRobotImi(LeggedRobot):
             self.dof_props = self._build_dof_properties_from_urdf(asset_options, robot_asset)
         else:
             self.dof_props = self.gym.get_asset_dof_properties(robot_asset)
-
+            self.dof_props['effort'] = torch.tensor([500] * self.num_dofs, dtype=torch.float, device=self.device)
+            self.dof_props["stiffness"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
+            self.dof_props["damping"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
+            # self.dof_props["armature"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
 
         for i in range(self.num_envs):
             # create env instance
@@ -139,7 +142,7 @@ class LeggedRobotImi(LeggedRobot):
 
         # Hacky for trained smpl model
         if hasattr(self.cfg.control, "action_scale"):
-            self.pd_action_scale = 3.14 * torch.ones_like(self.dof_limits_lower).to(self.device)
+            self.pd_action_scale = self.cfg.control.action_scale * torch.ones_like(self.dof_limits_lower).to(self.device)
 
         self.body_ids = torch.arange(len(self.body_names), device=self.device, dtype=torch.long)
 
@@ -156,7 +159,7 @@ class LeggedRobotImi(LeggedRobot):
         body_props = self.gym.get_actor_rigid_body_properties(self.envs[0], self.robot_handles[0])  # 获取刚体属性
         total_mass = 0.0
         for i, prop in enumerate(body_props):
-            print(f"Body {i} mass:", prop.mass)
+            # print(f"Body {i} mass:", prop.mass)
             total_mass += prop.mass
         print("Total mass of the robot:", total_mass)
 
@@ -176,14 +179,16 @@ class LeggedRobotImi(LeggedRobot):
         dof_props = self.gym.get_asset_dof_properties(robot_asset).copy()
 
         fields_to_copy = ["velocity", "effort",
-                          "stiffness", "damping"]  # 你想同步的字段
+                          "stiffness", "damping"]  # 想同步的字段
 
         for i_mjcf, name in enumerate(self.dof_names):
             if name not in name2idx_ref:
-                continue  # URDF 没有：留原值
+                continue
             j_ref = name2idx_ref[name]
             for field in fields_to_copy:
                 dof_props[field][i_mjcf] = ref_dof_props[field][j_ref]
+
+        dof_props['armature'] = torch.tensor([0.02] * self.num_dofs, dtype=torch.float, device=self.device)
 
         return dof_props
 
@@ -334,12 +339,18 @@ class LeggedRobotImi(LeggedRobot):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
         dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
         net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
+        mass_matrix = self.gym.acquire_mass_matrix_tensor(self.sim, self.cfg.asset.name)
+
         self.gym.refresh_dof_state_tensor(self.sim)
         self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
+        self.gym.refresh_mass_matrix_tensors(self.sim)
 
         # create some wrapper tensors for different slices
         # 13 + dof * (1 + 1)
+        self.mass_matrix = gymtorch.wrap_tensor(mass_matrix).view(self.num_envs, self.num_dofs, self.num_dofs)
+        M_diag = self.mass_matrix[0].diag()
         self.root_states = gymtorch.wrap_tensor(actor_root_state)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 0]
@@ -349,6 +360,7 @@ class LeggedRobotImi(LeggedRobot):
         self.base_pos = self.root_states[:self.num_envs, 0:3]
         self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1,
                                                                             3)  # shape: num_envs, num_bodies, xyz axis
+        self.mass_matrix = self.mass_matrix.view(self.num_envs, self.num_dofs, self.num_dofs)
 
         # initialize some data used later on
         self.common_step_counter = 0
@@ -378,8 +390,11 @@ class LeggedRobotImi(LeggedRobot):
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
 
-        self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
-        self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
+        if self.cfg.control.init_pd_from_mass_matrix:
+            self.init_pd_from_mass_matrix()
+        else:
+            self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
+            self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
 
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
@@ -810,6 +825,32 @@ class LeggedRobotImi(LeggedRobot):
         # obs, _, _, _, _ = self.step(
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
+
+    def init_pd_from_mass_matrix(self, zeta: float = 0.8):
+        def infer_wn(name: str) -> float:
+            if "hip_" in name: return 20.0
+            if "knee" in name: return 18.0
+            if "ankle" in name: return 14.0
+            if "waist" in name: return 16.0
+            if "shoulder" in name: return 12.0
+            if "elbow" in name: return 10.0
+            if "wrist" in name or "head" in name or "neck" in name:
+                return 8.0
+            raise ValueError(f"undefine dof name: {name}")
+
+        wn = torch.tensor([infer_wn(n) for n in self.dof_names],
+                          device=self.device)
+
+        J_eff = torch.as_tensor(self.cfg.control.J_eff,
+                                dtype=torch.float32,
+                                device=self.device)
+
+        # ---- 3. 计算 PD 增益 ----
+        self.p_gains = (J_eff * wn ** 2).detach()
+        self.d_gains = (2 * zeta * J_eff * wn).detach()
+
+        self.p_gains.requires_grad = False
+        self.d_gains.requires_grad = False
 
 
 @torch.jit.script

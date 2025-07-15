@@ -5,7 +5,7 @@ import numpy as np
 
 class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
-        init_noise_std = 0.33
+        init_noise_std = 0.18
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -22,12 +22,13 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = '2e-7G1_universal'
+        run_name = 'g1_ver2_universal'  # 'smpl_ppo'
         use_amp_runner = False
-        load_run = ''
+        load_run = 'pd_ver1'
+        # load_run = 'g1_universal'
         experiment_name = 'g1_ppo'
 
-        save_interval = 1000 # check for potential saves every this many iterations
+        save_interval = 2000 # check for potential saves every this many iterations
         eval_interval = 2000
 
         num_steps_per_env = 32  # per iteration
@@ -59,7 +60,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 30
-    
+
     class env(LeggedRobotCfg.env):
         episode_length_s = 5
         eval_mode = False
@@ -83,28 +84,56 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_train')
 
-        bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
-              'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
-              'right_hip_yaw_link','right_knee_link','right_ankle_pitch_link','right_ankle_roll_link',
-              'waist_yaw_link','waist_roll_link','torso_link','left_shoulder_pitch_link','left_shoulder_roll_link',
-              'left_shoulder_yaw_link','left_elbow_link','left_wrist_roll_link','left_wrist_pitch_link',
-              'left_wrist_yaw_link','right_shoulder_pitch_link','right_shoulder_roll_link',
-              'right_shoulder_yaw_link','right_elbow_link','right_wrist_roll_link','right_wrist_pitch_link',
-              'right_wrist_yaw_link']
+        # bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
+        #       'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
+        #       'right_hip_yaw_link','right_knee_link','right_ankle_pitch_link','right_ankle_roll_link',
+        #       'waist_yaw_link','waist_roll_link','torso_link','left_shoulder_pitch_link','left_shoulder_roll_link',
+        #       'left_shoulder_yaw_link','left_elbow_link','left_wrist_roll_link','left_wrist_pitch_link',
+        #       'left_wrist_yaw_link','right_shoulder_pitch_link','right_shoulder_roll_link',
+        #       'right_shoulder_yaw_link','right_elbow_link','right_wrist_roll_link','right_wrist_pitch_link',
+        #       'right_wrist_yaw_link']
 
     class control:
         # PD Drive parameters:
         control_type = 'P'
         # action scale: target angle = actionScale * action + defaultAngle
-        # action_scale = 0.25
+        # action_scale = 0.5
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 2
-        stiffness = 12 * [100.] + 3 * [60.] + 14 * [40.]
-        damping = 12 * [10.] + 3 * [6.] + 14 * [4.]
+        pd_scale = 1
+        # PD ver 2.0
+        # stiffness = [150, 185,  50, 200, 50, 50,  # left hip/knee/ankle
+        #              150, 185, 50, 200, 50, 50,   # right hip/knee/ankle
+        #              50,  100, 60,                # waist torso
+        #              50, 40, 30 , 30, 10, 10, 10 ,  # left shoulder/elbow/wrist
+        #              50, 40, 30 , 30, 10, 10, 10]  # right shoulder/elbow/wrist
+        # damping =  [12, 15, 3, 15, 4, 4,
+        #              12, 15, 3, 15, 4, 4,
+        #              4, 8, 6,
+        #              4, 4, 3, 3 ,  1, 1, 1,
+        #              4, 4, 3, 3 ,  1, 1, 1]
+        # PD ver 1.0
+        stiffness = [155.76, 140,  9.24, 25.95, 10, 10,
+                     155.80, 140,  9.24, 25.95, 10, 10,
+                     30.18,  63.05, 48.90,
+                     30, 20, 10, 10,   2, 2, 2 ,
+                     30, 20, 10, 10,   2, 2, 2 ]
+        damping =  [12.46, 11, 0.74, 2.31, 1, 1,
+                     12.46, 11, 0.74, 2.31, 1, 1,
+                     3.02,  6.31, 4.89,
+                     6, 5, 3, 1,  1, 1, 1,
+                     6, 5, 3, 1,  1, 1, 1]
+        init_pd_from_mass_matrix = False
+        # Effective Joint Inertia 关节等效惯量
+        # J_eff =  [0.3894, 0.4613, 0.0231, 0.0801, 0.0027, 0.0018, 0.3895, 0.4613, 0.0231,
+        #                 0.0801, 0.0027, 0.0018, 0.1179, 0.2463, 0.1910, 0.1054, 0.0720, 0.0357,
+        #                 0.0327, 0.0011, 0.0046, 0.0014, 0.1054, 0.0720, 0.0357, 0.0327, 0.0011,
+        #                 0.0046, 0.0014]
+        # zeta = 0.8
 
     class noise:
         add_noise = False
@@ -128,7 +157,7 @@ class G1RoughCfg( LeggedRobotCfg ):
         self_collisions = 1
         # TODO：查看一下这是在干啥
         flip_visual_attachments = False
-  
+
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
@@ -143,8 +172,7 @@ class G1RoughCfg( LeggedRobotCfg ):
             w_vel = 0.1
         class scales:
             imitation = 1.0
-            # torques = -0.00000002
-            torques = -0.0000002
+            torques = -0.00001
 
     class amp:
         activate = False
@@ -212,4 +240,4 @@ class G1RoughCfg( LeggedRobotCfg ):
         }
 
 
-  
+

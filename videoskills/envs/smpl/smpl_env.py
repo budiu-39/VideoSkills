@@ -15,7 +15,7 @@ class SMPLRobot(LeggedRobotImi):
         start_pose.r = gymapi.Quat(*self.base_init_state[3:7])
 
         # here is the instance of the humanoid asset
-        robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, "humanoid", col_group, col_filter,
+        robot_handle = self.gym.create_actor(env_ptr, humanoid_asset, start_pose, self.cfg.asset.name, col_group, col_filter,
                                                 0)
         # self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
 

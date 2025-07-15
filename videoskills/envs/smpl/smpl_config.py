@@ -2,7 +2,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
-        init_noise_std = 0.33
+        init_noise_std = 0.18
         # init_noise_std = 0.055
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
@@ -17,19 +17,19 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_reboot'  # 'smpl_ppo'
-
+        run_name = 'smpl_pure_torque_test_3.14actionscale'  # 'smpl_ppo
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
-        load_run = 'SOTA_2e-8torque_obs_num'
+        load_run = '314action_scale'
+        # checkpoint = 10000
         # load_run = 'obs_norm'
         # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 1000  # check for potential saves every this many iterations
-        eval_interval = 2000
+        save_interval = 500 # check for potential saves every this many iterations
+        eval_interval = 500
 
         num_steps_per_env = 32  # per iteration
         num_learning_epochs = 6
@@ -72,15 +72,15 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_valid_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
 
-        bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
-                             'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
-                             'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+        # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
+        #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+        #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
         key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist",  "L_Wrist"]
 
@@ -120,12 +120,28 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # PD Drive parameters:
         control_type = 'P'# [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
-        action_scale = 3.14
+        # action_scale = 2.0
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 0.333
-        stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [500] + 6 * [300]
-        damping = 9 * [80] + 3 * [50] + 9 * [80] + 3 * [50] + 9 * [100] + 15 * [50] + 6 * [30] + 9 * [50] + 6 * [30]
+        pd_scale = 1.0
+        # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
+        #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+        #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+        # stiffness = [150, 185,  50, 200, 50, 50,  # left hip/knee/ankle
+        #              150, 185, 50, 200, 50, 50,   # right hip/knee/ankle
+        #              50,  100, 60,                # waist torso
+        #              50, 40, 30 , 30, 10, 10, 10 ,  # left shoulder/elbow/wrist
+        #              50, 40, 30 , 30, 10, 10, 10]  # right shoulder/elbow/wrist
+        # damping =  [12, 15, 3, 15, 4, 4,
+        #              12, 15, 3, 15, 4, 4,
+        #              4, 8, 6,
+        #              4, 4, 3, 3 ,  1, 1, 1,
+        #              4, 4, 3, 3 ,  1, 1, 1]
+        limit = 33 * [400] + 15 * [200] + 6 * [50] + 9 * [200] + 6 * [50]
+        stiffness = 6 * [150] + 6 * [50] + 6 * [150] + 6 * [50] + 9 * [50] + 15 * [30] + 6 * [10] + 9 * [30] + 6 * [10]
+        damping = 6 * [12] + 6 * [3] + 6 * [12] + 6 * [3] + 9 * [4] + 15 * [3] + 6 * [1] + 9 * [3] + 6 * [1]
+
+        init_pd_from_mass_matrix = False
         # pd_scale = 0.333
         # pd_scale = 0.2
 
@@ -152,7 +168,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_vel = 0.1
         class scales:
             imitation = 1.0
-            torques = -0.00000002
+            torques = -0.0000001
 
     class sim(LeggedRobotCfg.sim):
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30

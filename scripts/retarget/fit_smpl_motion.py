@@ -419,8 +419,8 @@ def main() -> None:
             'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
             'test': ['Transitions_mocap', 'SSM_synced'],
             'train':
-                # ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB"]
-                    ["ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]   # Adding ACCAD
+                ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
+                 "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]
         }
         all_datasets = set(sum(amass_splits.values(), []))  # flatten list
         # ==== AMASS check ====

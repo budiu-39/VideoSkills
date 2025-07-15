@@ -1,16 +1,15 @@
 import os
-from datetime import datetime
 from typing import Tuple
-
+from datetime import datetime
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 from videoskills.runner.runner_eval import OnPolicyRunnerEval
 from videoskills.runner.runner_amp import OnPolicyRunnerAMP
 
-
 from videoskills import LEGGED_GYM_ROOT_DIR
 from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
+import yaml
 
 class TaskRegistry():
     def __init__(self):
@@ -58,22 +57,26 @@ class TaskRegistry():
             raise ValueError(f"Task with name: {name} was not registered")
         if env_cfg is None:
             # load config files
-            env_cfg, _ = self.get_cfgs(name)
+            env_cfg, _ = self.get_cfgs(name)   # Hacky edited it, to ens
         # override cfg from args (if specified)
         env_cfg, _ = update_cfg_from_args(env_cfg, None, args)
         set_seed(env_cfg.seed)
         # parse sim params (convert to dict first)
         sim_params = {"sim": class_to_dict(env_cfg.sim)}
         sim_params = parse_sim_params(args, sim_params)
+
+        # if sim params are provided in env_cfg, parse them and update/override above:
         # create the environment
         env = task_class(   cfg=env_cfg,
                             sim_params=sim_params,
                             physics_engine=args.physics_engine,
                             sim_device=args.sim_device,
                             headless=args.headless)
+
+
         return env, env_cfg
 
-    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_root="default") -> Tuple[OnPolicyRunner, LeggedRobotCfgPPO]:
+    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_dir=None) -> Tuple[OnPolicyRunner, LeggedRobotCfgPPO]:
         """ Creates the training algorithm  either from a registered namme or from the provided config file.
 
         Args:
@@ -81,7 +84,7 @@ class TaskRegistry():
             name (string, optional): Name of a registered env. If None, the config file will be used instead. Defaults to None.
             args (Args, optional): Isaac Gym comand line arguments. If None get_args() will be called. Defaults to None.
             train_cfg (Dict, optional): Training config file. If None 'name' will be used to get the config file. Defaults to None.
-            log_root (str, optional): Logging directory for Tensorboard. Set to 'None' to avoid logging (at test time for example). 
+            log_root (str, optional): Logging directory for Tensorboard. Set to 'None' to avoid logging (at test time for example).
                                       Logs will be saved in <log_root>/<date_time>_<run_name>. Defaults to "default"=<path_to_LEGGED_GYM>/logs/<experiment_name>.
 
         Raises:
@@ -107,12 +110,8 @@ class TaskRegistry():
         # override cfg from args (if specified)
         _, train_cfg = update_cfg_from_args(None, train_cfg, args)
 
-        if log_root=="default":
-            log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-            log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
-        elif log_root is None:
-            log_dir = None
-        else:
+        log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
+        if log_dir is None:
             log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
         
         train_cfg_dict = class_to_dict(train_cfg)
@@ -131,7 +130,7 @@ class TaskRegistry():
             resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
             print(f"Loading model from: {resume_path}")
             runner.load(resume_path)
-        return runner, train_cfg, log_dir
+        return runner, train_cfg
 
 # make global task registry
 task_registry = TaskRegistry()

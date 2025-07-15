@@ -6,12 +6,14 @@ from isaacgym import gymapi
 from isaacgym import gymutil
 import torch
 import joblib
+import yaml
+from datetime import datetime
 
 from videoskills import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
 # LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 
 def class_to_dict(obj) -> dict:
-    if not  hasattr(obj,"__dict__"):
+    if not hasattr(obj,"__dict__"):
         return obj
     result = {}
     for key in dir(obj):
@@ -203,7 +205,44 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
         return motion_file
 
 
+def print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml"):
+    log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
+    log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
+    env_cfg_dict = class_to_dict(env_cfg)
+    train_cfg_dict = class_to_dict(train_cfg)
+    class SmartListDumper(yaml.SafeDumper):
+        pass
+    SmartListDumper.add_representer(
+        list,
+        lambda dumper, data:
+            dumper.represent_sequence("tag:yaml.org,2002:seq",
+                                      data,
+                                      flow_style=True)
+    )
+    cfg = {"env_cfg": env_cfg_dict, "train_cfg": train_cfg_dict}
+    print(yaml.dump(cfg, Dumper=SmartListDumper,
+                    sort_keys=False, allow_unicode=True, width=120))
 
+    def sanitize(o):
+        if isinstance(o, (np.ndarray,)):
+            return o.tolist()
+        if hasattr(o, 'cpu') and hasattr(o, 'numpy'):  # torch.Tensor
+            return o.cpu().numpy().tolist()
+        if isinstance(o, np.generic):  # ✨ 新增
+            return o.item()
+        return o
+    def recursive_map(d):
+        if isinstance(d, dict):
+            return {k: recursive_map(v) for k, v in d.items()}
+        elif isinstance(d, list):
+            return [recursive_map(v) for v in d]
+        else:
+            return sanitize(d)
+
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, filename), "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    return log_dir
 
 
 class PolicyExporterLSTM(torch.nn.Module):
@@ -234,4 +273,3 @@ class PolicyExporterLSTM(torch.nn.Module):
         traced_script_module = torch.jit.script(self)
         traced_script_module.save(path)
 
-    

@@ -123,10 +123,10 @@ class LeggedRobot(BaseTask):
             # 批量记录，不用 for-loop 判断
             for env_id in alive_ids:
                 self.recorded_data[env_id].append({
-                    'body_pos': body_pos_cpu[env_id],
-                    'ref_body_pos': ref_body_pos_cpu[env_id],
-                    'body_rot': body_rot_cpu[env_id],
-                    'ref_body_rot': ref_body_rot_cpu[env_id],
+                    'body_pos': body_pos_cpu[env_id].copy(),
+                    'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
+                    'body_rot': body_rot_cpu[env_id].copy(),
+                    'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
                 })
 
         if self.cfg.domain_rand.push_robots:
@@ -386,6 +386,19 @@ class LeggedRobot(BaseTask):
             torques = actions_scaled
         else:
             raise NameError(f"Unknown controller type: {control_type}")
+
+        # DEBUG
+        # avg_abs_tau = torques.abs().mean().item()
+        # print(f"[Torque INFO]  ⟨|τ|⟩ = {avg_abs_tau:.2f}  N·m")
+        #
+        # mask_over = torques.abs() > self.torque_limits
+        # if mask_over.any():
+        #     over_idx = torch.nonzero(mask_over, as_tuple=False)[:10].tolist()  # 前 10 个索引
+        #     max_excess = (torques.abs() - self.torque_limits)[mask_over].max()
+        #     print(f"[Torque WARN] {mask_over.sum().item()} DOF over limit; "
+        #           f"max excess = {max_excess.item():.2f} N·m "
+        #           f"at indices {over_idx} …")
+
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
     def _reset_dofs(self, env_ids):

@@ -256,14 +256,16 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     failed_keys.append(motion_lib._motion_keys[batch_ids[env_id]])
 
             motion_id_to_data = defaultdict(list)
+            pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all = [], [], [], []
+
             for env_id in range(batch_size):
                 motion_id = batch_ids[env_id]
                 motion_id_to_data[motion_id].extend(self.env.recorded_data[env_id])
-                self.env.recorded_data[env_id].clear()  # 清空缓存，避免污染下一个 batch
 
-            pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all = [], [], [], []
+            self.env.recorded_data = [[] for _ in range(num_envs)] # 清空缓存，避免污染下一个 batch
 
-            for motion_id in sorted(motion_id_to_data.keys()):
+            motion_ids_sorted = sorted(motion_id_to_data.keys())
+            for motion_id in motion_ids_sorted:
                 frames = motion_id_to_data[motion_id]
                 if len(frames) == 0:
                     continue  # skip empty
@@ -271,10 +273,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 gt_pos_all.append(np.stack([f["ref_body_pos"] for f in frames], axis=0))  # (T, J, 3)
                 pred_rot_all.append(np.stack([f["body_rot"] for f in frames], axis=0))  # (T, J, 4)
                 gt_rot_all.append(np.stack([f["ref_body_rot"] for f in frames], axis=0))  # (T, J, 4)
+                motion_id_to_data[motion_id] = None  # clear memory
 
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
-            motion_ids_sorted = sorted(motion_id_to_data.keys())
 
             for k, v in batch_metrics.items():
                 global_metrics[k].extend(v)
@@ -410,3 +412,28 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
         summary += ep_info_str
         print(summary)
+
+    def save(self, path, infos=None):
+        torch.save({
+            'model_state_dict': self.alg.actor_critic.state_dict(),
+            'optimizer_state_dict': self.alg.optimizer.state_dict(),
+            'obs_rms_state_dict': self.alg.obs_mean_std.state_dict() if self.alg.normalize_obs else None,
+            'value_rms_state_dict': self.alg.value_mean_std.state_dict() if self.alg.normalize_value else None,
+            'iter': self.current_learning_iteration,
+            'infos': infos,
+            }, path)
+
+
+    def load(self, path, load_optimizer=True):
+        loaded_dict = torch.load(path)
+        self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        if load_optimizer:
+            self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+        self.current_learning_iteration = loaded_dict['iter']
+
+        if self.alg.normalize_obs:
+            self.alg.obs_mean_std.load_state_dict(loaded_dict["obs_rms_state_dict"])
+        if self.alg.normalize_value:
+            self.alg.value_mean_std.load_state_dict(loaded_dict["value_rms_state_dict"])
+
+        return loaded_dict['infos']

@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 from .. import torch_utils
 import torch
 import joblib
+from tqdm import tqdm
 import glob
 
 USE_CACHE = False
@@ -210,7 +211,6 @@ class MotionLib():
         return motion_state
 
     def _load_motions(self, motion_file, skeleton_trees = None):
-        # TODO: Add support for offset
         self._motions = []
         self._motion_lengths = []
         self._motion_fps = []
@@ -223,17 +223,8 @@ class MotionLib():
 
         motion_files = self._fetch_motion_files(motion_file)
         num_motion_files = len(motion_files)
-        for f in range(num_motion_files):
-            curr_file = motion_files[f]
-            print("Loading {:d}/{:d} motion files: {:s}".format(f + 1, num_motion_files, curr_file))
+        for curr_file in tqdm(motion_files, desc="Loading motion files", unit="file"):
             curr_motion = SkeletonMotion.from_file(curr_file)
-
-            # trans, trans_fix = self.fix_trans_height(pose_aa, trans, 0, mesh_parsers)
-
-            # sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_trees[f], pose_quat_global, trans,
-            #                                                             is_local=False)
-
-            # curr_motion = SkeletonMotion.from_skeleton_state(sk_state, curr_file.get("fps", 30))
 
             if self._rotate_motion:
                 curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
