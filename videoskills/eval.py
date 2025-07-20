@@ -10,7 +10,9 @@ import torch
 
 
 def eval(args):
-    env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+
+    # env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    env_cfg, train_cfg = task_registry.load_cfg(args)
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)
     # override some parameters for testing
     # env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)
@@ -43,6 +45,7 @@ def eval(args):
     # for i in range(10*int(env.max_episode_length)):
     #     actions = policy(obs.detach())
     #     obs, _, rews, dones, infos = env.step(actions.detach())
+
 
 if __name__ == '__main__':
     EXPORT_POLICY = False

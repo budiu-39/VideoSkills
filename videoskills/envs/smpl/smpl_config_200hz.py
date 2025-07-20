@@ -2,7 +2,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
-        init_noise_std = 0.33
+        init_noise_std = 0.18
         # init_noise_std = 0.055
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
@@ -17,7 +17,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'SOTA_reboot'  # 'smpl_ppo'
+        run_name = 'SOTA_reboot_pure_pd_small_pdscale_4096'  # 'smpl_ppo'
 
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
@@ -74,7 +74,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/AMASS_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_train_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/SMPL_motion/AMASS_test_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/cxk')
         # file = ('{LEGGED_GYM_ROOT_DIR}/output/SMPL_Robot_motion/turn')
@@ -124,9 +124,38 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
-        pd_scale = 0.333
+        pd_scale = 0.1
         stiffness = 9 * [800] + 3 * [500] + 9 * [800] + 3 * [500] + 9 * [1000] + 15 * [500] + 6 * [300] + 9 * [500] + 6 * [300]
         damping = 9 * [80] + 3 * [50] + 9 * [80] + 3 * [50] + 9 * [100] + 15 * [50] + 6 * [30] + 9 * [50] + 6 * [30]
+        stiffness = [
+            170, 150, 30, 30, 30, 10,     # 'L_Hip', 'L_Knee',
+            10, 10, 10, 5, 5, 5,  # 'L_Ankle', 'L_Toe'
+            170, 150, 30, 30, 30, 10,
+            10, 10, 10,  5, 5, 5,
+            60, 60, 60, 110, 40, 70,   # 'Torso', 'Spine',
+            80, 30, 50, 5, 5, 5,  # 'Chest', 'Neck'
+            5, 5, 5, 130, 20, 75,  # Head, 'L_Thorax',
+            85, 20, 50, 15, 5, 12,   # 'L_Shoulder', 'L_Elbow'
+            5, 5, 5, 5, 5, 5,  # 'L_Wrist', 'L_Hand'
+            130, 20, 75, 85, 20, 50,
+            15, 5, 12, 5, 5, 5,
+            5, 5, 5,
+        ]
+        # 太大 的 damping 会
+        damping = [
+            15, 12, 3, 3, 3, 1.5,
+            1.5, 1.5, 1.5, 1, 1, 1,
+            15, 12, 3, 3, 3, 1.5,
+            1.5, 1.5, 1.5, 1, 1, 1,
+            6, 6, 6, 9, 4, 7,
+            8, 3, 5, 1, 1, 1,
+            1, 1, 1, 13, 2, 7,
+            8, 2, 5, 2, 1, 2,
+            1, 1, 1, 1, 1, 1,
+            13, 2, 7, 8, 2, 5,
+            2, 1, 2, 1, 1, 1,
+            1, 1, 1,
+        ]
         # pd_scale = 0.333
         # pd_scale = 0.2
 
@@ -153,7 +182,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_vel = 0.1
         class scales:
             imitation = 1.0
-            torques = -0.00000002
+            torques = -0.00002
+            action_rate = - 0.05
 
     class sim(LeggedRobotCfg.sim):
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30

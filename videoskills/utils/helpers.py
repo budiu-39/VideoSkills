@@ -8,6 +8,7 @@ import torch
 import joblib
 import yaml
 from datetime import datetime
+from typing import Any, Dict, Type
 
 from videoskills import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
 # LEGGED_GYM_ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
@@ -28,6 +29,46 @@ def class_to_dict(obj) -> dict:
             element = class_to_dict(val)
         result[key] = element
     return result
+
+def dict_to_class(data: Any) -> Any:
+    """
+    Recursively convert a dictionary or list into a simple object with attributes.
+    - Dicts become instances of a dynamically created class with attributes for each key.
+    - Lists have each element converted in the same way.
+    - Primitive values are returned unchanged.
+    """
+    # Handle dictionaries by creating a dynamic class instance
+    if isinstance(data, dict):
+        # Create a new class for this dict
+        cls = type('ConfigObject', (), {})
+        obj = cls()
+        for key, value in data.items():
+            setattr(obj, key, dict_to_class(value))
+        return obj
+
+    # Handle lists by converting each element
+    if isinstance(data, list):
+        return [dict_to_class(item) for item in data]
+
+    # Primitives are returned as-is
+    return data
+
+# def dict_to_class(data: Any) -> Any:
+#     """
+#     Convert a dictionary to a class instance.
+#     :param dict: Dictionary to convert.
+#     :return: Class instance with attributes set from the dictionary.
+#     """
+#     if isinstance(data, dict):
+#         # Convert each value and create a SimpleNamespace
+#         return SimpleNamespace(**{k: dict_to_class(v) for k, v in data.items()})
+#     elif isinstance(data, list):
+#         # Convert each item in the list
+#         return [dict_to_class(item) for item in data]
+#     else:
+#         # Return primitives unchanged
+#         return data
+
 
 def update_class_from_dict(obj, dict):
     for key, val in dict.items():
@@ -104,10 +145,6 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         # num envs
         if args.num_envs is not None:
             env_cfg.env.num_envs = args.num_envs
-        if args.dev:
-            env_cfg.dev = True
-        else:
-            env_cfg.dev = False
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -138,6 +175,7 @@ def get_args():
         {"name": "--run_name", "type": str,  "help": "Name of the run. Overrides config file if provided."},
         {"name": "--load_run", "type": str,  "help": "Name of the run to load when resume=True. If -1: will load the last run. Overrides config file if provided."},
         {"name": "--checkpoint", "type": int,  "help": "Saved model checkpoint number. If -1: will load the last checkpoint. Overrides config file if provided."},
+        {"name": "--motion_file", "type": str, "default": "AMASS_test", "help": "motion file to use for training/evaluation. Overrides config file if provided."},
         
         {"name": "--headless", "action": "store_true", "default": False, "help": "Force display off at all times"},
         {"name": "--horovod", "action": "store_true", "default": False, "help": "Use horovod for multi-gpu training"},
@@ -148,6 +186,7 @@ def get_args():
         {"name": "--use_wandb", "action": "store_true", "default": False, "help": "Enable logging to Weights & Biases"},
         {"name": "--wandb_project", "type": str, "default": "VideoSkills", "help": "Weights & Biases project name"},
         {"name": "--dev", "action": "store_true", "default": False, "help": "development mode, use smaller envs"},
+        # {"name": "--load_run", "type": str, "default": False, "help": "logging path of resume experiment"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(
@@ -159,6 +198,10 @@ def get_args():
     args.sim_device = args.sim_device_type
     if args.sim_device=='cuda':
         args.sim_device += f":{args.sim_device_id}"
+
+    if args.dev:
+        args.num_envs = 16
+        args.headless = False
     return args
 
 def export_policy_as_jit(actor_critic, path):

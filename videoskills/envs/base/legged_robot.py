@@ -39,6 +39,7 @@ class LeggedRobot(BaseTask):
         self._parse_cfg(self.cfg)
         self.eval_mode = self.cfg.env.eval_mode
         self.done_flags = torch.zeros(self.cfg.env.num_envs, dtype=torch.bool, device=sim_device)
+        self.drive_mode = self.cfg.asset.default_dof_drive_mode
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         if not self.headless:
@@ -61,7 +62,13 @@ class LeggedRobot(BaseTask):
         self.render()
         for _ in range(self.cfg.control.decimation):
             self.torques = self._compute_torques(self.actions).view(self.torques.shape)
-            self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
+            if self.drive_mode == gymapi.DOF_MODE_EFFORT:
+                self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
+            else:
+                pd_tar = self.pd_action_offset + self.pd_action_scale * self.actions
+                pd_tar_tensor = gymtorch.unwrap_tensor(pd_tar)
+                self.gym.set_dof_position_target_tensor(self.sim, pd_tar_tensor)
+
             self.gym.simulate(self.sim)
             if self.cfg.env.test:
                 elapsed_time = self.gym.get_elapsed_time(self.sim)
@@ -398,6 +405,9 @@ class LeggedRobot(BaseTask):
         #     print(f"[Torque WARN] {mask_over.sum().item()} DOF over limit; "
         #           f"max excess = {max_excess.item():.2f} N·m "
         #           f"at indices {over_idx} …")
+        # mask_over = torques != 0
+        # if mask_over.any():
+        #     print('[Torque WARN] Some DOFs have non-zero torques, this might be due to the action being zero or the PD controller not being used.')
 
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
@@ -413,9 +423,16 @@ class LeggedRobot(BaseTask):
         self.dof_vel[env_ids] = 0.
 
         env_ids_int32 = env_ids.to(dtype=torch.int32)
+
         self.gym.set_dof_state_tensor_indexed(self.sim,
-                                              gymtorch.unwrap_tensor(self.dof_state),
-                                              gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+                                                  gymtorch.unwrap_tensor(self.dof_state),
+                                                  gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        if self.drive_mode == gymapi.DOF_MODE_POS:
+            self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
+                                                            gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+
+
+
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
             Sets base position based on the curriculum

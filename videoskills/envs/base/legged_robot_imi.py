@@ -18,9 +18,6 @@ from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_t
 class LeggedRobotImi(LeggedRobot):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         self.cfg = cfg
-        if self.cfg.dev:
-            self.cfg.env.num_envs = 16
-            headless = False
         self.sim_params = sim_params
         self.height_samples = None
         self.debug_viz = False
@@ -28,6 +25,7 @@ class LeggedRobotImi(LeggedRobot):
         self.early_termination = self.cfg.early_termination.enabled
         self.stiffness = [v * self.cfg.control.pd_scale for v in self.cfg.control.stiffness]
         self.damping = [v * self.cfg.control.pd_scale for v in self.cfg.control.damping]
+
 
         # quat_to_tan_norm ablation study
         self.activate_quat_to_tan_norm = self.cfg.env.activate_quat_to_tan_norm
@@ -79,7 +77,7 @@ class LeggedRobotImi(LeggedRobot):
         asset_options = gymapi.AssetOptions()
         asset_options.angular_damping = 0.0
         asset_options.max_angular_velocity = 100.0
-        asset_options.default_dof_drive_mode = self.cfg.asset.default_dof_drive_mode
+        asset_options.default_dof_drive_mode = self.drive_mode
 
         asset_path = self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         asset_root = os.path.dirname(asset_path)
@@ -120,13 +118,24 @@ class LeggedRobotImi(LeggedRobot):
         if hasattr(self.cfg.asset,'file_urdf'):
             # If the asset is a URDF, we need to copy some properties from the URDF to the MJCF asset.
             self.dof_props = self._build_dof_properties_from_urdf(asset_options, robot_asset)
+            self.dof_props["damping"] = torch.tensor(len(self.dof_names) * [1], dtype=torch.float, device=self.device)
         else:
             self.dof_props = self.gym.get_asset_dof_properties(robot_asset)
-            self.dof_props['effort'] = torch.tensor([500] * self.num_dofs, dtype=torch.float, device=self.device)
-            self.dof_props["stiffness"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
-            self.dof_props["damping"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
-            # self.dof_props["armature"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
-
+            self.dof_props['effort'] = torch.tensor(self.cfg.control.limit, dtype=torch.float, device=self.device)
+            self.dof_props["velocity"] = torch.tensor(self.cfg.control.velocity_limit, dtype=torch.int32,
+                                            device=self.device)
+            if self.drive_mode == gymapi.DOF_MODE_EFFORT:
+                self.dof_props["damping"] = torch.ones(len(self.dof_names), dtype=torch.float, device=self.device)
+                self.dof_props["stiffness"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
+            else:
+                # self.dof_props['stiffness'] = self.dof_props['stiffness'] * self.cfg.control.pd_scale
+                # self.dof_props['damping'] = self.dof_props['damping'] * self.cfg.control.pd_scale
+                # self.stiffness = self.dof_props['stiffness'].tolist()
+                # self.damping = self.dof_props['damping'].tolist()
+                self.dof_props['stiffness'] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
+                self.dof_props['damping'] = torch.tensor(self.damping, dtype=torch.float, device=self.device)
+        self.dof_props['driveMode'] = torch.tensor([self.cfg.asset.default_dof_drive_mode] * self.num_dofs,
+                                                   dtype=torch.int32, device=self.device)
         for i in range(self.num_envs):
             # create env instance
             env_handle = self.gym.create_env(self.sim, env_lower, env_upper, int(np.sqrt(self.num_envs)))
@@ -178,8 +187,7 @@ class LeggedRobotImi(LeggedRobot):
 
         dof_props = self.gym.get_asset_dof_properties(robot_asset).copy()
 
-        fields_to_copy = ["velocity", "effort",
-                          "stiffness", "damping"]  # 想同步的字段
+        fields_to_copy = ["velocity", "effort"]  # 想同步的字段
 
         for i_mjcf, name in enumerate(self.dof_names):
             if name not in name2idx_ref:
@@ -314,7 +322,7 @@ class LeggedRobotImi(LeggedRobot):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.gym.refresh_net_contact_force_tensor(self.sim)
         # self.gym.refresh_dof_force_tensor(self.sim)
-        self.gym.refresh_force_sensor_tensor(self.sim)
+        # self.gym.refresh_force_sensor_tensor(self.sim)
 
     def _reset_robot(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
@@ -390,11 +398,11 @@ class LeggedRobotImi(LeggedRobot):
         # joint positions offsets and PD gains
         self.default_dof_pos = torch.zeros(self.num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
 
-        if self.cfg.control.init_pd_from_mass_matrix:
-            self.init_pd_from_mass_matrix()
-        else:
-            self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
-            self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
+        # if self.cfg.control.init_pd_from_mass_matrix:
+        #     self.init_pd_from_mass_matrix()
+        # else:
+        self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
+        self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
 
         self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
 
@@ -464,6 +472,9 @@ class LeggedRobotImi(LeggedRobot):
         self._reset_ref_env_ids = env_ids
         self._motion_start_times[env_ids] = motion_times
 
+    # def _reward_action_rate(self):
+    #     diff = self.actions - self.last_actions
+    #     return -self.cfg.rewards.w_act_rate * torch.sum(diff ** 2, dim=1)
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel):
         self.root_states[env_ids, 0:3] = root_pos
@@ -511,9 +522,15 @@ class LeggedRobotImi(LeggedRobot):
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        # if self.drive_mode == gymapi.DOF_MODE_POS:
         self.gym.set_dof_state_tensor_indexed(self.sim,
                                               gymtorch.unwrap_tensor(self.dof_state),
                                               gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        if self.drive_mode == gymapi.DOF_MODE_POS:
+            self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
+                                                            gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+
+
 
     def post_physics_step(self):
         self.gym.refresh_rigid_body_state_tensor(self.sim)
@@ -703,7 +720,7 @@ class LeggedRobotImi(LeggedRobot):
         rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
         diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
         rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
-        vel_err = torch.mean(torch.square(self.body_vel- self.ref_body_vel), dim=1).mean(-1)
+        vel_err = torch.mean(torch.square(self.body_vel - self.ref_body_vel), dim=1).mean(-1)
         ang_vel_err = torch.mean(torch.square(self.body_ang_vel - self.ref_body_ang_vel), dim=1).mean(-1)
 
         # Compute the reward as a weighted sum of the errors
@@ -808,8 +825,6 @@ class LeggedRobotImi(LeggedRobot):
             self.extras["episode"]['rew_' + key] = torch.mean(
                 self.episode_sums[key][env_ids]) / self.max_episode_length_s
             self.episode_sums[key][env_ids] = 0.
-        if self.cfg.commands.curriculum:
-            self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
         # send timeout info to the algorithm
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
@@ -818,7 +833,6 @@ class LeggedRobotImi(LeggedRobot):
 
         motion_lens = self._motion_lib._motion_lengths[motion_ids]
         self.extras["motion_length"] = motion_lens.clone()
-
 
         self.compute_observations()
 

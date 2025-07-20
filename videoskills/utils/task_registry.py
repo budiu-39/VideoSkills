@@ -5,9 +5,9 @@ from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 from videoskills.runner.runner_eval import OnPolicyRunnerEval
 from videoskills.runner.runner_amp import OnPolicyRunnerAMP
-
 from videoskills import LEGGED_GYM_ROOT_DIR
-from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params
+from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params, \
+    dict_to_class
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 import yaml
 
@@ -30,6 +30,33 @@ class TaskRegistry():
         env_cfg = self.env_cfgs[name]
         # copy seed
         env_cfg.seed = train_cfg.seed
+        return env_cfg, train_cfg
+
+    def load_cfg(self, args) -> LeggedRobotCfg:
+        """ Loads a config file from the given path.
+
+        Args:
+            cfg_path (str): Path to the config file.
+
+        Returns:
+            Dict: The loaded config file.
+        """
+        cfg_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', f'{args.task}_ppo', args.load_run, 'config.yaml')
+        with open(cfg_path, 'r') as f:
+            cfg = yaml.safe_load(f)
+        # train_cfg = cfg
+        # convert to LeggedRobotCfg
+        env_cfg = cfg.get('env_cfg', {})
+        train_cfg = cfg.get('train_cfg', {})
+        motion_file_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'dataset', f'{args.task}_motion', args.motion_file)
+        env_cfg['motion']['file'] = motion_file_path
+        # if args.dev:
+        #     env_cfg['env']['num_envs'] = 16
+        #     args.headless = False
+
+        env_cfg = dict_to_class(env_cfg)
+        train_cfg = dict_to_class(train_cfg)
+
         return env_cfg, train_cfg
     
     def make_env(self, name, args=None, env_cfg=None) -> Tuple[VecEnv, LeggedRobotCfg]:
@@ -113,16 +140,20 @@ class TaskRegistry():
         log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
         if log_dir is None:
             log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
-        
-        train_cfg_dict = class_to_dict(train_cfg)
 
         use_amp_runner = train_cfg.runner.use_amp_runner  # ✅ 从 cfg 中读取
+        if train_cfg.runner.run_name.split('_')[-1] == 'test':
+            train_cfg.runner.save_interval = 500
+            train_cfg.runner.eval_interval = 500
+
+        train_cfg_dict = class_to_dict(train_cfg)
 
         if use_amp_runner:
             runner = OnPolicyRunnerAMP(env, train_cfg_dict, log_dir, device=args.rl_device)
         else:
             runner = OnPolicyRunnerEval(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
+
 
         resume = train_cfg.runner.resume
         if resume:

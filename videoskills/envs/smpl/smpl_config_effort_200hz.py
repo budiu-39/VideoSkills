@@ -2,8 +2,8 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
-        # init_noise_std = 0.18
-        init_noise_std = 0.15
+        init_noise_std = 0.18
+        # init_noise_std = 0.055
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -17,7 +17,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smpl_pos_ver7_action_rate_test'  # 'smpl_ppo'
+        run_name = 'smpl_effort_ver7_action_rate_wo_damping_test'  # 'smpl_ppo'
 
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
@@ -190,7 +190,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
-        default_dof_drive_mode = 1
+        default_dof_drive_mode = 3
 
     class rewards:
         # soft_dof_pos_limit = 0.9
