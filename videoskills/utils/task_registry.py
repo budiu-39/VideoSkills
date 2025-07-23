@@ -25,9 +25,12 @@ class TaskRegistry():
     def get_task_class(self, name: str) -> VecEnv:
         return self.task_classes[name]
     
-    def get_cfgs(self, name) -> Tuple[LeggedRobotCfg, LeggedRobotCfgPPO]:
-        train_cfg = self.train_cfgs[name]
-        env_cfg = self.env_cfgs[name]
+    def get_cfgs(self, args) -> Tuple[LeggedRobotCfg, LeggedRobotCfgPPO]:
+        if args.resume:
+            # load config from the path
+            return self.load_cfg(args)
+        train_cfg = self.train_cfgs[args.task]
+        env_cfg = self.env_cfgs[args.task]
         # copy seed
         env_cfg.seed = train_cfg.seed
         return env_cfg, train_cfg
@@ -48,11 +51,9 @@ class TaskRegistry():
         # convert to LeggedRobotCfg
         env_cfg = cfg.get('env_cfg', {})
         train_cfg = cfg.get('train_cfg', {})
-        motion_file_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'dataset', f'{args.task}_motion', args.motion_file)
-        env_cfg['motion']['file'] = motion_file_path
-        # if args.dev:
-        #     env_cfg['env']['num_envs'] = 16
-        #     args.headless = False
+        if args.motion_file is not None:
+            motion_file_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'dataset', f'{args.task}_motion', args.motion_file)
+            env_cfg['motion']['file'] = motion_file_path
 
         env_cfg = dict_to_class(env_cfg)
         train_cfg = dict_to_class(train_cfg)
@@ -153,7 +154,6 @@ class TaskRegistry():
         else:
             runner = OnPolicyRunnerEval(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
-
 
         resume = train_cfg.runner.resume
         if resume:

@@ -14,10 +14,11 @@ print("argv[0] :", sys.argv[0])
 print("sys.path[0] :", sys.path[0])
 
 def train(args):
-    env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
+    env_cfg, train_cfg = task_registry.get_cfgs(args)
     log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml")
-    env, env_cfg = task_registry.make_env(name=args.task, args=args)
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, log_dir=log_dir)
+    env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,
+                                                          log_dir=log_dir)
 
     if args.use_wandb and not args.dev:
         os.makedirs(os.path.join(log_dir, "wandb"), exist_ok=True)

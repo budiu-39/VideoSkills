@@ -22,7 +22,7 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_ver6_action_rate_test'  # 默认带 stiffness   ver 是 pd 的版本号
+        run_name = 'g1_ver7_03_action_rate_wo_damping'  # 默认带 stiffness   ver 是 pd 的版本号
         use_amp_runner = False
         load_run = 'g1_ver4_universal'
         # load_run = 'g1_universal'
@@ -84,9 +84,9 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
 
         # bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
         #       'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -106,12 +106,18 @@ class G1RoughCfg( LeggedRobotCfg ):
         decimation = 4
         pd_scale = 1
 
-
-        stiffness = [150, 185,  50, 200, 50, 50,  # left hip pitch roll yaw / knee / ankle pitch roll
-                     150, 185, 50, 200, 50, 50,   # right hip pitch roll yaw / knee / ankle pitch roll
+        stiffness = [150, 185,  50, 200, 30, 30,  # left hip pitch roll yaw / knee / ankle pitch roll
+                     150, 185, 50, 200, 30, 30,   # right hip pitch roll yaw / knee / ankle pitch roll
                      50,  100, 60,                # waist torso
                      40, 40, 40 , 60, 40, 40, 30,  # left shoulder/elbow/wrist
                      40, 40, 40 , 60,  40, 40, 30]  # right shoulder/elbow/wrist
+        # damping =  [15, 18, 5, 20, 3, 3,
+        #             15, 18, 5, 20, 3, 3,
+        #             4, 8, 5,
+        #             4, 4, 4, 6, 4, 3, 3,
+        #             4, 4, 4, 6, 4, 3, 3,]
+
+
         damping =  [5, 5, 1, 7.5, 1, 1,
                     5, 5, 1, 7.5, 1, 1,
                     1, 2, 1.5,
@@ -174,8 +180,8 @@ class G1RoughCfg( LeggedRobotCfg ):
 
         class scales:
             imitation = 1.0
-            torques = -0.00002
-            action_rate = - 0.05
+            torques = -0.00001
+            action_rate = - 0.03
 
     class amp:
         activate = False

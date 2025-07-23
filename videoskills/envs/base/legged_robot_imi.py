@@ -118,7 +118,7 @@ class LeggedRobotImi(LeggedRobot):
         if hasattr(self.cfg.asset,'file_urdf'):
             # If the asset is a URDF, we need to copy some properties from the URDF to the MJCF asset.
             self.dof_props = self._build_dof_properties_from_urdf(asset_options, robot_asset)
-            self.dof_props["damping"] = torch.tensor(len(self.dof_names) * [1], dtype=torch.float, device=self.device)
+            # self.dof_props["damping"] = torch.ones(len(self.dof_names), dtype=torch.float, device=self.device)
         else:
             self.dof_props = self.gym.get_asset_dof_properties(robot_asset)
             self.dof_props['effort'] = torch.tensor(self.cfg.control.limit, dtype=torch.float, device=self.device)
@@ -127,13 +127,13 @@ class LeggedRobotImi(LeggedRobot):
             if self.drive_mode == gymapi.DOF_MODE_EFFORT:
                 self.dof_props["damping"] = torch.ones(len(self.dof_names), dtype=torch.float, device=self.device)
                 self.dof_props["stiffness"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
-            else:
-                # self.dof_props['stiffness'] = self.dof_props['stiffness'] * self.cfg.control.pd_scale
-                # self.dof_props['damping'] = self.dof_props['damping'] * self.cfg.control.pd_scale
-                # self.stiffness = self.dof_props['stiffness'].tolist()
-                # self.damping = self.dof_props['damping'].tolist()
-                self.dof_props['stiffness'] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
-                self.dof_props['damping'] = torch.tensor(self.damping, dtype=torch.float, device=self.device)
+            # else:
+            #     # self.dof_props['stiffness'] = self.dof_props['stiffness'] * self.cfg.control.pd_scale
+            #     # self.dof_props['damping'] = self.dof_props['damping'] * self.cfg.control.pd_scale
+            #     # self.stiffness = self.dof_props['stiffness'].tolist()
+            #     # self.damping = self.dof_props['damping'].tolist()
+            #     self.dof_props['stiffness'] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
+            #     self.dof_props['damping'] = torch.tensor(self.damping, dtype=torch.float, device=self.device)
         self.dof_props['driveMode'] = torch.tensor([self.cfg.asset.default_dof_drive_mode] * self.num_dofs,
                                                    dtype=torch.int32, device=self.device)
         for i in range(self.num_envs):
