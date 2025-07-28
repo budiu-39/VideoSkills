@@ -2,7 +2,8 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
-        init_noise_std = 0.18
+        init_noise_std = 0.055
+        fixed_std = True
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
@@ -17,7 +18,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smpl_effort_ver8'  # 'smpl_ppo'
+        run_name = 'smpl_ver7_phc_taskw_colfilter0_test'  # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -67,8 +68,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -133,37 +134,37 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             30, 30, 30, 5, 5, 5,
             5, 5, 5,
         ]
-        # ver 8
-        damping = [
-            10, 8, 2, 8, 8, 2,
-            1, 1, 1, 1, 1, 1,
-            10, 8, 2, 8, 8, 2,
-            1, 1, 1, 1, 1, 1,
-            4, 4, 4, 7, 2, 5,
-            6, 2, 3, 1, 1, 1,
-            1, 1, 1, 7, 1, 6,
-            6, 1, 3, 1, 1, 1,
-            1, 1, 1, 1, 1, 1,
-            7, 1, 6, 6, 1, 3,
-            3, 3, 3, 1, 1, 1,
-            1, 1, 1,
-        ]
-
-        # 太大 的 damping 会
+        # # ver 8
         # damping = [
-        #     15, 12, 3, 12, 12, 3,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     15, 12, 3, 12, 12, 3,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     6, 6, 6, 9, 4, 7,
-        #     8, 3, 5, 1, 1, 1,
-        #     1, 1, 1, 13, 2, 7,
-        #     8, 2, 5, 3, 3, 3,
+        #     10, 8, 2, 8, 8, 2,
         #     1, 1, 1, 1, 1, 1,
-        #     13, 2, 7, 8, 2, 5,
+        #     10, 8, 2, 8, 8, 2,
+        #     1, 1, 1, 1, 1, 1,
+        #     4, 4, 4, 7, 2, 5,
+        #     6, 2, 3, 1, 1, 1,
+        #     1, 1, 1, 7, 1, 6,
+        #     6, 1, 3, 1, 1, 1,
+        #     1, 1, 1, 1, 1, 1,
+        #     7, 1, 6, 6, 1, 3,
         #     3, 3, 3, 1, 1, 1,
         #     1, 1, 1,
         # ]
+
+        # 太大 的 damping 会
+        damping = [
+            15, 12, 3, 12, 12, 3,
+            1.5, 1.5, 1.5, 1, 1, 1,
+            15, 12, 3, 12, 12, 3,
+            1.5, 1.5, 1.5, 1, 1, 1,
+            6, 6, 6, 9, 4, 7,
+            8, 3, 5, 1, 1, 1,
+            1, 1, 1, 13, 2, 7,
+            8, 2, 5, 3, 3, 3,
+            1, 1, 1, 1, 1, 1,
+            13, 2, 7, 8, 2, 5,
+            3, 3, 3, 1, 1, 1,
+            1, 1, 1,
+        ]
 
         # ver 6
         # stiffness = [
@@ -204,14 +205,14 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 1
+        self_collisions = 0
         default_dof_drive_mode = 3
 
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
         class task_w:
-            k_ang_vel = 0.04
+            k_ang_vel = 0.1
             k_pos = 100
             k_rot = 10
             k_vel = 0.1

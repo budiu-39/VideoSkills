@@ -19,6 +19,21 @@ class PPONorm(PPO):
             self.obs_mean_std = RunningMeanStd((num_obs,)).to(self.device)
             self.obs_mean_std_temp = None
 
+    def set_train(self):
+        self.actor_critic.train()
+        if self.normalize_obs:
+            self.obs_mean_std.train()
+        if self.normalize_value:
+            self.value_mean_std.train()
+
+    def set_eval(self):
+        self.actor_critic.eval()
+        if self.normalize_obs:
+            self.obs_mean_std.eval()
+        if self.normalize_value:
+            self.value_mean_std.eval()
+
+
     def compute_returns(self, last_critic_obs):
         if self.normalize_obs:
             last_critic_obs = self.obs_mean_std_temp(last_critic_obs)

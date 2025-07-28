@@ -3,6 +3,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
         init_noise_std = 0.055
+        fixed_std = True
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
@@ -17,10 +18,9 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'phc_strict_ET'  # 'smpl_ppo'
-
+        run_name = 'PHC_origin_w_AMP'
         experiment_name = 'smpl_ppo'
-        use_amp_runner = False  # 可以联动！和 amp
+        use_amp_runner = True # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
@@ -113,7 +113,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # PD Drive parameters:
         control_type = 'P'# [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
-        # action_scale = 3.14
+        action_scale = 3.14
         # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 2
         pd_scale = 1.0
@@ -134,6 +134,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             30, 30, 30, 5, 5, 5,
             5, 5, 5,
         ]
+
         # 太大 的 damping 会
         damping = [
             15, 12, 3, 12, 12, 3,
@@ -149,21 +150,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             3, 3, 3, 1, 1, 1,
             1, 1, 1,
         ]
-        # ver 7
-        # damping = [
-        #     15, 12, 3, 12, 12, 3,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     15, 12, 3, 12, 12, 3,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     6, 6, 6, 9, 4, 7,
-        #     8, 3, 5, 1, 1, 1,
-        #     1, 1, 1, 13, 2, 7,
-        #     8, 2, 5, 3, 3, 3,
-        #     1, 1, 1, 1, 1, 1,
-        #     13, 2, 7, 8, 2, 5,
-        #     3, 3, 3, 1, 1, 1,
-        #     1, 1, 1,
-        # ]
 
         # ver 6
         # stiffness = [
@@ -204,7 +190,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 1
+        self_collisions = 0
         default_dof_drive_mode = 1
 
     class rewards:
@@ -219,16 +205,25 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_pos = 0.5
             w_rot = 0.5
             w_vel = 0.1
+            # k_ang_vel = 0.1
+            # k_pos = 100
+            # k_rot = 10
+            # k_vel = 0.1
+            # w_ang_vel = 0.5
+            # w_pos = 0.5
+            # w_rot = 0.5
+            # w_vel = 0.5
         class scales:
             imitation = 1.0
-            torques = -0.000002
+            # torques = -0.000001
+            dof_force = -0.0005
             # action_rate = - 0.02
 
     class sim(LeggedRobotCfg.sim):
-        dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
+        dt =  0.0166667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
         # dt = 0.005
 
     class amp:
-        activate = False
+        activate = True
         num_amp_obs_steps = 10
         num_amp_obs = 232

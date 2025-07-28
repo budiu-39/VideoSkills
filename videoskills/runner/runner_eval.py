@@ -11,7 +11,7 @@ import statistics
 from collections import defaultdict
 from videoskills.utils.metrics import compute_metrics
 from collections import deque
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 import copy
 
 from rsl_rl.algorithms import PPO
@@ -35,17 +35,18 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
         actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
-        actor_critic: ActorCritic = actor_critic_class(self.env.num_obs,
-                                                       num_critic_obs,
-                                                       self.env.num_actions,
-                                                       **self.policy_cfg).to(self.device)
+        actor_critic = actor_critic_class(self.env.num_obs,
+                                               num_critic_obs,
+                                               self.env.num_actions,
+                                               **self.policy_cfg).to(self.device)
+        if self.policy_cfg['fixed_std']:
+            actor_critic.std.requires_grad_(False)
         self.alg_cfg['num_obs'] = self.env.num_obs
         self.alg_cfg['num_critic_obs'] = num_critic_obs
         # alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
         self.alg = PPONorm(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
-
 
         # init storage and model
         self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs],
@@ -72,8 +73,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
-        if self.log_dir is not None and self.writer is None:
-            self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
+        # if self.log_dir is not None and self.writer is None:
+        #     self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf,
                                                              high=int(self.env.max_episode_length))
@@ -81,7 +82,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         obs = self.env.get_observations()
         privileged_obs = self.env.get_privileged_observations()
         critic_obs = privileged_obs if privileged_obs is not None else obs
-        self.alg.actor_critic.train()  # switch to train mode (for dropout for example)
+        self.alg.set_train()  # switch to train mode (for dropout for example)
 
         ep_infos = []
         rewbuffer = deque(maxlen=100)
@@ -92,9 +93,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
-            # self._refresh_temp_rms()
             self.alg._refresh_temp_rms()  # refresh temp running mean std
-            # Rollout
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
 
@@ -105,9 +104,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     #     obs_proc, critic_proc = obs, critic_obs
 
                     actions = self.alg.act(obs, critic_obs)
-
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
-
                     obs = obs.to(self.device)
                     rewards = rewards.to(self.device)
                     dones = dones.to(self.device)
@@ -133,17 +130,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
                 stop = time.time()
                 collection_time = stop - start
-
-                # Learning step
-                start = stop
-
                 # if self.normalize_obs:
                 #     critic_proc = self.running_mean_std_temp(critic_obs)
                 # else:
                 #     critic_proc = critic_obs.to(self.device)
-
                 self.alg.compute_returns(critic_obs)
 
+            start = stop
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
             learn_time = stop - start
@@ -158,7 +151,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
     def eval(self, motion_ids=None):
         """Evaluate policy over multiple motions in parallel across environments."""
-        self.alg.actor_critic.eval()
+        self.alg.set_eval()  # switch to eval mode (for dropout for example)
         self.env.eval_mode = True
         self.env.early_termination_distance = torch.tensor([0.5] * len(self.env.early_termination_distance)
                                                            , device=self.device) ** 2
@@ -405,7 +398,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
                 ep_mean = sum(vals) / len(vals)
                 wandb_metrics[f"Episode/{key}"] = ep_mean
-                if key in ["rew_imitation", "rew_torques"]:
+                if key in ["rew_imitation", "rew_dof_force", "rew_torques"]:
                     ep_info_str += f"  {key}: {ep_mean:.4f}"
 
         summary = f"[{self.cfg['run_name']} it {it:05d}]"
@@ -424,7 +417,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
-
 
     def load(self, path, load_optimizer=True):
         loaded_dict = torch.load(path)

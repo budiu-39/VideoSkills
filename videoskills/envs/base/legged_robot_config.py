@@ -154,7 +154,7 @@ class LeggedRobotCfg(BaseConfig):
     class sim:
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
         dt = 0.005
-        substeps = 1
+        substeps = 2
         gravity = [0., 0. ,-9.81]  # [m/s^2]
         up_axis = 1  # 0 is y, 1 is z
 

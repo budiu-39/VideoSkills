@@ -88,14 +88,20 @@ class LeggedRobot(BaseTask):
             self.privileged_obs_buf = torch.clip(self.privileged_obs_buf, -clip_obs, clip_obs)
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
 
+    def _refresh_sim_tensors(self):
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+        if hasattr(self.cfg.rewards.scales, 'dof_force'):
+            self.gym.refresh_dof_force_tensor(self.sim)
+
     def post_physics_step(self):
         """ check terminations, compute observations and rewards
             calls self._post_physics_step_callback() for common computations
             calls self._draw_debug_vis() if needed
         """
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
-
+        self._refresh_sim_tensors()
         self.episode_length_buf += 1
         self.common_step_counter += 1
 
@@ -107,15 +113,15 @@ class LeggedRobot(BaseTask):
         self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
+        self.body_pos[:] = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]
+        self.body_rot[:] = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]
+        self.body_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]
+        self.body_ang_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]
+
         # compute observations, rewards, resets, ...
         self.check_termination()
         self.compute_reward()  # both reward and terminationare done with the last reference motion
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-        self.reset_idx(env_ids)
-
-        # TODO: 意识到了一个问题，自己并没有把很多重要的函数和参数写在这个通用的类里面，而是放在了SMPL子类里。虽然他们明明是通用的，比如这个
-        #  key_pos
-
 
         if self.is_recording_data:
             body_pos_cpu = self.body_pos.detach().cpu().numpy()
@@ -136,8 +142,13 @@ class LeggedRobot(BaseTask):
                     'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
                 })
 
+        self.reset_idx(env_ids)
+
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
+
+        if self.cfg.env.land_event_detect:
+            self.land_event_detection()
 
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -169,7 +180,6 @@ class LeggedRobot(BaseTask):
         # reset robot states
         self._reset_dofs(env_ids)
         self._reset_root_states(env_ids)
-
         self._resample_commands(env_ids)
 
 
@@ -539,8 +549,8 @@ class LeggedRobot(BaseTask):
         self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
         self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
         self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
+        # self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
+        # self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_dof_vel = torch.zeros_like(self.dof_vel)
@@ -553,25 +563,28 @@ class LeggedRobot(BaseTask):
         self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
+        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+        self._rigid_body_state = gymtorch.wrap_tensor(rigid_body_state)
+        bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
+        self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
 
-        # joint positions offsets and PD gains
-        self.default_dof_pos = torch.zeros(self.num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
-        for i in range(self.num_dofs):
-            name = self.dof_names[i]
-            angle = self.cfg.init_state.default_joint_angles[name]
-            self.default_dof_pos[i] = angle
-            found = False
-            for dof_name in self.cfg.control.stiffness.keys():
-                if dof_name in name:
-                    self.p_gains[i] = self.cfg.control.stiffness[dof_name]
-                    self.d_gains[i] = self.cfg.control.damping[dof_name]
-                    found = True
-            if not found:
-                self.p_gains[i] = 0.
-                self.d_gains[i] = 0.
-                if self.cfg.control.control_type in ["P", "V"]:
-                    print(f"PD gain of joint {name} were not defined, setting them to zero")
-        self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
+
+        if hasattr(self.cfg.rewards.scales, 'dof_force'):
+            dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
+            self.gym.refresh_dof_force_tensor(self.sim)
+            self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dofs)
+
+        self.body_pos = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]   #3
+        self.body_rot = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]   #4
+        self.body_vel = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]   #3
+        self.body_ang_vel = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]  #3
+
+        # mass_matrix = self.gym.acquire_mass_matrix_tensor(self.sim, self.cfg.asset.name)
+        # self.gym.refresh_mass_matrix_tensors(self.sim)
+        # self.mass_matrix = self.mass_matrix.view(self.num_envs, self.num_dofs, self.num_dofs)
+        # self.mass_matrix = gymtorch.wrap_tensor(mass_matrix).view(self.num_envs, self.num_dofs, self.num_dofs)
+        # M_diag = self.mass_matrix[0].diag()
 
     def _prepare_reward_function(self):
         """ Prepares a list of reward functions, whcih will be called to compute the total reward.

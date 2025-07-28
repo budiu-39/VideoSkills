@@ -121,17 +121,17 @@ class LeggedRobotImi(LeggedRobot):
             # self.dof_props["damping"] = torch.ones(len(self.dof_names), dtype=torch.float, device=self.device)
         else:
             self.dof_props = self.gym.get_asset_dof_properties(robot_asset)
-            self.dof_props['effort'] = torch.tensor(self.cfg.control.limit, dtype=torch.float, device=self.device)
-            self.dof_props["velocity"] = torch.tensor(self.cfg.control.velocity_limit, dtype=torch.int32,
-                                            device=self.device)
             if self.drive_mode == gymapi.DOF_MODE_EFFORT:
                 self.dof_props["damping"] = torch.ones(len(self.dof_names), dtype=torch.float, device=self.device)
                 self.dof_props["stiffness"] = torch.zeros(len(self.dof_names), dtype=torch.float, device=self.device)
-            # else:
+                self.dof_props['effort'] = torch.tensor(self.cfg.control.limit, dtype=torch.float, device=self.device)
+                self.dof_props["velocity"] = torch.tensor(self.cfg.control.velocity_limit, dtype=torch.int32,
+                                                          device=self.device)
+            else:
             #     # self.dof_props['stiffness'] = self.dof_props['stiffness'] * self.cfg.control.pd_scale
             #     # self.dof_props['damping'] = self.dof_props['damping'] * self.cfg.control.pd_scale
-            #     # self.stiffness = self.dof_props['stiffness'].tolist()
-            #     # self.damping = self.dof_props['damping'].tolist()
+                self.stiffness = self.dof_props['stiffness'].tolist()
+                self.damping = self.dof_props['damping'].tolist()
             #     self.dof_props['stiffness'] = torch.tensor(self.stiffness, dtype=torch.float, device=self.device)
             #     self.dof_props['damping'] = torch.tensor(self.damping, dtype=torch.float, device=self.device)
         self.dof_props['driveMode'] = torch.tensor([self.cfg.asset.default_dof_drive_mode] * self.num_dofs,
@@ -146,8 +146,8 @@ class LeggedRobotImi(LeggedRobot):
 
         # regularization?
         self._build_pd_action_offset_scale()
-
-
+        self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
+        self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
 
         # Hacky for trained smpl model
         if hasattr(self.cfg.control, "action_scale"):
@@ -290,7 +290,7 @@ class LeggedRobotImi(LeggedRobot):
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 
-        self._refresh_sim_tensors()
+        # self._refresh_sim_tensors()
 
         if self.activate_amp:
             self._init_amp_obs_ref(env_ids)
@@ -316,14 +316,6 @@ class LeggedRobotImi(LeggedRobot):
         self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
 
 
-    def _refresh_sim_tensors(self):
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_dof_state_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
-        # self.gym.refresh_dof_force_tensor(self.sim)
-        # self.gym.refresh_force_sensor_tensor(self.sim)
-
     def _reset_robot(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
         Positions are randomly selected within 0.5:1.5 x default positions.
@@ -342,90 +334,6 @@ class LeggedRobotImi(LeggedRobot):
 
         self.motion_lengths = self._motion_lib.get_motion_length(self._sampled_motion_ids[env_ids])/ self.dt
 
-
-    def _init_buffers(self):
-        actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
-        dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
-        net_contact_forces = self.gym.acquire_net_contact_force_tensor(self.sim)
-        mass_matrix = self.gym.acquire_mass_matrix_tensor(self.sim, self.cfg.asset.name)
-
-        self.gym.refresh_dof_state_tensor(self.sim)
-        self.gym.refresh_actor_root_state_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.gym.refresh_net_contact_force_tensor(self.sim)
-        self.gym.refresh_mass_matrix_tensors(self.sim)
-
-        # create some wrapper tensors for different slices
-        # 13 + dof * (1 + 1)
-        self.mass_matrix = gymtorch.wrap_tensor(mass_matrix).view(self.num_envs, self.num_dofs, self.num_dofs)
-        M_diag = self.mass_matrix[0].diag()
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
-        self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
-        self.dof_pos = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 0]
-        self.dof_vel = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 1]
-        self.base_quat = self.root_states[:, 3:7]
-        self.rpy = get_euler_xyz_in_tensor(self.base_quat)
-        self.base_pos = self.root_states[:self.num_envs, 0:3]
-        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1,
-                                                                            3)  # shape: num_envs, num_bodies, xyz axis
-        self.mass_matrix = self.mass_matrix.view(self.num_envs, self.num_dofs, self.num_dofs)
-
-        # initialize some data used later on
-        self.common_step_counter = 0
-        self.extras = {}
-        self.noise_scale_vec = self._get_noise_scale_vec(self.cfg)
-        self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat(
-            (self.num_envs, 1))
-        self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
-        self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
-                                   requires_grad=False)
-        self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
-                                   requires_grad=False)
-        self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device,
-                                        requires_grad=False)
-        self.last_dof_vel = torch.zeros_like(self.dof_vel)
-        self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
-        self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float,
-                                    device=self.device, requires_grad=False)  # x vel, y vel, yaw vel, heading
-        self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel],
-                                           device=self.device, requires_grad=False, )  # TODO change this
-        # self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
-        # self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
-        self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-        self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
-        self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
-
-        # joint positions offsets and PD gains
-        self.default_dof_pos = torch.zeros(self.num_dofs, dtype=torch.float, device=self.device, requires_grad=False)
-
-        # if self.cfg.control.init_pd_from_mass_matrix:
-        #     self.init_pd_from_mass_matrix()
-        # else:
-        self.p_gains = torch.tensor(self.stiffness, dtype=torch.float, device=self.device, requires_grad=False)
-        self.d_gains = torch.tensor(self.damping,  dtype=torch.float, device=self.device, requires_grad=False)
-
-        self.default_dof_pos = self.default_dof_pos.unsqueeze(0)
-
-        rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self._rigid_body_state = gymtorch.wrap_tensor(rigid_body_state)
-        bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
-        self._rigid_body_state_reshaped = self._rigid_body_state.view(self.num_envs, bodies_per_env, 13)
-
-        # dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
-        # self.gym.refresh_rigid_body_state_tensor(self.sim)
-        # self.dof_force_tensor = gymtorch.wrap_tensor(dof_force_tensor).view(self.num_envs, self.num_dofs)
-
-        self.body_pos = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]   #3
-        self.body_rot = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]   #4
-        self.body_vel = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]   #3
-        self.body_ang_vel = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]  #3
-
-        # self.contact_history = torch.zeros((3, self.num_envs, self.feet_indices.shape[0]),
-        #                                    dtype=torch.bool, device=self.device)
-        #
-        # self.last_landing_mask = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.bool,
-        #                                      device=self.device)
 
     def _reset_default(self, env_ids):
         self.dof_pos[env_ids] = self.default_dof_pos[env_ids]
@@ -462,21 +370,25 @@ class LeggedRobotImi(LeggedRobot):
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
 
         self._set_env_state(env_ids=env_ids,
-                            root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
+                            root_pos=motion_state["root_pos"] + self.pos_offset['root'][env_ids],
                             root_rot=motion_state["root_rot"],
                             dof_pos=motion_state["dof_pos"],
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
-                            dof_vel=motion_state["dof_vel"])
+                            dof_vel=motion_state["dof_vel"],
+                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                            key_rot= motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"])
 
-        self._reset_ref_env_ids = env_ids
         self._motion_start_times[env_ids] = motion_times
 
     # def _reward_action_rate(self):
     #     diff = self.actions - self.last_actions
     #     return -self.cfg.rewards.w_act_rate * torch.sum(diff ** 2, dim=1)
 
-    def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel):
+    def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel,
+                       key_pos, key_rot, key_vel, key_ang_vel):
         self.root_states[env_ids, 0:3] = root_pos
         self.root_states[env_ids, 3:7] = root_rot
         self.root_states[env_ids, 7:10] = root_vel
@@ -484,6 +396,13 @@ class LeggedRobotImi(LeggedRobot):
 
         self.dof_pos[env_ids] = dof_pos
         self.dof_vel[env_ids] = dof_vel
+
+        # self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
+        self.body_pos[env_ids] = key_pos
+        self.body_rot[env_ids] = key_rot
+        self.body_vel[env_ids] = key_vel
+        self.body_ang_vel[env_ids] = key_ang_vel
+
         return
 
     def check_termination(self):
@@ -530,24 +449,6 @@ class LeggedRobotImi(LeggedRobot):
             self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
                                                             gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
 
-
-
-    def post_physics_step(self):
-        self.gym.refresh_rigid_body_state_tensor(self.sim)
-        self.body_pos[:] = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]
-        self.body_rot[:] = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]
-        self.body_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]
-        self.body_ang_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]
-
-        # self.gym.refresh_force_sensor_tensor(self.sim)
-        # tau_cmd = self.dof_force_tensor
-        # tau_react = self.torques
-        # torque_gap = tau_cmd - tau_react
-
-        super().post_physics_step()
-
-        if self.cfg.env.land_event_detect:
-            self.land_event_detection()
 
 
     def land_event_detection(self):   # 还有必要升级
@@ -741,13 +642,13 @@ class LeggedRobotImi(LeggedRobot):
 
         return reward
 
-    def _reward_power(self):
+    def _reward_dof_force(self):
         # reward 是不需要 heading 归一化 的！
         """
         Computes the imitation reward based on the difference between the current and reference key body positions and rotations.
         The reward is computed in the heading frame of the root body.
         """
-        reward = torch.abs(torch.multiply(self.torques, self.dof_vel)).sum(dim=-1)
+        reward = torch.abs(torch.multiply(self.dof_force_tensor, self.dof_vel)).sum(dim=-1)
         return reward
 
 
@@ -798,17 +699,20 @@ class LeggedRobotImi(LeggedRobot):
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
 
         self._set_env_state(env_ids=env_ids,
-                            root_pos=motion_state["root_pos"] + self.env_origins[env_ids],
+                            root_pos=motion_state["root_pos"] +  self.pos_offset['root'][env_ids],
                             root_rot=motion_state["root_rot"],
                             dof_pos=motion_state["dof_pos"],
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
-                            dof_vel=motion_state["dof_vel"])
+                            dof_vel=motion_state["dof_vel"],
+                            key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
+                            key_rot=motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"])
 
-        self._reset_ref_env_ids = env_ids
         self._motion_start_times[env_ids] = motion_times
         self._reset_env_tensors(env_ids)
-        self._resample_commands(env_ids)
+        # self._resample_commands(env_ids)
 
         # reset buffers
         # if self.actions.is_inference():  # PyTorch ≥2.2
@@ -840,31 +744,31 @@ class LeggedRobotImi(LeggedRobot):
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
 
-    def init_pd_from_mass_matrix(self, zeta: float = 0.8):
-        def infer_wn(name: str) -> float:
-            if "hip_" in name: return 20.0
-            if "knee" in name: return 18.0
-            if "ankle" in name: return 14.0
-            if "waist" in name: return 16.0
-            if "shoulder" in name: return 12.0
-            if "elbow" in name: return 10.0
-            if "wrist" in name or "head" in name or "neck" in name:
-                return 8.0
-            raise ValueError(f"undefine dof name: {name}")
-
-        wn = torch.tensor([infer_wn(n) for n in self.dof_names],
-                          device=self.device)
-
-        J_eff = torch.as_tensor(self.cfg.control.J_eff,
-                                dtype=torch.float32,
-                                device=self.device)
-
-        # ---- 3. 计算 PD 增益 ----
-        self.p_gains = (J_eff * wn ** 2).detach()
-        self.d_gains = (2 * zeta * J_eff * wn).detach()
-
-        self.p_gains.requires_grad = False
-        self.d_gains.requires_grad = False
+    # def init_pd_from_mass_matrix(self, zeta: float = 0.8):
+    #     def infer_wn(name: str) -> float:
+    #         if "hip_" in name: return 20.0
+    #         if "knee" in name: return 18.0
+    #         if "ankle" in name: return 14.0
+    #         if "waist" in name: return 16.0
+    #         if "shoulder" in name: return 12.0
+    #         if "elbow" in name: return 10.0
+    #         if "wrist" in name or "head" in name or "neck" in name:
+    #             return 8.0
+    #         raise ValueError(f"undefine dof name: {name}")
+    #
+    #     wn = torch.tensor([infer_wn(n) for n in self.dof_names],
+    #                       device=self.device)
+    #
+    #     J_eff = torch.as_tensor(self.cfg.control.J_eff,
+    #                             dtype=torch.float32,
+    #                             device=self.device)
+    #
+    #     # ---- 3. 计算 PD 增益 ----
+    #     self.p_gains = (J_eff * wn ** 2).detach()
+    #     self.d_gains = (2 * zeta * J_eff * wn).detach()
+    #
+    #     self.p_gains.requires_grad = False
+    #     self.d_gains.requires_grad = False
 
 
 @torch.jit.script

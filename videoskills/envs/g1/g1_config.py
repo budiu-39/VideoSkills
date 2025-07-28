@@ -6,6 +6,7 @@ import numpy as np
 class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         init_noise_std = 0.18
+        fixed_std = True
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -22,9 +23,9 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_ver7_03_action_rate_wo_damping'  # 默认带 stiffness   ver 是 pd 的版本号
+        run_name = 'g1_Final_dof_force'  # 默认带 stiffness   ver 是 pd 的版本号
         use_amp_runner = False
-        load_run = 'g1_ver4_universal'
+        load_run = ''
         # load_run = 'g1_universal'
         experiment_name = 'g1_ppo'
 
@@ -106,8 +107,8 @@ class G1RoughCfg( LeggedRobotCfg ):
         decimation = 4
         pd_scale = 1
 
-        stiffness = [150, 185,  50, 200, 30, 30,  # left hip pitch roll yaw / knee / ankle pitch roll
-                     150, 185, 50, 200, 30, 30,   # right hip pitch roll yaw / knee / ankle pitch roll
+        stiffness = [150, 185,  50, 200, 50, 50,  # left hip pitch roll yaw / knee / ankle pitch roll
+                     150, 185, 50, 200, 50, 50,   # right hip pitch roll yaw / knee / ankle pitch roll
                      50,  100, 60,                # waist torso
                      40, 40, 40 , 60, 40, 40, 30,  # left shoulder/elbow/wrist
                      40, 40, 40 , 60,  40, 40, 30]  # right shoulder/elbow/wrist
@@ -152,18 +153,17 @@ class G1RoughCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["hip", "knee"]
         terminate_after_contacts_on = ["pelvis"]
         self_collisions = 1
-        # TODO：查看一下这是在干啥
         flip_visual_attachments = False
 
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
         class task_w:
-            k_ang_vel = 0.04
+            k_ang_vel = 0.1
             k_pos = 100
             k_rot = 10
-            k_vel = 0.3
-            w_ang_vel = 0.3
+            k_vel = 0.1
+            w_ang_vel = 0.1
             w_pos = 0.5
             w_rot = 0.5
             w_vel = 0.1
@@ -180,8 +180,9 @@ class G1RoughCfg( LeggedRobotCfg ):
 
         class scales:
             imitation = 1.0
-            torques = -0.00001
-            action_rate = - 0.03
+            # dof_force = - 0.0001
+            action_rate = - 0.05
+            torques = -0.00002
 
     class amp:
         activate = False

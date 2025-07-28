@@ -12,7 +12,7 @@ class AMPDiscriminator(nn.Module):
     # ------------------------------------------------------------------ #
     def __init__(
         self,
-        state_dim: int,                     # e.g. 1960
+        state_dim: int,
         hidden_dims: Sequence[int] = (1024, 512),
         lr: float = 3e-4,
         weight_decay: float = 1e-6,
@@ -71,32 +71,51 @@ class AMPDiscriminator(nn.Module):
                                    create_graph=True)[0]
         return grad.pow(2).sum(dim=-1).mean()
 
-    # ------------------------------------------------------------------ #
-    # 训练一步（与旧版完全一致）
-    def train_step(
-        self, fake: torch.Tensor, real: torch.Tensor, n_updates: int = 1
-    ) -> float:
+    def train_step(self, fake: torch.Tensor, real: torch.Tensor, n_updates: int = 1) -> dict:
         self.train()
         fake, real = fake.to(self.device), real.to(self.device)
         total_loss = 0.0
+        total_agent_acc = 0.0
+        total_demo_acc = 0.0
 
         for _ in range(n_updates):
-            logits_f = self.forward(fake.detach())
-            logits_r = self.forward(real.detach())
+            fake.requires_grad_(True)
+            real.requires_grad_(True)
 
-            loss = ( self.bce(logits_f, torch.zeros_like(logits_f))
-                   + self.bce(logits_r, torch.ones_like(logits_r)) )
+            logits_f = self.forward(fake.detach())  # 假
+            logits_r = self.forward(real.detach())  # 真
 
+            # 1. BCE loss
+            loss_f = self.bce(logits_f, torch.zeros_like(logits_f))
+            loss_r = self.bce(logits_r, torch.ones_like(logits_r))
+            loss = 0.5 * (loss_f + loss_r)
+
+            # 2. logit L2 正则
+            if self.logit_l2_coef:
+                loss += self.logit_l2_coef * self._logit_weight_l2()
+
+            # 3. grad penalty
             if self.grad_penalty_coef:
                 loss += self.grad_penalty_coef * self._grad_penalty(real)
-            if self.logit_l2_coef:
-                loss += self.logit_l2_coef   * self._logit_weight_l2()
 
+            # 4. accuracy
+            pred_agent = (logits_f > 0).float()
+            pred_demo = (logits_r > 0).float()
+            agent_acc = (pred_agent == 0).float().mean()
+            demo_acc = (pred_demo == 1).float().mean()
+
+            # backward
             self.opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.parameters(), 0.25)
             self.opt.step()
 
             total_loss += loss.item()
+            total_agent_acc += agent_acc.item()
+            total_demo_acc += demo_acc.item()
 
-        return total_loss / n_updates
+        return {
+            "loss": total_loss / n_updates,
+            "agent_acc": total_agent_acc / n_updates,
+            "demo_acc": total_demo_acc / n_updates
+        }
