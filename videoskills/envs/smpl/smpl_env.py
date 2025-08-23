@@ -5,7 +5,6 @@ from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 
 class SMPLRobot(LeggedRobotImi):
 
-
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         col_group = env_id
         # col_filter = self.cfg.asset.self_collisions

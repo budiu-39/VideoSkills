@@ -222,7 +222,7 @@ class MotionLib():
         total_len = 0.0
 
         motion_files = self._fetch_motion_files(motion_file)
-        num_motion_files = len(motion_files)
+        # num_motion_files = len(motion_files)
         for curr_file in tqdm(motion_files, desc="Loading motion files", unit="file"):
             curr_motion = SkeletonMotion.from_file(curr_file)
 
@@ -508,6 +508,8 @@ class MotionLib():
         """
 
         if isinstance(input_motion_sequences, list):
+            return input_motion_sequences
+        if input_motion_sequences.endswith(".pkl"):
             return input_motion_sequences
         else:
             motion_paths = glob.glob(os.path.join(input_motion_sequences, f"**/*{ext}"), recursive=True)

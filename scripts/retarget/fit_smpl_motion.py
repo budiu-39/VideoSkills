@@ -206,6 +206,7 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
 
     
     all_data = {}
+    all_obj = {}
     pbar = tqdm(key_names, position=0, leave=True)
 
     for data_key in key_names:
@@ -314,7 +315,7 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
         height_diff = np.mean(z_min_list)
 
         height_fix_end = time.time()
-        print(f"⏱️ Height correction took: {height_fix_end - height_fix_start:.3f} seconds")
+        print(f"Height correction took: {height_fix_end - height_fix_start:.3f} seconds")
         root_trans_offset_dump[..., 2] -= height_diff
         joints_dump = joints.numpy().copy()
         joints_dump[..., 2] -= height_diff
@@ -360,16 +361,22 @@ def process_motion(key_names, key_name_to_pkls, cfg, skeleton_tree):
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
 
         # 构建保存路径
-        rel_path = osp.relpath(key_name_to_pkls[data_key], cfg.amass_root)
         if cfg.input_motion_type == "AMASS":
+            rel_path = osp.relpath(key_name_to_pkls[data_key], cfg.amass_root)
             full_output_path = osp.join(cfg.output_dir, f"AMASS_{cfg.process_split}")# 相对路径，如 CMU/123/xxx.npz
-        save_path = osp.join(full_output_path, rel_path).replace(".npz", ".npy")
-        os.makedirs(osp.dirname(save_path), exist_ok=True)
-        # 保存 motion 对象为 numpy 文件
-        motion_obj.to_file(save_path)
+            save_path = osp.join(full_output_path, rel_path).replace(".npz", ".npy")
+            os.makedirs(osp.dirname(save_path), exist_ok=True)
+            # 保存 motion 对象为 numpy 文件
+            motion_obj.to_file(save_path)
+        else:
+            all_obj[data_key] = motion_obj
+        # elif cfg.input_motion_type == "GVHMR":
+        #     rel_path = osp.relpath(key_name_to_pkls[data_key], cfg.gvhmr_path)
+        #     full_output_path = osp.join(cfg.output_dir, f"GVHMR_{cfg.process_split}")
+
         # viewer.close()
 
-    return all_data
+    return all_obj
 
 
 def match_amass_dataset(key_name, all_datasets):
@@ -400,10 +407,12 @@ def main() -> None:
 
     if hasattr(cfg, "gvhmr_path"):
         cfg.input_motion_type = "GVHMR"
+        cfg.gvhmr_path = cfg.gvhmr_path.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         pt_files = glob.glob(osp.join(cfg.gvhmr_path, "*", "*.pt"))
         key_name_to_pkls = {
             osp.basename(osp.dirname(f)): f for f in pt_files
         }
+        dir_name = cfg.gvhmr_path.split('/')[-1]
     else:
         cfg.input_motion_type = "AMASS"
         amass_root = cfg.amass_root
@@ -533,12 +542,11 @@ def main() -> None:
             all_data.update(data_dict)
     if cfg.input_motion_type == 'GVHMR':
         # data_key = list(all_data.keys())[0]
-        os.makedirs(f"output/{cfg.humanoid_type}_motion/singles", exist_ok=True)
-        dumped_file = f"output/{cfg.humanoid_type}_motion/GVHMR_output.pkl"
+        os.makedirs(f"dataset/{cfg.humanoid_type}_motion/GVHMR", exist_ok=True)
+        dumped_file = f"dataset/{cfg.humanoid_type}_motion/GVHMR_{dir_name}.pkl"
         print(dumped_file)
         # vis_mujoco(all_data[key_names[0]],cfg.robot.humanoid_type)         # for visualization
         joblib.dump(all_data, dumped_file)
-
     else:
         # os.makedirs(f"output/{cfg.humanoid_type}_motion/", exist_ok=True)
         # joblib.dump(all_data, f"output/{cfg.humanoid_type}_motion/amass_{cfg.process_split}.pkl")

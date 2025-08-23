@@ -62,7 +62,9 @@ class LeggedRobotImi(LeggedRobot):
         self.ref_root_rot = torch.zeros(self.num_envs, 4, device=self.device)
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
 
-        self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance, device=self.device) ** 2
+        self.reset_body_id = self._build_key_body_ids_tensor(self.cfg.early_termination.reset_body)
+        self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance,
+                                                       device=self.device) ** 2
 
     def _create_envs(self):
         """ Creates environments:
@@ -282,7 +284,9 @@ class LeggedRobotImi(LeggedRobot):
         self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(
-                self.episode_sums[key][env_ids]) / self.max_episode_length_s
+                self.episode_sums[key][env_ids])
+            # self.extras["episode"]['rew_' + key] = torch.mean(
+            #     self.episode_sums[key][env_ids]) / self.max_episode_length_s
             self.episode_sums[key][env_ids] = 0.
         if self.cfg.commands.curriculum:
             self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
@@ -290,7 +294,7 @@ class LeggedRobotImi(LeggedRobot):
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 
-        # self._refresh_sim_tensors()
+        self._refresh_sim_tensors()
 
         if self.activate_amp:
             self._init_amp_obs_ref(env_ids)
@@ -333,6 +337,7 @@ class LeggedRobotImi(LeggedRobot):
             self._reset_hybrid_state_init(env_ids)
 
         self.motion_lengths = self._motion_lib.get_motion_length(self._sampled_motion_ids[env_ids])/ self.dt
+        # from 0, therefore the real length is (int(motion_lengths) + 1)
 
 
     def _reset_default(self, env_ids):
@@ -394,14 +399,17 @@ class LeggedRobotImi(LeggedRobot):
         self.root_states[env_ids, 7:10] = root_vel
         self.root_states[env_ids, 10:13] = root_ang_vel
 
+        # self.base_pos[:] = self.root_states[:, 0:3]
+        # self.base_quat[:] = self.root_states[:, 3:7]
+
         self.dof_pos[env_ids] = dof_pos
         self.dof_vel[env_ids] = dof_vel
 
         # self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-        self.body_pos[env_ids] = key_pos
-        self.body_rot[env_ids] = key_rot
-        self.body_vel[env_ids] = key_vel
-        self.body_ang_vel[env_ids] = key_ang_vel
+        self.body_pos[env_ids,:] = key_pos
+        self.body_rot[env_ids,:] = key_rot
+        self.body_vel[env_ids,:] = key_vel
+        self.body_ang_vel[env_ids,:] = key_ang_vel
 
         return
 
@@ -414,28 +422,28 @@ class LeggedRobotImi(LeggedRobot):
         # fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)  # raw pitch yaw
 
         time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # 在这种情况下已经找不到 ref motion 了！
+        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # progress is the current ref_motion
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         ref_out = (progress + self._motion_start_times )>= motion_lens
-        body_delta_sq = torch.sum((self.body_pos - self.ref_body_pos) ** 2, dim=2)  # → ℝ[num_envs, K]
+        body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
+                                   - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
-        body_too_far = torch.any(body_delta_sq > self.early_termination_distance, dim=1)  # → ℝ[num_envs]
-
+        body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)  # → ℝ[num_envs]
+        body_too_far *= (self.episode_length_buf > 1)
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | body_too_far
         self.reset_buf = ref_out | body_too_far | time_out
-        self.time_out_buf = time_out
+        self.time_out_buf = time_out | ref_out
 
         if not self.early_termination:
-            self.reset_buf = time_out
+            self.reset_buf = time_out | ref_out
+            self.time_out_buf = time_out | ref_out
 
         if self.eval_mode:
-            progress = self.episode_length_buf.to(torch.float) * self.dt
-            motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
-            ref_out = progress >= motion_lens
             self.reset_buf = ref_out | body_too_far
+            self.time_out_buf = time_out | ref_out
 
-    def _reset_env_tensors(self, env_ids):
+    def  _reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
@@ -484,7 +492,7 @@ class LeggedRobotImi(LeggedRobot):
 
         progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt
         motion_times = progress + self._motion_start_times
-        motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+        # motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         # motion_times = torch.fmod(motion_times, motion_lens)
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
 
@@ -497,7 +505,7 @@ class LeggedRobotImi(LeggedRobot):
         self.ref_body_ang_vel = motion_state["key_ang_vel"]
 
         humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
-                                self.body_pos, self.body_rot,self.body_vel, self.body_ang_vel,
+                                self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
                                 activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
 
         task_obs = compute_task_observations_jit(self.base_pos, self.base_quat,
@@ -506,6 +514,7 @@ class LeggedRobotImi(LeggedRobot):
                                activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
 
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
+        # self.obs_buf = torch.cat((humanoid_obs, task_obs), dim=-1)
 
         if self.activate_amp:
             key_body_pos = self.body_pos[:, self.key_body_ids, :]
@@ -611,13 +620,18 @@ class LeggedRobotImi(LeggedRobot):
 
         return obs
 
+    def _build_key_body_ids_tensor(self, key_body_names):
+        body_ids = [self.body_names.index(name) for name in key_body_names]
+        body_ids = to_torch(body_ids, device=self.device, dtype=torch.long)
+        return body_ids
+
     def _reward_imitation(self):
         # reward 是不需要 heading 归一化 的！
         """
         Computes the imitation reward based on the difference between the current and reference body positions and rotations.
         The reward is computed in the heading frame of the root body.
         """
-        pos_err = torch.mean(torch.square(self.body_pos- self.ref_body_pos), dim=1).mean(-1)
+        pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
         rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
         diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
         rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
@@ -649,6 +663,7 @@ class LeggedRobotImi(LeggedRobot):
         The reward is computed in the heading frame of the root body.
         """
         reward = torch.abs(torch.multiply(self.dof_force_tensor, self.dof_vel)).sum(dim=-1)
+        reward[self.episode_length_buf <= 3] = 0
         return reward
 
 
@@ -727,7 +742,9 @@ class LeggedRobotImi(LeggedRobot):
         self.extras["episode"] = {}
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(
-                self.episode_sums[key][env_ids]) / self.max_episode_length_s
+                self.episode_sums[key][env_ids])
+            # self.extras["episode"]['rew_' + key] = torch.mean(
+            #     self.episode_sums[key][env_ids]) / self.max_episode_length_s
             self.episode_sums[key][env_ids] = 0.
         # send timeout info to the algorithm
         if self.cfg.env.send_timeouts:

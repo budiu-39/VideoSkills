@@ -87,7 +87,8 @@ class G1RoughCfg( LeggedRobotCfg ):
         rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/GVHMR_2_test.pkl')
 
         # bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
         #       'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -194,7 +195,8 @@ class G1RoughCfg( LeggedRobotCfg ):
     class retarget:
         fitting_iterations = 500
         output_dir = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion')
-        amass_root = '/mnt/lustre/work/ponsmoll/pba936/AMASS'   # replace it with amass root in your workspace
+        # amass_root = '/mnt/lustre/work/ponsmoll/pba936/AMASS'   # replace it with amass root in your workspace
+        gvhmr_path = ('{LEGGED_GYM_ROOT_DIR}/GVHMR/outputs/demo/2_test')
         process_split = 'train'
         # amass_root = '/home/miku/Documents/AMASS_test'
         # process_split = 'test'

@@ -8,7 +8,6 @@ import numpy as np
 import joblib
 from tqdm import tqdm
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
-from videoskills.envs.g1.g1_config import G1RoughCfg, G1RoughCfgPPO
 import torch
 from torch.autograd import Variable
 from smpl_sim.smpllib.smpl_parser import (
@@ -17,6 +16,7 @@ from smpl_sim.smpllib.smpl_parser import (
     SMPLX_Parser,
 )
 from videoskills import LEGGED_GYM_ROOT_DIR
+from videoskills.envs.g1.g1_config import G1RoughCfg
 
 smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
 

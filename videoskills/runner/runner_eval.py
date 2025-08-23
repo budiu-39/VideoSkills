@@ -29,6 +29,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
+        self.rollout = True # train_cfg.get("refine", False)
+        # best_by = 'mpjpe_g'
 
         if self.env.num_privileged_obs is not None:
             num_critic_obs = self.env.num_privileged_obs
@@ -273,6 +275,15 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
 
+            if self.rollout:
+                rollout = defaultdict(list)
+                rollout['pred_pos'] = pred_pos_all
+                rollout['gt_pos'] = gt_pos_all
+                rollout['pred_rot'] = pred_rot_all
+                rollout['gt_rot'] = gt_rot_all
+                out_path = os.path.join(self.eval_output_path, f"rollout_motion_{motion_lib._motion_keys[motion_ids[0]]}.pkl")
+                joblib.dump(rollout, out_path, compress=True)
+
             for k, v in batch_metrics.items():
                 global_metrics[k].extend(v)
                 for j, valid in enumerate(valid_mask):
@@ -341,6 +352,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
     #         return
     #     self.running_mean_std_temp = copy.deepcopy(self.running_mean_std)
     #     self.running_mean_std_temp.freeze()
+    # def refine_rollout(self):
+    #
+
 
     def log(self, locs, width=80, pad=35):
         it = locs['it']

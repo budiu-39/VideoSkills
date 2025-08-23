@@ -18,7 +18,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'PHC_origin_w_AMP'
+        run_name = 'PHC_03angvel'
         experiment_name = 'smpl_ppo'
         use_amp_runner = True # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -68,8 +68,10 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -190,7 +192,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 0
+        self_collisions = 1
         default_dof_drive_mode = 1
 
     class rewards:
@@ -202,7 +204,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             k_rot = 10
             k_vel = 0.1
             w_ang_vel = 0.1
-            w_pos = 0.5
+            w_pos = 0.3
             w_rot = 0.5
             w_vel = 0.1
             # k_ang_vel = 0.1

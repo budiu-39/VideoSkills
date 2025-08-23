@@ -166,3 +166,6 @@ dataset/
 .git/
 
 output/
+
+GVHMR/inputs/checkpoints
+GVHMR/outputs

@@ -26,7 +26,7 @@ class TaskRegistry():
         return self.task_classes[name]
     
     def get_cfgs(self, args) -> Tuple[LeggedRobotCfg, LeggedRobotCfgPPO]:
-        if args.resume:
+        if args.load_config:
             # load config from the path
             return self.load_cfg(args)
         train_cfg = self.train_cfgs[args.task]
@@ -54,6 +54,8 @@ class TaskRegistry():
         if args.motion_file is not None:
             motion_file_path = os.path.join(LEGGED_GYM_ROOT_DIR, 'dataset', f'{args.task}_motion', args.motion_file)
             env_cfg['motion']['file'] = motion_file_path
+
+        train_cfg['runner']['load_run'] = args.load_run
 
         env_cfg = dict_to_class(env_cfg)
         train_cfg = dict_to_class(train_cfg)

@@ -2,7 +2,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
-        init_noise_std = 0.055
+        init_noise_std = 0.18
         fixed_std = False
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
@@ -16,13 +16,15 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
         normalize_value = False
         normalize_obs = True
+        use_clipped_value_loss = False
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smpl_ver7_default_origin_taskw'  # 'smpl_ppo'
+        run_name = 'value_fixed'  # 'smpl_ppo'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False  # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         load_run = 'SOTA_smpl_universal'
+        refine = True
         # checkpoint = 10000
         # load_run = 'obs_norm'
         # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
@@ -65,11 +67,18 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 24
+        reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
+                     'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+                     'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
     class motion:
         rotate_motion = True
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
         file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -205,7 +214,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 0
+        self_collisions = 1
         default_dof_drive_mode = 3
 
     class rewards:
@@ -220,14 +229,24 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_pos = 0.5
             w_rot = 0.5
             w_vel = 0.1
+            # k_ang_vel = 0.1
+            # k_pos = 100
+            # k_rot = 10
+            # k_vel = 0.1
+            # w_ang_vel = 0.1
+            # w_pos = 0.5
+            # w_rot = 0.5
+            # w_vel = 0.1
         class scales:
             imitation = 1.0
+            # dof_force = - 0.0001
             torques = -0.000005
             action_rate = - 0.02
 
     class sim(LeggedRobotCfg.sim):
         # dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
         dt = 0.005
+        substeps = 1
 
     class amp:
         activate = False
