@@ -427,7 +427,7 @@ class LeggedRobotImi(LeggedRobot):
         time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # progress is the current ref_motion
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
-        ref_out = (progress + self._motion_start_times )>= motion_lens
+        ref_out = (progress + self._motion_start_times )> motion_lens
         body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
                                    - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
@@ -446,7 +446,7 @@ class LeggedRobotImi(LeggedRobot):
             self.reset_buf = ref_out | body_too_far
             self.time_out_buf = time_out | ref_out
 
-    def  _reset_env_tensors(self, env_ids):
+    def  reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,

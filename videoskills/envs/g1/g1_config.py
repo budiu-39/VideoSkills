@@ -23,7 +23,7 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_rebirth_silu'  # 默认带 stiffness   ver 是 pd 的版本号
+        run_name = 'g1_rebirth_silu_new_eval'  # 默认带 stiffness   ver 是 pd 的版本号
         use_amp_runner = False
         load_run = ''
         # load_run = 'g1_universal'

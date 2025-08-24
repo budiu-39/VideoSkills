@@ -760,7 +760,9 @@ class LeggedRobot(BaseTask):
 
     def _reward_torques(self):
         # Penalize torques
-        return torch.sum(torch.square(self.torques), dim=1)
+        reward = torch.sum(torch.square(self.torques), dim=1)
+        # reward[self.episode_length_buf <= 3] = 0
+        return reward
 
     def _reward_dof_vel(self):
         # Penalize dof velocities
