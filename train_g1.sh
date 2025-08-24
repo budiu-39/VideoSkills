@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=8          # Number of CPU cores per task
 #SBATCH --nodes=1                  # Ensure that all cores are on the same machine with nodes=1
 #SBATCH --partition=a100-galvani   # Which partition will run your job
-#SBATCH --time=1-00:05             # Allowed runtime in D-HH:MM
+#SBATCH --time=3-00:00             # Allowed runtime in D-HH:MM
 #SBATCH --gres=gpu:1               # (optional) Requesting type and number of GPUs
 #SBATCH --mem=50G                  # Total memory pool for all cores (see also --mem-per-cpu); exceeding this number will cause your job to fail.
 #SBATCH --exclude=galvani-cn221
@@ -32,5 +32,5 @@ ls $WORK # not necessary just here to illustrate that $WORK is available here
 # - determine commandline arguments for `srun` calls
 
 # Compute Phase
-srun python videoskills/train.py --task=smpl --use_wandb --headless
+srun python videoskills/train.py --task=g1 --use_wandb --headless
 # srun will automatically pickup the configuration defined via `#SBATCH` and `sbatch` command line arguments

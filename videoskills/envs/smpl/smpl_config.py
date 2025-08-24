@@ -18,7 +18,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'phc_silu_value_fixed_negreward'
+        run_name = 'phc_sota_reboot'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -212,7 +212,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class rewards:
         # soft_dof_pos_limit = 0.9
-        only_positive_rewards = False
+        only_positive_rewards = True
         class task_w:
             k_ang_vel = 0.1
             k_pos = 100

@@ -29,7 +29,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-        self.rollout = True # train_cfg.get("refine", False)
+        self.rollout = False # train_cfg.get("refine", False)
         # best_by = 'mpjpe_g'
 
         if self.env.num_privileged_obs is not None:

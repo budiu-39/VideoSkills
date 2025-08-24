@@ -62,7 +62,10 @@ class LeggedRobotImi(LeggedRobot):
         self.ref_root_rot = torch.zeros(self.num_envs, 4, device=self.device)
         self.ref_dof_pos = torch.zeros(self.num_envs, self.num_dofs, device=self.device)
 
-        self.reset_body_id = self._build_key_body_ids_tensor(self.cfg.early_termination.reset_body)
+        if hasattr(self.cfg.early_termination,'reset_body'):
+            self.reset_body_id = self._build_key_body_ids_tensor(self.cfg.early_termination.reset_body)
+        else:
+            self.reset_body_id = torch.arange(0, self.num_bodies, device=self.device)
         self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance,
                                                        device=self.device) ** 2
 

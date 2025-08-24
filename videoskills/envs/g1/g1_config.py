@@ -6,12 +6,12 @@ import numpy as np
 class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class policy:
         init_noise_std = 0.18
-        fixed_std = True
+        fixed_std = False
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        activation = 'elu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        activation = 'silu' # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -23,7 +23,7 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_Final_dof_force'  # 默认带 stiffness   ver 是 pd 的版本号
+        run_name = 'g1_rebirth_silu'  # 默认带 stiffness   ver 是 pd 的版本号
         use_amp_runner = False
         load_run = ''
         # load_run = 'g1_universal'
@@ -87,8 +87,8 @@ class G1RoughCfg( LeggedRobotCfg ):
         rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/GVHMR_2_test.pkl')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/GVHMR_2_test.pkl')
 
         # bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',
         #       'left_ankle_pitch_link','left_ankle_roll_link','right_hip_pitch_link','right_hip_roll_link',
@@ -160,28 +160,28 @@ class G1RoughCfg( LeggedRobotCfg ):
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
         class task_w:
-            k_ang_vel = 0.1
-            k_pos = 100
-            k_rot = 10
-            k_vel = 0.1
-            w_ang_vel = 0.1
-            w_pos = 0.5
-            w_rot = 0.5
-            w_vel = 0.1
-
-            # SOTA
-            # k_ang_vel = 0.04
+            # k_ang_vel = 0.1
             # k_pos = 100
             # k_rot = 10
-            # k_vel = 0.3
-            # w_ang_vel = 0.3
+            # k_vel = 0.1
+            # w_ang_vel = 0.1
             # w_pos = 0.5
             # w_rot = 0.5
             # w_vel = 0.1
 
+            # SOTA
+            k_ang_vel = 0.04
+            k_pos = 100
+            k_rot = 10
+            k_vel = 0.3
+            w_ang_vel = 0.3
+            w_pos = 0.5
+            w_rot = 0.5
+            w_vel = 0.1
+
         class scales:
             imitation = 1.0
-            # dof_force = - 0.0001
+            # dof_force = - 0.00005
             action_rate = - 0.05
             torques = -0.00002
 
@@ -250,6 +250,3 @@ class G1RoughCfg( LeggedRobotCfg ):
            'L_Elbow':[0, -np.pi/2, 0],
            'R_Elbow':[0, np.pi/2, 0]
         }
-
-
-
