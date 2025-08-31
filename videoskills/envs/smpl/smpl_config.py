@@ -18,14 +18,14 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'phc_sota_reboot'
+        run_name = 'phc_new_eval'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
-        # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
+        load_run = 'phc_sota'
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
@@ -39,6 +39,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # num_steps_per_env = 24 # per iteration
         # num_learning_epochs = 4
         # num_mini_batches = 5
+
+    class refine:
+        success_rate_threshold = 1.0
+        convergence_threshold = 0.03
+        convergence_criteria = 'reward'  # 'reward' or 'mpjpe'
 
     class amp_config:
         disc_batch = 512
@@ -66,14 +71,14 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # distance = [0.25] * 24
         distance = [0.25] * 24
 
-        reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',    # 9
+        reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
 

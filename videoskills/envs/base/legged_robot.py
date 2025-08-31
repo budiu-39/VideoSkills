@@ -143,6 +143,8 @@ class LeggedRobot(BaseTask):
                 })
 
         self.reset_idx(env_ids)
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
 
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
@@ -156,13 +158,13 @@ class LeggedRobot(BaseTask):
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.root_states[:, 7:13]
 
-    def check_termination(self):
-        """ Check if environments need to be reset
-        """
-        self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
-        self.reset_buf |= torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
-        self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-        self.reset_buf |= self.time_out_buf
+    # def check_termination(self):
+    #     """ Check if environments need to be reset
+    #     """
+    #     self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
+    #     self.reset_buf |= torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
+    #     self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+    #     self.reset_buf |= self.time_out_buf
 
     def reset_idx(self, env_ids):
         """ Reset some environments.
@@ -198,9 +200,6 @@ class LeggedRobot(BaseTask):
             self.episode_sums[key][env_ids] = 0.
         if self.cfg.commands.curriculum:
             self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
-        # send timeout info to the algorithm
-        if self.cfg.env.send_timeouts:
-            self.extras["time_outs"] = self.time_out_buf
 
 
 
@@ -761,7 +760,7 @@ class LeggedRobot(BaseTask):
     def _reward_torques(self):
         # Penalize torques
         reward = torch.sum(torch.square(self.torques), dim=1)
-        # reward[self.episode_length_buf <= 3] = 0
+        reward[self.episode_length_buf <= 3] = 0
         return reward
 
     def _reward_dof_vel(self):
@@ -842,6 +841,7 @@ class LeggedRobot(BaseTask):
 
     def disable_data_recording(self):
         self.is_recording_data = False
+
         self.recorded_data = [[] for _ in range(self.num_envs)]
 
     def export_recorded_data(self, output_dir, motion_ids):

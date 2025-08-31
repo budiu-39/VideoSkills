@@ -87,36 +87,29 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.alg.set_train()  # switch to train mode (for dropout for example)
 
         ep_infos = []
-        rewbuffer = deque(maxlen=100)
-        lenbuffer = deque(maxlen=100)
+        rewbuffer = deque(maxlen = min(100, num_learning_iterations))
+        lenbuffer = deque(maxlen = min(100, num_learning_iterations))
+        # terbuffer = deque(maxlen = min(100, num_learning_iterations))
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
             start = time.time()
+            early_termination_sum = 0
+            dones_sum = 0
             self.alg._refresh_temp_rms()  # refresh temp running mean std
             with torch.inference_mode():
                 for i in range(self.num_steps_per_env):
-
-                    # if self.normalize_obs:
-                    #     obs_proc = self.running_mean_std_temp(obs)
-                    #     critic_proc = self.running_mean_std_temp(critic_obs)
-                    # else:
-                    #     obs_proc, critic_proc = obs, critic_obs
-
                     actions = self.alg.act(obs, critic_obs)
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                     obs = obs.to(self.device)
                     rewards = rewards.to(self.device)
                     dones = dones.to(self.device)
                     critic_obs = privileged_obs.to(self.device) if privileged_obs is not None else obs
-
-                    # if self.normalize_obs:
-                    #     self.running_mean_std.train()  # ensure in update mode
-                    #     self.running_mean_std(obs)
-
                     self.alg.process_env_step(rewards, dones, infos)
+                    early_termination_sum += sum(dones.cpu().numpy()) - sum(infos['time_outs'].cpu().numpy())
+                    dones_sum += sum(dones.cpu().numpy())
 
                     if self.log_dir is not None:
                         # Book keeping
@@ -127,15 +120,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                         new_ids = (dones > 0).nonzero(as_tuple=False)
                         rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
                         lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        # TODO: Here should implement a counter logic counting the sum of dones - ET and ET
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
-                # if self.normalize_obs:
-                #     critic_proc = self.running_mean_std_temp(critic_obs)
-                # else:
-                #     critic_proc = critic_obs.to(self.device)
+                ET_rate = early_termination_sum/(dones_sum + 1e-8)
                 self.alg.compute_returns(critic_obs)
 
             start = stop
@@ -144,6 +135,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             learn_time = stop - start
             if self.log_dir is not None:
                 self.log(locals())
+
             if it % self.save_interval == 0:
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
@@ -346,16 +338,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         return
 
-    # def _refresh_temp_rms(self):
-    #     # 深拷贝后冻结，让 rollout 期间使用的均值方差保持不变
-    #     if not self.normalize_obs:
-    #         return
-    #     self.running_mean_std_temp = copy.deepcopy(self.running_mean_std)
-    #     self.running_mean_std_temp.freeze()
-    # def refine_rollout(self):
-    #
-
-
     def log(self, locs, width=80, pad=35):
         it = locs['it']
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
@@ -371,6 +353,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
                         locs['collection_time'] + locs['learn_time']),
             "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
+            "Imitation/ET_rate": locs['ET_rate']
         }
 
         # 训练指标
@@ -396,11 +379,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
                     np.mean(val))
 
-        # ep_infos
-        if locs['ep_infos']:
-            for key in locs['ep_infos'][0]:
-                vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
-                wandb_metrics[f"Episode/{key}"] = sum(vals) / len(vals)
 
         # ========== wandb 记录 ==========
         if wandb.run is not None:
@@ -418,7 +396,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         summary = f"[{self.cfg['run_name']} it {it:05d}]"
         if mean_rew is not None and mean_len is not None:
             summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
-        summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
+        # summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
+        summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
         summary += ep_info_str
         print(summary)
 

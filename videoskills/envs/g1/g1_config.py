@@ -23,7 +23,7 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_rebirth_silu_new_eval'  # 默认带 stiffness   ver 是 pd 的版本号
+        run_name = 'g1_silu_new_eval_torque'  # 默认带 tiffness   ver 是 pd 的版本号
         use_amp_runner = False
         load_run = ''
         # load_run = 'g1_universal'
@@ -85,9 +85,9 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/GVHMR_2_test.pkl')
 
         # bodies = ['pelvis','left_hip_pitch_link','left_hip_roll_link','left_hip_yaw_link','left_knee_link',

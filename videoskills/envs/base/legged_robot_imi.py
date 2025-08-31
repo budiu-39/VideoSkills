@@ -44,6 +44,8 @@ class LeggedRobotImi(LeggedRobot):
             self._amp_obs_demo_buf = None
 
         self._parse_cfg(self.cfg)
+
+        self.early_termination_buf = torch.zeros(self.cfg.env.num_envs, device=sim_device, dtype=torch.bool)
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         if isinstance(self.cfg.motion.file, list):
@@ -284,6 +286,7 @@ class LeggedRobotImi(LeggedRobot):
         self.reset_buf[env_ids] = 1
         # fill extras
         self.extras["episode"] = {}
+        self.extras["early_termination_buf"] = self.early_termination_buf
         self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(
@@ -437,6 +440,7 @@ class LeggedRobotImi(LeggedRobot):
         # self.reset_buf = fall | time_out | body_too_far
         self.reset_buf = ref_out | body_too_far | time_out
         self.time_out_buf = time_out | ref_out
+        self.early_termination_buf = body_too_far
 
         if not self.early_termination:
             self.reset_buf = time_out | ref_out
@@ -446,7 +450,7 @@ class LeggedRobotImi(LeggedRobot):
             self.reset_buf = ref_out | body_too_far
             self.time_out_buf = time_out | ref_out
 
-    def  reset_env_tensors(self, env_ids):
+    def _reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
         env_ids_int32 = env_ids.to(dtype=torch.int32)
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
@@ -459,7 +463,6 @@ class LeggedRobotImi(LeggedRobot):
         if self.drive_mode == gymapi.DOF_MODE_POS:
             self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
                                                             gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-
 
 
     def land_event_detection(self):   # 还有必要升级
