@@ -41,9 +41,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # num_mini_batches = 5
 
     class refine:
-        success_rate_threshold = 1.0
+        success_proxy = 1.0
         convergence_threshold = 0.03
         convergence_criteria = 'reward'  # 'reward' or 'mpjpe'
+
+
 
     class amp_config:
         disc_batch = 512
@@ -78,8 +80,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9

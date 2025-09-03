@@ -17,6 +17,8 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
         self.disc_batch = amp_cfg.get("disc_batch", 512)
         self.n_disc_updates = amp_cfg.get("disc_updates", 1)
         self.disc_coef = amp_cfg.get("reward_coef", 0.5)
+        self.rewbuffer = deque(maxlen=100)
+        self.lenbuffer = deque(maxlen=100)
 
         # 判别器
         # TODO: 好像没有写AMP的保存
@@ -40,9 +42,6 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
             self.amp_obs_mean_std = RunningMeanStd((amp_cfg["state_dim"],)).to(self.device)
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
-        # initialize writer
-        # if self.log_dir is not None and self.writer is None:
-        #     self.writer = SummaryWriter(log_dir=self.log_dir, flush_secs=10)
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(self.env.episode_length_buf,
                                                              high=int(self.env.max_episode_length))
@@ -54,8 +53,7 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
         self.amp_obs_mean_std.train()  # ensure in update mode
 
         ep_infos = []
-        rewbuffer = deque(maxlen=100)
-        lenbuffer = deque(maxlen=100)
+
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
@@ -94,8 +92,8 @@ class OnPolicyRunnerAMP(OnPolicyRunnerEval):
                         cur_reward_sum += rewards
                         cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                        self.rewbuffer.extend(cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist())
+                        self.lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
                         cur_reward_sum[new_ids] = 0
                         cur_episode_length[new_ids] = 0
 
