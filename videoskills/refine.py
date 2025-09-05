@@ -14,12 +14,12 @@ def train(args):
                                                       log_dir=log_dir)
 
     monitor = ConvergenceMonitor(
-        N=100,
-        alpha=0.15,
+        N=20,
+        alpha=1,
         cv_thr=0.08,
         trend_scale=1e-3,
         patience=3,
-        target_success=getattr(getattr(train_cfg, "refine", {}), "success_proxy", None)  # e.g., 0.9
+        # target_success=getattr(getattr(train_cfg, "refine", {}), "success_proxy", None)  # e.g., 0.9
     )
 
     if args.use_wandb and not args.dev:
@@ -30,27 +30,26 @@ def train(args):
                    config={**vars(args), **class_to_dict(train_cfg), **class_to_dict(env_cfg)})
 
     target_eval_success = getattr(getattr(train_cfg, "refine", {}), "target_eval_success", 0.95)
-    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 200)
-    interval   = getattr(getattr(train_cfg, "refine", {}), "refine_interval", 10)
-    et_window  = getattr(getattr(train_cfg, "refine", {}), "et_window", 10)
+    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 500)
+    interval   = getattr(getattr(train_cfg, "refine", {}), "refine_interval", 20)
+    et_window  = getattr(getattr(train_cfg, "refine", {}), "et_window", 20)
     max_it     = train_cfg.runner.max_iterations
 
-    # 与 monitor 的样本门槛保持一致，避免被清零
-    min_eps = max(10, monitor.N // 2)
-
     for it in range(0, max_it + 1, interval):
-        runner.learn(num_learning_iterations=interval, init_at_random_ep_len=True)
+        runner.learn(num_learning_iterations=interval, init_at_random_ep_len=False)
 
         # 最近这段训练中新结束的 episodic returns
         if hasattr(runner, 'pop_recent_episode_rewards'):
-            recent_rewards = runner.pop_recent_episode_rewards()
+            recent_rewards = runner.pop_recent_mean_rewards()
         else:  # 退路：用全局 buffer 的后 N 个
             recent_rewards = list(getattr(runner, 'rewbuffer', []))[-monitor.N:]
 
-        success_proxy = 1.0 - (runner.mean_et_rate(k=et_window) if hasattr(runner, 'mean_et_rate') else 1.0)
+        success_proxy = 1 - runner.mean_et_rate(k=et_window)
+        et_vals = runner.pop_recent_ET_rate(k=et_window)
+        success_series = 1.0 - np.array(et_vals, dtype=float)
 
         # 调用收敛监测
-        converged = monitor.update(recent_rewards, success_rate=success_proxy)
+        converged = monitor.update(success_series, success_rate=success_proxy)
 
         # 统一把诊断项写入 wandb（包括 slope/cv/是否通过等）
         if wandb.run is not None:
@@ -60,20 +59,25 @@ def train(args):
                 'Refine/et_window': et_window,
                 'Refine/interval': interval,
             })
-            wandb.log(to_log, step=it)
+            wandb.log(to_log, step=runner.current_learning_iteration)
 
         if converged:
+            runner.rollout = True
             eval_out = runner.eval()  # 你的 eval 里建议返回 dict（success_rate 等）
             if isinstance(eval_out, dict) and 'success_rate' in eval_out:
-                if wandb.run is not None:
-                    wandb.log({f'Eval/{k}': v for k, v in eval_out.items() if isinstance(v, (int, float))}, step=it)
+                # if wandb.run is not None:
+                #     wandb.log({f'Eval/{k}': v for k, v in eval_out.items() if isinstance(v, (int, float))}, step=it)
                 if float(eval_out['success_rate']) >= target_eval_success:
                     print(f"[Converged+Eval OK] success={eval_out['success_rate']:.3f} ≥ {target_eval_success:.3f}")
+                    runner.save()
                     break
                 else:
                     print(f"[Converged+Eval FAIL] success={eval_out['success_rate']:.3f} < {target_eval_success:.3f}")
 
         if it >= hard_cap:
+            runner.rollout = True
+            eval_out = runner.eval()  # 你的 eval 里建议返回 dict（success_rate 等）
+            runner.save()
             print(f"[EarlyStop] Hit hard cap {hard_cap}.")
             break
 

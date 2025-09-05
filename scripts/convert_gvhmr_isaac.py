@@ -205,7 +205,7 @@ def quaternion_distance(q1, q2):
     return angle
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--folder_path', type=str, default='output/GVHMR_output/new_folder')
+parser.add_argument('--folder_path', type=str, default='output/GVHMR_output/cxk')
 parser.add_argument('--output_path', type=str, default='dataset/smpl_motion')
 parser.add_argument('--pkl_per_motoin', type=bool, default=False)
 args = parser.parse_args()

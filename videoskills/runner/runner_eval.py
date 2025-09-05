@@ -75,8 +75,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         self.rewbuffer = deque(maxlen=100)  # episdoe returns (对外可读)
         self.lenbuffer = deque(maxlen=100)  # episode lengths (可选)
-        self.ETbuffer = deque(maxlen=10)  # 每迭代的 early termination rate (对外可读)
-        self._recent_episode_rewards = []  # 仅跨迭代临时累积，供 pop 使用
+        self.ETbuffer = deque(maxlen=20)  # 每迭代的 early termination rate (对外可读)
+        self._recent_iterations_rewards = []  # 仅跨迭代临时累积，供 pop 使用
+        self.cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        self.cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
@@ -93,8 +95,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         ep_infos = []
         # terbuffer = deque(maxlen = min(100, num_learning_iterations))
-        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-        cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+
+
+
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
@@ -118,16 +121,16 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                         # Book keeping
                         if 'episode' in infos:
                             ep_infos.append(infos['episode'])
-                        cur_reward_sum += rewards
-                        cur_episode_length += 1
+                        self.cur_reward_sum += rewards
+                        self.cur_episode_length += 1
                         new_ids = (dones > 0).nonzero(as_tuple=False)
-                        ended_rews = cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()
+                        ended_rews = self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()
                         self.rewbuffer.extend(ended_rews)
-                        self.lenbuffer.extend(cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
-                        self._recent_episode_rewards.extend(ended_rews)  # <--- 新增：本迭代收集
+                        self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+
                         # TODO: Here should implement a counter logic counting the sum of dones - ET and ET
-                        cur_reward_sum[new_ids] = 0
-                        cur_episode_length[new_ids] = 0
+                        self.cur_reward_sum[new_ids] = 0
+                        self.cur_episode_length[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
@@ -139,6 +142,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
             learn_time = stop - start
+            self._recent_iterations_rewards.append(np.mean(self.rewbuffer))  # <--- 新增：本迭代收集
             if self.log_dir is not None:
                 self.log(locals())
 
@@ -147,7 +151,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             ep_infos.clear()
 
         self.current_learning_iteration += num_learning_iterations
-        self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
+        # self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
     def eval(self, motion_ids=None):
         """Evaluate policy over multiple motions in parallel across environments."""
@@ -342,7 +346,15 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             wandb.log(wandb_metric_dict, step=self.current_learning_iteration)
 
-        return
+        result = {
+                "mean_reward": mean_rew,
+                "success_rate": success_rate,
+                "reward_until_fail_mean_failed": np.mean(
+                    reward_until_fail_list) if reward_until_fail_list else 0.0,
+                "num_success": num_success,
+                "num_total": num_total,
+            }
+        return result
 
     def log(self, locs, width=80, pad=35):
         it = locs['it']
@@ -409,7 +421,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         summary += ep_info_str
         print(summary)
 
-    def save(self, path, infos=None):
+    def save(self, path=None, infos=None):
+        if path is None:
+            os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration))
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
@@ -433,15 +447,19 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         return loaded_dict['infos']
 
-    def pop_recent_episode_rewards(self):
+    def pop_recent_mean_rewards(self):
         """取出自上次调用以来新结束的所有 episode return，并清空临时缓存。"""
-        out = self._recent_episode_rewards
-        self._recent_episode_rewards = []
+        out = self._recent_iterations_rewards
+        self._recent_iterations_rewards = []
         return out
 
-    def mean_et_rate(self, k=10):
+    def mean_et_rate(self, k=20):
         """返回最近 k 次迭代的 ET_rate 均值，若不足 k 次则用全部。"""
         if len(self.ETbuffer) == 0:
             return 1.0  # 没数据时保守认为 ET 高
         k = min(k, len(self.ETbuffer))
         return float(np.mean(list(self.ETbuffer)[-k:]))
+
+    def pop_recent_ET_rate(self, k=20):
+        """返回最近 k 次迭代的 ET_rate 均值，若不足 k 次则用全部。"""
+        return list(self.ETbuffer)[-k:]
