@@ -218,8 +218,11 @@ class OnPolicyRunner:
             'infos': infos,
             }, path)
 
-    def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path)
+    def load(self, path=None, load_optimizer=True):
+        if path is None:
+            loaded_dict = torch.load(self.resume_path)
+        else:
+            loaded_dict = torch.load(path)
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])

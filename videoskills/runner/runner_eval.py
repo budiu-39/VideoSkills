@@ -72,10 +72,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
         self.rollouts_path = os.path.join(log_dir, "rollouts")
-        self.rollouts_success_path = os.path.join(log_dir, "rollouts","succeed")
+        self.rollouts_succeed_path = os.path.join(log_dir, "rollouts","succeed")
         self.rollouts_failed_path = os.path.join(log_dir, "rollouts", "failed")
         os.makedirs(self.eval_output_path, exist_ok=True)
-        os.makedirs(self.rollouts_success_path, exist_ok=True)
+        os.makedirs(self.rollouts_succeed_path, exist_ok=True)
         os.makedirs(self.rollouts_failed_path, exist_ok=True)
 
         self.rewbuffer = deque(maxlen=100)  # episdoe returns (对外可读)
@@ -441,17 +441,23 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             'infos': infos,
             }, path)
 
-    def load(self, path, load_optimizer=True):
-        loaded_dict = torch.load(path)
+
+    def load(self, path=None, load_optimizer=True):
+        if path is None:
+            loaded_dict = torch.load(self.resume_path)
+        else:
+            loaded_dict = torch.load(path)
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
         self.current_learning_iteration = loaded_dict['iter']
 
         if self.alg.normalize_obs:
-            self.alg.obs_mean_std.load_state_dict(loaded_dict["obs_rms_state_dict"])
+            with torch.inference_mode():
+                self.alg.obs_mean_std.load_state_dict(loaded_dict["obs_rms_state_dict"])
         if self.alg.normalize_value:
-            self.alg.value_mean_std.load_state_dict(loaded_dict["value_rms_state_dict"])
+            with torch.inference_mode():
+                self.alg.value_mean_std.load_state_dict(loaded_dict["value_rms_state_dict"])
 
         return loaded_dict['infos']
 

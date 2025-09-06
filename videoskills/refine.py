@@ -34,13 +34,14 @@ def train(args):
                    config={**vars(args), **class_to_dict(train_cfg), **class_to_dict(env_cfg)})
 
     target_eval_success = getattr(getattr(train_cfg, "refine", {}), "target_eval_success", 0.95)
-    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 40)
+    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 400)
     interval   = getattr(getattr(train_cfg, "refine", {}), "refine_interval", 20)
     et_window  = getattr(getattr(train_cfg, "refine", {}), "et_window", 20)
     max_it     = train_cfg.runner.max_iterations
 
     #TODO: introduce a loop here, to load the motion and set the dataset
     for file in motion_files:
+        runner.load()
         runner.reset_motion_lib(file)
         for it in range(0, max_it + 1, interval):
             runner.learn(num_learning_iterations=interval, init_at_random_ep_len=False)
@@ -83,7 +84,7 @@ def train(args):
 
             if it >= hard_cap:
                 runner.rollout = True
-                eval_out = runner.eval()  # 你的 eval 里建议返回 dict（success_rate 等）
+                eval_out = runner.eval()
                 # runner.save()
                 print(f"[EarlyStop] Hit hard cap {hard_cap}.")
                 break
