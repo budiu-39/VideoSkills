@@ -511,6 +511,8 @@ class MotionLib():
             return input_motion_sequences
         if input_motion_sequences.endswith(".pkl"):
             return input_motion_sequences
+        elif input_motion_sequences.endswith(".npy"):
+            return [input_motion_sequences]
         else:
             motion_paths = glob.glob(os.path.join(input_motion_sequences, f"**/*{ext}"), recursive=True)
             motion_paths.sort()

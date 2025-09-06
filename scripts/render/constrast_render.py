@@ -145,82 +145,95 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
     del mv
 
 
-def render(ref_sim_data_path, output_path):
-    ref_sim_data = joblib.load(ref_sim_data_path)
-    key_name = ref_sim_data_path.split('/')[-1]
-    ref_data = {}
-    sim_data = {}
-    ref_data['body_rot'] = torch.tensor(ref_sim_data['gt_rot']).reshape(-1, 24, 4)
-    ref_data['transl'] =  torch.tensor(ref_sim_data['gt_pos']).reshape(-1, 24, 3)[:,0]
-    sim_data['body_rot'] =torch.tensor(ref_sim_data['pred_rot']).reshape(-1, 24, 4)
-    sim_data['transl'] = torch.tensor(ref_sim_data['pred_pos']).reshape(-1, 24, 3)[:,0]
+def render(ref_sim_data_path, output_path, use_offscreen):
+    # 判断输入是文件还是目录
+    if os.path.isfile(ref_sim_data_path):
+        pkl_files = [ref_sim_data_path]
+    elif os.path.isdir(ref_sim_data_path):
+        pkl_files = [os.path.join(ref_sim_data_path, f) for f in os.listdir(ref_sim_data_path) if f.endswith(".pkl")]
+        pkl_files.sort()  # 保证顺序一致
+    else:
+        raise ValueError(f"Invalid path: {ref_sim_data_path}")
 
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
+    for pkl_file in pkl_files:
+        ref_sim_data = joblib.load(pkl_file)
+        key_name = os.path.splitext(os.path.basename(pkl_file))[0]  # 去掉后缀
+        ref_data = {}
+        sim_data = {}
 
-    ref_pose, ref_transl = humanoid2smpl(ref_data['body_rot'], ref_data['transl'], skeleton_tree)
-    sim_pose, sim_transl = humanoid2smpl(sim_data['body_rot'], sim_data['transl'], skeleton_tree)
+        ref_data['body_rot'] = torch.tensor(ref_sim_data['gt_rot']).reshape(-1, 24, 4)
+        ref_data['transl'] =  torch.tensor(ref_sim_data['gt_pos']).reshape(-1, 24, 3)[:,0]
+        sim_data['body_rot'] =torch.tensor(ref_sim_data['pred_rot']).reshape(-1, 24, 4)
+        sim_data['transl'] = torch.tensor(ref_sim_data['pred_pos']).reshape(-1, 24, 3)[:,0]
 
-    fmt = "%b%d_%H:%M"
-    timestamp = datetime.now().strftime(fmt)
-    pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
-    video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
-    os.makedirs(pic_path, exist_ok=1)
-    os.makedirs(video_path, exist_ok=1)
+        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
 
-    ref_transl = ref_transl + torch.tensor([0.0, 2.0, 0.0])
-    betas = torch.zeros(10).repeat(ref_transl.shape[0], 1)
+        ref_pose, ref_transl = humanoid2smpl(ref_data['body_rot'], ref_data['transl'], skeleton_tree)
+        sim_pose, sim_transl = humanoid2smpl(sim_data['body_rot'], sim_data['transl'], skeleton_tree)
 
-    ref_pose = ref_pose.float()
-    output = smpl(betas=betas, body_pose=ref_pose[:,1:], global_orient=ref_pose[:, :1], pose2rot=True, transl=ref_transl)
-    vertices = output.vertices.detach().cpu().numpy().squeeze()
-    jtr = output.joints.detach().cpu().numpy().squeeze()
-    ref_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
+        fmt = "%b%d_%H:%M"
+        timestamp = datetime.now().strftime(fmt)
+        pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
+        video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
+        os.makedirs(pic_path, exist_ok=1)
+        os.makedirs(video_path, exist_ok=1)
 
-    sim_pose = sim_pose.float()
-    output = smpl(betas=betas, body_pose=sim_pose[:, 1:], global_orient=sim_pose[:, :1], pose2rot=True,
-                  transl=sim_transl)
-    vertices = output.vertices.detach().cpu().numpy().squeeze()
-    jtr = output.joints.detach().cpu().numpy().squeeze()
-    sim_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
+        ref_transl = ref_transl + torch.tensor([0.0, 2.0, 0.0])
+        betas = torch.zeros(10).repeat(ref_transl.shape[0], 1)
 
-    pic_file = os.path.join(pic_path, key_name)
-    os.makedirs(pic_file, exist_ok = 1)
-    video_file = os.path.join(video_path, key_name + '.mp4')
+        # === Ref body ===
+        ref_pose = ref_pose.float()
+        output = smpl(betas=betas, body_pose=ref_pose[:,1:], global_orient=ref_pose[:, :1], pose2rot=True, transl=ref_transl)
+        vertices = output.vertices.detach().cpu().numpy().squeeze()
+        jtr = output.joints.detach().cpu().numpy().squeeze()
+        ref_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
 
+        # === Sim body ===
+        sim_pose = sim_pose.float()
+        output = smpl(betas=betas, body_pose=sim_pose[:, 1:], global_orient=sim_pose[:, :1], pose2rot=True,
+                      transl=sim_transl)
+        vertices = output.vertices.detach().cpu().numpy().squeeze()
+        jtr = output.joints.detach().cpu().numpy().squeeze()
+        sim_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
 
-    mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
-    viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contacts=None,
-                     render_body=True, render_joints=False, render_skeleton=False, render_ground=True,
-                     ground_plane=None,
-                     use_offscreen=opt.use_offscreen, out_path= pic_file, wireframe=False, RGBA=False,
-                     joints_seq=None, joints_vel=None, follow_camera=False, vtx_list=None, points_seq=None,
-                     points_vel=None,
-                     static_meshes=None, camera_intrinsics=None, img_seq=None, point_rad=0.015,
-                     skel_connections=smpl_connections, img_extn='png', ground_alpha=1.0, body_alpha=1.0,
-                     mask_seq=None,
-                     cam_offset=mat[:3,3], ground_color0=[0.8, 0.9, 0.9], ground_color1=[0.6, 0.7, 0.7],
-                     skel_color=[1.0, 0.0, 1.0],
-                     joint_rad=0.015,
-                     point_color=[1.0, 1.0, 1.0],
-                     joint_color=[1.0, 1.0, 0.0],
-                     contact_color=[1.0, 0.0, 0.0],
-                     render_bodies_static=None,
-                     render_points_static=None,
-                     cam_rot=mat[:3,:3])
+        pic_file = os.path.join(pic_path, key_name)
+        os.makedirs(pic_file, exist_ok = 1)
+        video_file = os.path.join(video_path, key_name + '.mp4')
 
-    create_video(pic_file + '/frame_%08d.png', video_file, 30)
+        mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
+        viz_contrast_smpl_seq(
+            sim_body, ref_body, imw=1080, imh=1080, fps=30, contacts=None,
+            render_body=True, render_joints=False, render_skeleton=False, render_ground=True,
+            ground_plane=None,
+            use_offscreen=opt.use_offscreen, out_path= pic_file, wireframe=False, RGBA=False,
+            joints_seq=None, joints_vel=None, follow_camera=False, vtx_list=None, points_seq=None,
+            points_vel=None,
+            static_meshes=None, camera_intrinsics=None, img_seq=None, point_rad=0.015,
+            skel_connections=smpl_connections, img_extn='png', ground_alpha=1.0, body_alpha=1.0,
+            mask_seq=None,
+            cam_offset=mat[:3,3], ground_color0=[0.8, 0.9, 0.9], ground_color1=[0.6, 0.7, 0.7],
+            skel_color=[1.0, 0.0, 1.0],
+            joint_rad=0.015,
+            point_color=[1.0, 1.0, 1.0],
+            joint_color=[1.0, 1.0, 0.0],
+            contact_color=[1.0, 0.0, 0.0],
+            render_bodies_static=None,
+            render_points_static=None,
+            cam_rot=mat[:3,:3])
 
+        create_video(pic_file + '/frame_%08d.png', video_file, 30)
+        print(f"Finished rendering {pkl_file} → {video_file}")
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Render SMPL sequence')
     parser.add_argument('--pkl_file', type=str, required=True, help='Path to the .pkl file')
-    parser.add_argument("--use_offscreen", action='store_false', help="flag to mark if input is test or not ")
+    parser.add_argument("--use_offscreen", action='store_true', help="flag to mark if input is test or not ")
     opt = parser.parse_args()
 
     ref_sim_data_path =  opt.pkl_file
     MODEL_PATH = 'data/smpl'
     output_path = 'output/render'
     smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
-    render(ref_sim_data_path, output_path)
+    render(ref_sim_data_path, output_path, opt.use_offscreen)

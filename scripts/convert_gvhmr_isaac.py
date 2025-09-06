@@ -57,7 +57,7 @@ def process_folder(folder_path, output_path):
     amass_full_motion_dict = {}
 
     dir_name = folder_path.split('/')[-1]
-    os.makedirs(os.path.join(output_path, f'GVHMR_{dir_name}'), exist_ok=True)
+    os.makedirs(os.path.join(output_path), exist_ok=True)
     smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
 
     for root, dirs, files in os.walk(folder_path):
@@ -66,7 +66,7 @@ def process_folder(folder_path, output_path):
                 file_path = os.path.join(root, file)
                 subfolder_name = os.path.basename(os.path.dirname(file_path))  # 上一级目录名
                 save_name = subfolder_name + '.npy'
-                save_path = os.path.join(output_path, f'GVHMR_{dir_name}', save_name)
+                save_path = os.path.join(output_path, f'{dir_name}', save_name)
 
                 with open(file_path, 'rb') as f:
 
@@ -205,9 +205,9 @@ def quaternion_distance(q1, q2):
     return angle
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--folder_path', type=str, default='output/GVHMR_output/cxk')
-parser.add_argument('--output_path', type=str, default='dataset/smpl_motion')
-parser.add_argument('--pkl_per_motoin', type=bool, default=False)
+parser.add_argument('--folder_path', type=str, default='GVHMR/outputs/motionx/test_data_136')
+parser.add_argument('--output_path', type=str, default='dataset/smpl_motion/136_test')
+parser.add_argument('--pkl_per_motoin', type=bool, default=True)
 args = parser.parse_args()
 folder_path = args.folder_path
 output_path = args.output_path

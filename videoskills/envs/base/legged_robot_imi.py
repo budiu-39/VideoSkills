@@ -702,7 +702,7 @@ class LeggedRobotImi(LeggedRobot):
             "body": self.env_origins.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1),
         }
 
-    def reset_with_motion_ids(self, motion_ids):
+    def reset_with_motion_ids(self, motion_ids, random = False):
         """ Reset all environments with given motion ids. (For Evaluation)
             This method is used to reset the environment with specific motion ids, e.g. in the training stage.
         Args:
@@ -717,6 +717,8 @@ class LeggedRobotImi(LeggedRobot):
         self.gym.clear_lines(self.viewer)
         # reset robot states
         motion_times = torch.zeros(self.num_envs, device=self.device)
+        if random:
+            motion_times = self._motion_lib.sample_time(motion_ids)
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
 
         self._set_env_state(env_ids=env_ids,

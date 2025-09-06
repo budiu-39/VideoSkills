@@ -71,7 +71,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         #     self.running_mean_std_temp = None
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
+        self.rollouts_path = os.path.join(log_dir, "rollouts")
+        self.rollouts_success_path = os.path.join(log_dir, "rollouts","succeed")
+        self.rollouts_failed_path = os.path.join(log_dir, "rollouts", "failed")
         os.makedirs(self.eval_output_path, exist_ok=True)
+        os.makedirs(self.rollouts_success_path, exist_ok=True)
+        os.makedirs(self.rollouts_failed_path, exist_ok=True)
 
         self.rewbuffer = deque(maxlen=100)  # episdoe returns (对外可读)
         self.lenbuffer = deque(maxlen=100)  # episode lengths (可选)
@@ -95,9 +100,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         ep_infos = []
         # terbuffer = deque(maxlen = min(100, num_learning_iterations))
-
-
-
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
         for it in range(self.current_learning_iteration, tot_iter):
@@ -166,8 +168,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         if motion_ids is None:
             motion_ids = list(range(motion_lib.num_motions()))
-
-        # self._refresh_temp_rms()
 
         total_rewards = []
         success_flags = []
@@ -277,15 +277,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
 
-            if self.rollout:
-                rollout = defaultdict(list)
-                rollout['pred_pos'] = pred_pos_all
-                rollout['gt_pos'] = gt_pos_all
-                rollout['pred_rot'] = pred_rot_all
-                rollout['gt_rot'] = gt_rot_all
-                out_path = os.path.join(self.eval_output_path, f"rollout_motion_{motion_lib._motion_keys[motion_ids[0]]}.pkl")
-                joblib.dump(rollout, out_path, compress=True)
-
             for k, v in batch_metrics.items():
                 global_metrics[k].extend(v)
                 for j, valid in enumerate(valid_mask):
@@ -307,6 +298,20 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         num_total = len(success_flags)
         success_rate = num_success / num_total
         mean_rew = np.mean(total_rewards)
+
+        if self.rollout:
+            rollout = defaultdict(list)
+            rollout['pred_pos'] = pred_pos_all
+            rollout['gt_pos'] = gt_pos_all
+            rollout['pred_rot'] = pred_rot_all
+            rollout['gt_rot'] = gt_rot_all
+            if success_rate == 1.0:
+                out_path = os.path.join(self.rollouts_succeed_path,
+                                        f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
+            else:
+                out_path = os.path.join(self.rollouts_failed_path,
+                                        f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
+            joblib.dump(rollout, out_path, compress=True)
 
         # save failed keys and update soft sampling weight
         failed_key_path = os.path.join(self.eval_output_path, f"failed_keys_iter{self.current_learning_iteration}.pkl")
@@ -414,8 +419,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     ep_info_str += f"  {key}: {ep_mean:.4f}"
 
         summary = f"[{self.cfg['run_name']} it {it:05d}]"
-        if mean_rew is not None and mean_len is not None:
-            summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+        if len(rb) > 0:
+            if mean_rew is not None and mean_len is not None:
+                summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+        else:
+            summary += " Reward: ---- | EpLen: ----"
         # summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
         summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
         summary += ep_info_str
@@ -463,3 +471,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
     def pop_recent_ET_rate(self, k=20):
         """返回最近 k 次迭代的 ET_rate 均值，若不足 k 次则用全部。"""
         return list(self.ETbuffer)[-k:]
+
+    def reset_motion_lib(self, motion_file):
+        self.env._load_motion(motion_file)
+        num_envs = self.env.num_envs
+        init_ids = torch.zeros(num_envs, dtype=torch.long, device=self.device)
+        with torch.inference_mode():
+            self.env.reset_with_motion_ids(init_ids)
+
+

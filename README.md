@@ -1,162 +1,167 @@
-<div align="center">
-  <h1 align="center">Unitree RL GYM</h1>
-  <p align="center">
-    <span> 🌎English </span> | <a href="README_zh.md"> 🇨🇳中文 </a>
-  </p>
-</div>
+# README
 
-<p align="center">
-  <strong>This is a repository for reinforcement learning implementation based on Unitree robots, supporting Unitree Go2, H1, H1_2, and G1.</strong> 
-</p>
+## Environment Setup
 
-<div align="center">
-
-| <div align="center"> Isaac Gym </div> | <div align="center">  Mujoco </div> |  <div align="center"> Physical </div> |
-|--- | --- | --- |
-| [<img src="https://oss-global-cdn.unitree.com/static/32f06dc9dfe4452dac300dda45e86b34.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/5bbc5ab1d551407080ca9d58d7bec1c8.mp4) | [<img src="https://oss-global-cdn.unitree.com/static/244cd5c4f823495fbfb67ef08f56aa33.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/5aa48535ffd641e2932c0ba45c8e7854.mp4) | [<img src="https://oss-global-cdn.unitree.com/static/78c61459d3ab41448cfdb31f6a537e8b.GIF" width="240px">](https://oss-global-cdn.unitree.com/static/0818dcf7a6874b92997354d628adcacd.mp4) |
-
-</div>
-
----
-
-## 📦 Installation and Configuration
-
-Please refer to [setup.md](/doc/setup_en.md) for installation and configuration steps.
-
-## 🔁 Process Overview
-
-The basic workflow for using reinforcement learning to achieve motion control is:
-
-`Train` → `Play` → `Sim2Sim` → `Sim2Real`
-
-- **Train**: Use the Gym simulation environment to let the robot interact with the environment and find a policy that maximizes the designed rewards. Real-time visualization during training is not recommended to avoid reduced efficiency.
-- **Play**: Use the Play command to verify the trained policy and ensure it meets expectations.
-- **Sim2Sim**: Deploy the Gym-trained policy to other simulators to ensure it’s not overly specific to Gym characteristics.
-- **Sim2Real**: Deploy the policy to a physical robot to achieve motion control.
-
-## 🛠️ User Guide
-
-### 1. Training
-
-Run the following command to start training:
-
+### 1. Create Conda Environment and Install Dependencies
 ```bash
-python videoskills/retarget/train.py --task=xxx
+git clone git@github.com:budiu-39/GVHMR_PHC.git
+cd GVHMR_PHC
+
+conda create -n isaac python=3.8
+pip install -r requirement.txt
+
+# Optionally set CUDA path if necessary
+# export CUDA_HOME=/usr/local/cuda-11.8/
+# export PATH=$PATH:/usr/local/cuda-11.8/bin/
 ```
 
-#### ⚙️ Parameter Description
-- `--task`: Required parameter; values can be (go2, g1, h1, h1_2).
-- `--headless`: Defaults to starting with a graphical interface; set to true for headless mode (higher efficiency).
-- `--resume`: Resume training from a checkpoint in the logs.
-- `--experiment_name`: Name of the experiment to run/load.
-- `--run_name`: Name of the run to execute/load.
-- `--load_run`: Name of the run to load; defaults to the latest run.
-- `--checkpoint`: Checkpoint number to load; defaults to the latest file.
-- `--num_envs`: Number of environments for parallel training.
-- `--seed`: Random seed.
-- `--max_iterations`: Maximum number of training iterations.
-- `--sim_device`: Simulation computation device; specify CPU as `--sim_device=cpu`.
-- `--rl_device`: Reinforcement learning computation device; specify CPU as `--rl_device=cpu`.
-
-**Default Training Result Directory**: `logs/<experiment_name>/<date_time>_<run_name>/model_<iteration>.pt`
-
----
-
-### 2. Play
-
-To visualize the training results in Gym, run the following command:
-
+### 2. Setup GVHMR Model and Dependencies
 ```bash
-python videoskills/retarget/play.py --task=xxx
+cd GVHMR
+pip install -e .
+
+# cd third-party/DPVO
+# wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
+# unzip eigen-3.4.0.zip -d thirdparty && rm -rf eigen-3.4.0.zip
+
+mkdir inputs
+mkdir outputs
+mkdir -p inputs/checkpoints
 ```
 
-**Description**:
+1. You need to register to download [SMPL](https://smpl.is.tue.mpg.de/) and [SMPLX](https://smpl-x.is.tue.mpg.de/). Place the models in the following structure:
 
-- Play’s parameters are the same as Train’s.
-- By default, it loads the latest model from the experiment folder’s last run.
-- You can specify other models using `load_run` and `checkpoint`.
-
-#### 💾 Export Network
-
-Play exports the Actor network, saving it in `logs/{experiment_name}/exported/policies`:
-- Standard networks (MLP) are exported as `policy_1.pt`.
-- RNN networks are exported as `policy_lstm_1.pt`.
-
-### Play Results
-
-| Go2 | G1 | H1 | H1_2 |
-|--- | --- | --- | --- |
-| [![go2](https://oss-global-cdn.unitree.com/static/ba006789e0af4fe3867255f507032cd7.GIF)](https://oss-global-cdn.unitree.com/static/d2e8da875473457c8d5d69c3de58b24d.mp4) | [![g1](https://oss-global-cdn.unitree.com/static/32f06dc9dfe4452dac300dda45e86b34.GIF)](https://oss-global-cdn.unitree.com/static/5bbc5ab1d551407080ca9d58d7bec1c8.mp4) | [![h1](https://oss-global-cdn.unitree.com/static/fa04e73966934efa9838e9c389f48fa2.GIF)](https://oss-global-cdn.unitree.com/static/522128f4640c4f348296d2761a33bf98.mp4) |[![h1_2](https://oss-global-cdn.unitree.com/static/83ed59ca0dab4a51906aff1f93428650.GIF)](https://oss-global-cdn.unitree.com/static/15fa46984f2343cb83342fd39f5ab7b2.mp4)|
-
----
-
-### 3. Sim2Sim (Mujoco)
-
-Run Sim2Sim in the Mujoco simulator:
-
-```bash
-python deploy/deploy_mujoco/deploy_mujoco.py {config_name}
+```text
+GVHMR/inputs/checkpoints/
+├── body_models/smplx/
+│   └── SMPLX_{GENDER}.npz
+└── body_models/smpl/
+    └── SMPL_{GENDER}.pkl
 ```
 
-#### Parameter Description
-- `config_name`: Configuration file; default search path is `deploy/deploy_mujoco/configs/`.
-
-#### Example: Running G1
-
-```bash
-python deploy/deploy_mujoco/deploy_mujoco.py g1.yaml
+2. Download other pretrained models from [Google Drive](https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link):
+```text
+GVHMR/inputs/checkpoints/
+├── dpvo/dpvo.pth
+├── gvhmr/gvhmr_siga24_release.ckpt
+├── hmr2/epoch=10-step=25000.ckpt
+├── vitpose/vitpose-h-multi-coco.pth
+└── yolo/yolov8x.pt
 ```
 
-#### ➡️ Replace Network Model
+### 3. Setup PHC Model and Dependencies
+You need to register to download [SMPL](https://smpl.is.tue.mpg.de/). Place the models in the following structure:
 
-The default model is located at `deploy/pre_train/{robot}/motion.pt`; custom-trained models are saved in `logs/g1/exported/policies/policy_lstm_1.pt`. Update the `policy_path` in the YAML configuration file accordingly.
-
-#### Simulation Results
-
-| G1 | H1 | H1_2 |
-|--- | --- | --- |
-| [![mujoco_g1](https://oss-global-cdn.unitree.com/static/244cd5c4f823495fbfb67ef08f56aa33.GIF)](https://oss-global-cdn.unitree.com/static/5aa48535ffd641e2932c0ba45c8e7854.mp4)  |  [![mujoco_h1](https://oss-global-cdn.unitree.com/static/7ab4e8392e794e01b975efa205ef491e.GIF)](https://oss-global-cdn.unitree.com/static/8934052becd84d08bc8c18c95849cf32.mp4)  |  [![mujoco_h1_2](https://oss-global-cdn.unitree.com/static/2905e2fe9b3340159d749d5e0bc95cc4.GIF)](https://oss-global-cdn.unitree.com/static/ee7ee85bd6d249989a905c55c7a9d305.mp4) |
-
-
----
-
-### 4. Sim2Real (Physical Deployment)
-
-Before deploying to the physical robot, ensure it’s in debug mode. Detailed steps can be found in the [Physical Deployment Guide](deploy/deploy_real/README.md):
-
+```text
+phc/data
+├── smpl
+    ├── SMPL_FEMALE.pkl
+    ├── SMPL_NEUTRAL.pkl
+    ├── SMPL_MALE.pkl
+```
+### 4. Install Isaac Gym
+Download and install [Isaac Gym Preview 4](https://developer.nvidia.com/isaac-gym).
 ```bash
-python deploy/deploy_real/deploy_real.py {net_interface} {config_name}
+cd IsaacGym_Preview_4_Package/isaacgym/python
+pip install -e .
 ```
 
-#### Parameter Description
-- `net_interface`: Network card name connected to the robot, e.g., `enp3s0`.
-- `config_name`: Configuration file located in `deploy/deploy_real/configs/`, e.g., `g1.yaml`, `h1.yaml`, `h1_2.yaml`.
+### 5. Download Pretrained G1/H1 Universal Models
+```bash
+mkdir -p output
+gdown https://drive.google.com/uc?id=1MGwaxl3CKnux9UdcwfXBefRh3U6BpIgC -O output/pretrained_model.zip
+unzip -o output/pretrained_model.zip -d output/
+rm output/pretrained_model.zip
+```
 
-#### Deployment Results
+## Obtaining Original Motion Data
 
-| G1 | H1 | H1_2 |
-|--- | --- | --- |
-| [![real_g1](https://oss-global-cdn.unitree.com/static/78c61459d3ab41448cfdb31f6a537e8b.GIF)](https://oss-global-cdn.unitree.com/static/0818dcf7a6874b92997354d628adcacd.mp4) | [![real_h1](https://oss-global-cdn.unitree.com/static/fa07b2fd2ad64bb08e6b624d39336245.GIF)](https://oss-global-cdn.unitree.com/static/ea0084038d384e3eaa73b961f33e6210.mp4) | [![real_h1_2](https://oss-global-cdn.unitree.com/static/a88915e3523546128a79520aa3e20979.GIF)](https://oss-global-cdn.unitree.com/static/12d041a7906e489fae79d55b091a63dd.mp4) |
+### 1. From GVHMR (with test video)
+```bash
+cd GVHMR
+python tools/demo/demo_folder.py -f inputs/demo/ -d ../output/GVHMR_output/demo
+```
 
----
+### 2. From Dataset (e.g., AMASS)
+Download motion dataset (e.g., AMASS) from official sources or provided links.
 
-## 🎉 Acknowledgments
+## Preprocessing and Retargeting
 
-This repository is built upon the support and contributions of the following open-source projects. Special thanks to:
+### Step 1: Fit SMPL Shape
+```bash
+python scripts/data_process/fit_smpl_shape.py robot=unitree_h1_fitting
+python scripts/data_process/fit_smpl_shape.py robot=unitree_g1_fitting
+```
 
-- [legged\_gym](https://github.com/leggedrobotics/legged_gym): The foundation for training and running codes.
-- [rsl\_rl](https://github.com/leggedrobotics/rsl_rl.git): Reinforcement learning algorithm implementation.
-- [mujoco](https://github.com/google-deepmind/mujoco.git): Providing powerful simulation functionalities.
-- [unitree\_sdk2\_python](https://github.com/unitreerobotics/unitree_sdk2_python.git): Hardware communication interface for physical deployment.
+### Step 2: Preprocess Motion
+- From AMASS:
+```bash
+python scripts/data_process/fit_smpl_motion.py robot=unitree_h1_fitting +num_jobs=16 +amass_root=../AMASS +robot.process_split=train
+python scripts/data_process/fit_smpl_motion.py robot=unitree_g1_fitting +num_jobs=16 +amass_root=../AMASS +robot.process_split=train
+```
+- From GVHMR output:
+```bash
+# For SMPL Robot
+python scripts/convert_gvhmr_isaac.py --folder_path=GVHMR/outputs/motionx/test_data_136 --output_path=dataset/smpl_motion/136_test
+```
 
----
+Retargeted motions will be stored in `output/Unitree_motion`.
 
-## 🔖 License
+## Train Universal Model
 
-This project is licensed under the [BSD 3-Clause License](./LICENSE):
-1. The original copyright notice must be retained.
-2. The project name or organization name may not be used for promotion.
-3. Any modifications must be disclosed.
+Note: Requires preprocessed AMASS motion data.
 
-For details, please read the full [LICENSE file](./LICENSE).
+```bash
+# For SMPL Robot
+python videoskills/train.py --task=smpl --use_wandb --headless
+
+# For Unitree G1
+python videoskills/train.py --task=g1 --use_wandb --headless
+```
+
+Tips:
+- Use `--dev` at the end of the command for development/debug mode.
+- If you encounter CUDA OOM, reduce `env.num_envs` (e.g., from 2048 to 512).
+
+## Refine Motion Segments
+```bash
+python videoskills/refine.py --task=smpl --headless --use_wandb --resume
+```
+
+```bash
+python videoskills/refine.py --task=g1 --headless --use_wandb --resume
+```
+
+## Visualize Refined Results
+
+### Render Rollouts (SMPL robots):
+```bash
+python scripts/render/constrast_render.py --pkl_file /home/miku/Documents/VideoSkills/output/rollout/refinement --use_offscreen
+```
+
+### Render Rollouts (Unitree robots):
+```bash
+python scripts/vis_motion_rollout.py --motion_file=output/HumanoidRef/h1_universal_power0005/rollouts --humanoid_type=h1
+```
+
+Results are saved to `output/render_out`.
+
+
+## `output/` Directory Structure
+
+```text
+output/
+├── GVHMR_output/               # Output from the GVHMR model (e.g., hmr4d_results.pt, raw motion sequences)
+├── HumanoidIm/                 # Output from the Universal Tracker task
+│   ├── checkpoint              # Model checkpoints
+│   ├── rollout/                # Rollout results
+│   └── logs/                   # Training and evaluation logs
+├── HumanoidRef/                # Output from the Refine task
+│   ├── checkpoint/             # Expert checkpoints for each motion segment
+│   ├── rollout/                # Refined motion rollouts
+│   └── logs/
+├── Humanoid_motion/            # Preprocessed SMPL humanoid motion files
+├── Unitree_motion/             # Preprocessed Unitree robot motion files
+└── render_out/                 # Rendered rollout videos or images
+```
 
