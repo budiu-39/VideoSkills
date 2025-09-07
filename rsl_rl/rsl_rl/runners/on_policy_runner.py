@@ -218,7 +218,7 @@ class OnPolicyRunner:
             'infos': infos,
             }, path)
 
-    def load(self, path=None, load_optimizer=True):
+    def load(self, path=None, load_optimizer=True, load_iteration=True):
         if path is None:
             loaded_dict = torch.load(self.resume_path)
         else:
@@ -226,7 +226,8 @@ class OnPolicyRunner:
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
-        self.current_learning_iteration = loaded_dict['iter']
+        if load_iteration:
+            self.current_learning_iteration = loaded_dict['iter']
         return loaded_dict['infos']
 
     def get_inference_policy(self, device=None):
