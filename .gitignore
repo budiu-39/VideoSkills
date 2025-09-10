@@ -169,3 +169,5 @@ output/
 GVHMR/inputs
 #GVHMR/inputs/checkpoints
 GVHMR/outputs
+
+.sh
