@@ -188,6 +188,9 @@ def get_args():
         {"name": "--wandb_project", "type": str, "default": "VideoSkills", "help": "Weights & Biases project name"},
         {"name": "--dev", "action": "store_true", "default": False, "help": "development mode, use smaller envs"},
         # {"name": "--load_run", "type": str, "default": False, "help": "logging path of resume experiment"},
+
+        {"name": "--folder", "type": str, "default": None, "help": "folder of videos for demo"},
+        {"name": "--static_cam", "action": "store_true", "default": False, "help": "If true, skip DPVO"}
     ]
     # parse arguments
     args = gymutil.parse_arguments(

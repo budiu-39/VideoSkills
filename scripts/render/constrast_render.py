@@ -1,10 +1,10 @@
 import trimesh
 
 from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree
-from utils.torch import copy2cpu as c2c
-from viz.mesh_viewer import MeshViewer
-from viz.utils import create_video
-from viz.utils import smpl_connections
+from scripts.render.utils.torch import copy2cpu as c2c
+from scripts.render.viz.mesh_viewer import MeshViewer
+from scripts.render.viz.utils import create_video
+from scripts.render.viz.utils import smpl_connections
 
 from smplx import SMPL
 import joblib
@@ -146,6 +146,8 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
 
 
 def render(ref_sim_data_path, output_path, use_offscreen):
+    MODEL_PATH = 'data/smpl'
+    smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
     # 判断输入是文件还是目录
     if os.path.isfile(ref_sim_data_path):
         pkl_files = [ref_sim_data_path]
@@ -207,7 +209,7 @@ def render(ref_sim_data_path, output_path, use_offscreen):
             sim_body, ref_body, imw=1080, imh=1080, fps=30, contacts=None,
             render_body=True, render_joints=False, render_skeleton=False, render_ground=True,
             ground_plane=None,
-            use_offscreen=opt.use_offscreen, out_path= pic_file, wireframe=False, RGBA=False,
+            use_offscreen=use_offscreen, out_path= pic_file, wireframe=False, RGBA=False,
             joints_seq=None, joints_vel=None, follow_camera=False, vtx_list=None, points_seq=None,
             points_vel=None,
             static_meshes=None, camera_intrinsics=None, img_seq=None, point_rad=0.015,
@@ -235,7 +237,12 @@ if __name__ == '__main__':
     opt = parser.parse_args()  #logs/smpl_ppo/refinement_folder_136_resume_Sep09_05-05-30/rollouts/failed
 
     ref_sim_data_path =  opt.pkl_file
-    MODEL_PATH = 'data/smpl'
+
+    if opt.use_offscreen:
+        if os.environ.get("DISPLAY", "") == "":
+            os.environ["PYOPENGL_PLATFORM"] = "egl"  # 若无 NVIDIA EGL，可改用 'osmesa'
+            os.environ["PYGLET_HEADLESS"] = "True"
+
     output_path = 'output/render'
-    smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
+
     render(ref_sim_data_path, output_path, opt.use_offscreen)

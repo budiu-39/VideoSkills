@@ -56,7 +56,8 @@ def process_folder(folder_path, output_path):
     smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
     amass_full_motion_dict = {}
 
-    dir_name = folder_path.split('/')[-1]
+    # dir_name = folder_path.split('/')[-1]
+    dir_name = output_path
     os.makedirs(os.path.join(output_path), exist_ok=True)
     smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
 
@@ -204,26 +205,27 @@ def quaternion_distance(q1, q2):
 
     return angle
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--folder_path', type=str, default='GVHMR/outputs/motionx/test_data_136')
-parser.add_argument('--output_path', type=str, default='dataset/smpl_motion/136_test')
-parser.add_argument('--pkl_per_motoin', type=bool, default=True)
-args = parser.parse_args()
-folder_path = args.folder_path
-output_path = args.output_path
-pkl_per_motoin = args.pkl_per_motoin
-result = process_folder(folder_path, output_path)
-# pkl_per_motoin = True
-vis = False
-if vis:
-    for key in result.keys():
-        motion = {}
-        motion[key] = result[key]
-        output_path = os.path.join(args.output_path, key + ".pkl")
-        if not os.path.exists(output_path):
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'wb') as f:
-            joblib.dump(motion, f)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--folder_path', type=str, default='GVHMR/outputs/motionx/test_data_136')
+    parser.add_argument('--output_path', type=str, default='dataset/smpl_motion/136_test')
+    parser.add_argument('--pkl_per_motoin', type=bool, default=True)
+    args = parser.parse_args()
+    folder_path = args.folder_path
+    output_path = args.output_path
+    pkl_per_motoin = args.pkl_per_motoin
+    result = process_folder(folder_path, output_path)
+    # pkl_per_motoin = True
+    vis = False
+    if vis:
+        for key in result.keys():
+            motion = {}
+            motion[key] = result[key]
+            output_path = os.path.join(args.output_path, key + ".pkl")
+            if not os.path.exists(output_path):
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            with open(output_path, 'wb') as f:
+                joblib.dump(motion, f)
         # vis_mujoco(motion[key])
 
 # joblib.dump(result, output_path, compress=True)

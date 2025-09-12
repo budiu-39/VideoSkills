@@ -5,13 +5,23 @@ from videoskills.utils.convergence_monitor import ConvergenceMonitor
 import wandb
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict
 import glob
+from scripts.render.constrast_render import render
+from smplx import SMPL
+from tqdm import tqdm
+import subprocess
+from scripts.preprocess.convert_gvhmr_isaac import process_folder
+from pathlib import Path
 
 
-
-def train(args):
+def config(args):
     env_cfg, train_cfg = task_registry.get_cfgs(args)
     log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml")
-    motion_files = glob.glob(os.path.join(*env_cfg.motion.file.split('/')[1:], f"**/*.npy"), recursive=True)
+
+    return log_dir, env_cfg, train_cfg
+
+def train(env_cfg, train_cfg, args):
+
+    motion_files = glob.glob(os.path.join(*env_cfg.motion.file.split('/'), f"**/*.npy"), recursive=True)
     env_cfg.motion.file = motion_files[0]
     env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
     runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,
@@ -34,7 +44,7 @@ def train(args):
                    config={**vars(args), **class_to_dict(train_cfg), **class_to_dict(env_cfg)})
 
     target_eval_success = getattr(getattr(train_cfg, "refine", {}), "target_eval_success", 0.95)
-    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 400)
+    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 20)
     interval   = getattr(getattr(train_cfg, "refine", {}), "refine_interval", 20)
     et_window  = getattr(getattr(train_cfg, "refine", {}), "et_window", 20)
     max_it     = train_cfg.runner.max_iterations
@@ -50,7 +60,7 @@ def train(args):
             # 最近这段训练中新结束的 episodic returns
             if hasattr(runner, 'pop_recent_episode_rewards'):
                 recent_rewards = runner.pop_recent_mean_rewards()
-            else:  # 退路：用全局 buffer 的后 N 个
+            else:
                 recent_rewards = list(getattr(runner, 'rewbuffer', []))[-monitor.N:]
 
             success_proxy = 1 - runner.mean_et_rate(k=et_window)
@@ -95,4 +105,40 @@ def train(args):
 
 if __name__ == '__main__':
     args = get_args()
-    train(args)
+    if args.headless:
+        if os.environ.get("DISPLAY", "") == "":
+            os.environ["PYOPENGL_PLATFORM"] = "egl"
+            os.environ["PYGLET_HEADLESS"] = "True"
+    log_dir, env_cfg, train_cfg = config(args)
+
+    # GVHMR
+    folder = args.folder
+    folder = Path(folder)
+    gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
+    gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_output')
+    mp4_paths = sorted(list(folder.glob("*.mp4")) + list(folder.glob("*.MP4")))
+    print(f"Found {len(mp4_paths)} .mp4 files in {folder}")
+    for mp4_path in tqdm(mp4_paths):
+        command = ["python", "tools/demo/demo.py", "--video", str(mp4_path)]
+        command += ["--output_root", gvhmr_output_dir]
+        if args.static_cam:
+            command += ["-s"]
+        print(f"Running: {' '.join(command)}")
+        subprocess.run(command, env=dict(os.environ),cwd=str(gvhmr_root), check=True)
+
+    # preprocess or retarget
+    motion_data_dir = os.path.join(log_dir, 'motion_data')
+    if args.task == 'smpl':
+        result = process_folder(gvhmr_output_dir, motion_data_dir)
+
+    env_cfg.motion.file = motion_data_dir
+    # TODO: test
+    env_cfg.motion.file = 'logs/smpl_ppo/refinement_folder_136_resume_Sep12_17-50-41/motion_data/gvhmr_output'
+
+    # refinement
+    train(env_cfg, train_cfg, args)
+
+    # rendering  # 需要把 render 改成在服务器上也能跑
+    if args.task == 'smpl':
+        render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed', True)
+

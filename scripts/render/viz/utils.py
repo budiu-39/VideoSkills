@@ -7,9 +7,9 @@ import numpy as np
 import trimesh
 import torch
 from PIL import Image, ImageDraw, ImageFont
-from viz.mesh_viewer import MeshViewer
+from scripts.render.viz.mesh_viewer import MeshViewer
 
-from utils.torch import copy2cpu as c2c
+from scripts.render.utils.torch import copy2cpu as c2c
 
 smpl_connections = [[11, 8], [8, 5], [5, 2], [2, 0], [10, 7], [7, 4], [4, 1], [1, 0], 
                 [0, 3], [3, 6], [6, 9], [9, 12], [12, 15], [12, 13], [13, 16], [16, 18], 

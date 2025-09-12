@@ -448,6 +448,8 @@ class LeggedRobotImi(LeggedRobot):
 
         if self.eval_mode:
             self.reset_buf = ref_out | body_too_far
+            if not self.early_termination:
+                self.reset_buf =  ref_out
             self.time_out_buf = time_out | ref_out
 
     def _reset_env_tensors(self, env_ids):
