@@ -152,6 +152,7 @@ def render(ref_sim_data_path, output_path, use_offscreen):
     elif os.path.isdir(ref_sim_data_path):
         pkl_files = [os.path.join(ref_sim_data_path, f) for f in os.listdir(ref_sim_data_path) if f.endswith(".pkl")]
         pkl_files.sort()  # 保证顺序一致
+        dir_name = ref_sim_data_path.split('/')[-1]
     else:
         raise ValueError(f"Invalid path: {ref_sim_data_path}")
 
@@ -174,7 +175,8 @@ def render(ref_sim_data_path, output_path, use_offscreen):
         fmt = "%b%d_%H:%M"
         timestamp = datetime.now().strftime(fmt)
         pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
-        video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
+        video_path = os.path.join(output_path, f'video/{dir_name}')
+        # video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
         os.makedirs(pic_path, exist_ok=1)
         os.makedirs(video_path, exist_ok=1)
 
