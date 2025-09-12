@@ -232,7 +232,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Render SMPL sequence')
     parser.add_argument('--pkl_file', type=str, required=True, help='Path to the .pkl file')
     parser.add_argument("--use_offscreen", action='store_true', help="flag to mark if input is test or not ")
-    opt = parser.parse_args()
+    opt = parser.parse_args()  #logs/smpl_ppo/refinement_folder_136_resume_Sep09_05-05-30/rollouts/failed
 
     ref_sim_data_path =  opt.pkl_file
     MODEL_PATH = 'data/smpl'
