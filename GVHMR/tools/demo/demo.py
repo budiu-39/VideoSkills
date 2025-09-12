@@ -316,6 +316,7 @@ if __name__ == "__main__":
     # ===== HMR4D ===== #
     if not Path(paths.hmr4d_results).exists():
         Log.info("[HMR4D] Predicting")
+        # DemoPL 是类， model 是实例
         model: DemoPL = hydra.utils.instantiate(cfg.model, _recursive_=False)
         model.load_pretrained_model(cfg.ckpt_path)
         model = model.eval().cuda()

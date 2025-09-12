@@ -120,15 +120,18 @@ class NetworkEncoderRoPE(nn.Module):
         B, L, J, C = obs.shape
         assert J == 17 and C == 3
 
-        # Main token from observation (2D pose)
+        # Main token from observation (2D pose)   主输入
         obs = obs.clone()
+        # 用了 masked 对于 >0.5 的
         visible_mask = obs[..., [2]] > 0.5  # (B, L, J, 1)
         obs[~visible_mask[..., 0]] = 0  # set low-conf to all zeros
         f_obs = self.learned_pos_linear(obs[..., :2])  # (B, L, J, 32)
+        # 有趣的新知识！类比BERT 里 [MASK] embedding 不是平均词向量，而是一个 learnable token。
+        # 它让模型知道“这里是缺失的”，并能根据上下文去补。
         f_obs = f_obs * visible_mask + self.learned_pos_params.repeat(B, L, 1, 1) * ~visible_mask
         x = self.embed_noisyobs(f_obs.view(B, L, -1))  # (B, L, J*32) -> (B, L, C)
 
-        # Condition
+        # Condition   条件输入（相机）
         f_to_add = []
         f_to_add.append(self.cliffcam_embedder(f_cliffcam))
         if hasattr(self, "cam_angvel_embedder"):

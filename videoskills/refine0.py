@@ -11,6 +11,8 @@ import glob
 def train(args):
     env_cfg, train_cfg = task_registry.get_cfgs(args)
     log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml")
+    env_cfg.early_termination.enabled = False
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 64)
     motion_files = glob.glob(os.path.join(*env_cfg.motion.file.split('/')[1:], f"**/*.npy"), recursive=True)
     env_cfg.motion.file = motion_files[0]
     env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)

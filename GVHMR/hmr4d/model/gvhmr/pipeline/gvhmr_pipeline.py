@@ -56,7 +56,7 @@ class Pipeline(nn.Module):
         length = inputs["length"]  # (B,) effective length of each sample
 
         # *. Conditions
-        cliff_cam = compute_bbox_info_bedlam(inputs["bbx_xys"], inputs["K_fullimg"])  # (B, L, 3)
+        cliff_cam = compute_bbox_info_bedlam(inputs["bbx_xys"], inputs["K_fullimg"])  # (B, L, 3)  # TODO：看看输出类型
         f_cam_angvel = inputs["cam_angvel"]
         if self.args.normalize_cam_angvel:
             f_cam_angvel = (f_cam_angvel - self.cam_angvel_mean) / self.cam_angvel_std

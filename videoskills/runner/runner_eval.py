@@ -207,7 +207,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 with torch.inference_mode():
                     if self.alg.normalize_obs:
                         obs = self.alg.obs_mean_std(obs)
-
                     action = self.alg.actor_critic.act_inference(obs)
                     obs, _, rewards, dones, extras = self.env.step(action)
                     rewards = rewards.squeeze()
