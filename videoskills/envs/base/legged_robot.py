@@ -48,6 +48,7 @@ class LeggedRobot(BaseTask):
         self._prepare_reward_function()
         self.init_done = True
         self.is_recording_data = False
+        self._initialize_motion_offsets()
 
     def step(self, actions):
         """ Apply actions, simulate, call self.post_physics_step()
@@ -124,8 +125,8 @@ class LeggedRobot(BaseTask):
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
 
         if self.is_recording_data:
-            body_pos_cpu = self.body_pos.detach().cpu().numpy()
-            ref_body_pos_cpu = self.ref_body_pos.detach().cpu().numpy()
+            body_pos_cpu = (self.body_pos - self.pos_offset['body']).detach().cpu().numpy()
+            ref_body_pos_cpu = (self.ref_body_pos - self.pos_offset['body']).detach().cpu().numpy()
             body_rot_cpu = self.body_rot.detach().cpu().numpy()
             ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
             done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
@@ -136,7 +137,7 @@ class LeggedRobot(BaseTask):
             # 批量记录，不用 for-loop 判断
             for env_id in alive_ids:
                 self.recorded_data[env_id].append({
-                    'body_pos': body_pos_cpu[env_id].copy(),
+                    'body_pos': body_pos_cpu[env_id].copy(),  # 以初始位置为基准
                     'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
                     'body_rot': body_rot_cpu[env_id].copy(),
                     'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
@@ -860,3 +861,27 @@ class LeggedRobot(BaseTask):
                                 gt_pos=ref_pos,
                                 pred_rot=body_rot,
                                 gt_rot=ref_rot)
+
+    def _initialize_motion_offsets(self):
+        """
+        For each environment, generate a random heading rotation and compute:
+        - rotation_offset: quaternion of shape [num_envs, 4]
+        - pos_offset: [env_origins, env_key_pos_origins]
+        """
+        # Generate random heading angles in [-pi, pi]
+        heading_angles = torch_rand_float(-np.pi, np.pi, (self.num_envs, 1), device=self.device)
+        self.rotation_offset = torch.zeros(self.num_envs, 4, device=self.device)
+
+        # Heading quaternion (rotation around up-axis)
+        axis = torch.zeros(self.num_envs, 3, device=self.device)
+        axis[:, self.up_axis_idx] = 1.0
+        sin_half = torch.sin(heading_angles * 0.5)
+        cos_half = torch.cos(heading_angles * 0.5)
+        self.rotation_offset[:, :3] = axis * sin_half
+        self.rotation_offset[:, 3] = cos_half.squeeze()
+
+        # Positional offsets (env origins & key_pos origins already expanded properly)
+        self.pos_offset = {
+            "root": self.env_origins.clone(),
+            "body": self.env_origins.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1),
+        }

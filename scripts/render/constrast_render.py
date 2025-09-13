@@ -20,6 +20,8 @@ from scipy.spatial.transform import Rotation as sRot
 import torch
 from scripts.retarget.smpl_humanoid_tool import humanoid2smpl
 
+import tempfile, shutil
+
 class Body:
     def __init__(self, faces, vertices, jtr):
         self.f = torch.tensor(faces)
@@ -176,10 +178,10 @@ def render(ref_sim_data_path, output_path, use_offscreen):
 
         fmt = "%b%d_%H:%M"
         timestamp = datetime.now().strftime(fmt)
-        pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
-        video_path = os.path.join(output_path, f'video/{dir_name}')
+        # pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
+        video_path = os.path.join(output_path)
         # video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
-        os.makedirs(pic_path, exist_ok=1)
+        # os.makedirs(pic_path, exist_ok=1)
         os.makedirs(video_path, exist_ok=1)
 
         ref_transl = ref_transl + torch.tensor([0.0, 2.0, 0.0])
@@ -200,8 +202,8 @@ def render(ref_sim_data_path, output_path, use_offscreen):
         jtr = output.joints.detach().cpu().numpy().squeeze()
         sim_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
 
-        pic_file = os.path.join(pic_path, key_name)
-        os.makedirs(pic_file, exist_ok = 1)
+        tmp_dir = tempfile.mkdtemp(prefix="render_frames_")  # 临时帧目录
+        pic_file = os.path.join(tmp_dir, key_name)
         video_file = os.path.join(video_path, key_name + '.mp4')
 
         mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
@@ -226,6 +228,7 @@ def render(ref_sim_data_path, output_path, use_offscreen):
             cam_rot=mat[:3,:3])
 
         create_video(pic_file + '/frame_%08d.png', video_file, 30)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         print(f"Finished rendering {pkl_file} → {video_file}")
 
 
@@ -243,6 +246,6 @@ if __name__ == '__main__':
             os.environ["PYOPENGL_PLATFORM"] = "egl"  # 若无 NVIDIA EGL，可改用 'osmesa'
             os.environ["PYGLET_HEADLESS"] = "True"
 
-    output_path = 'output/render'
+    output_path = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/refinement_folder_136_resume_Sep12_18-20-52/renders/succeed'
 
     render(ref_sim_data_path, output_path, opt.use_offscreen)

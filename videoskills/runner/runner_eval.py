@@ -29,7 +29,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-        self.rollout = False # train_cfg.get("refine", False)
+        # self.rollout = False # train_cfg.get("refine", False)
         # best_by = 'mpjpe_g'
 
         if self.env.num_privileged_obs is not None:
@@ -173,6 +173,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         success_flags = []
         reward_until_fail_list = []
         failed_keys = []
+        success_keys = []
         global_metrics = defaultdict(list)
         metrics_success = defaultdict(list)
         pbar = tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions", dynamic_ncols=True)
@@ -214,7 +215,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     cum_rewards += rewards
 
                     episode_lengths += (~done_flags).int()
-                    # dones[episode_lengths == motion_lib._motion_lengths[padded_ids]] = True
 
                     newly_done = dones.squeeze() & (~done_flags)
                     done_flags |= dones.squeeze()
@@ -249,9 +249,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 success_flags.append(success)
                 total_rewards.append(cum_rewards[env_id].item())
 
-                if not success:
+                key = motion_lib._motion_keys[batch_ids[env_id]]
+                if success:
+                    success_keys.append(key)
+                else:
                     reward_until_fail_list.append(reward_until_fail[env_id].item())
-                    failed_keys.append(motion_lib._motion_keys[batch_ids[env_id]])
+                    failed_keys.append(key)
 
             motion_id_to_data = defaultdict(list)
             pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all = [], [], [], []
@@ -298,24 +301,25 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         success_rate = num_success / num_total
         mean_rew = np.mean(total_rewards)
 
-        if self.rollout:
-            rollout = defaultdict(list)
-            rollout['pred_pos'] = pred_pos_all
-            rollout['gt_pos'] = gt_pos_all
-            rollout['pred_rot'] = pred_rot_all
-            rollout['gt_rot'] = gt_rot_all
-            if success_rate == 1.0:
-                out_path = os.path.join(self.rollouts_succeed_path,
-                                        f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
-            else:
-                out_path = os.path.join(self.rollouts_failed_path,
-                                        f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
-            joblib.dump(rollout, out_path, compress=True)
+        # if self.rollout:
+        #     rollout = defaultdict(list)
+        #     rollout['pred_pos'] = pred_pos_all
+        #     rollout['gt_pos'] = gt_pos_all
+        #     rollout['pred_rot'] = pred_rot_all
+        #     rollout['gt_rot'] = gt_rot_all
+        #     if success_rate == 1.0:
+        #         out_path = os.path.join(self.rollouts_succeed_path,
+        #                                 f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
+        #     else:
+        #         out_path = os.path.join(self.rollouts_failed_path,
+        #                                 f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
+        #     joblib.dump(rollout, out_path, compress=True)
 
         # save failed keys and update soft sampling weight
+        failed_keys_unique = sorted(set(failed_keys))
         failed_key_path = os.path.join(self.eval_output_path, f"failed_keys_iter{self.current_learning_iteration}.pkl")
-        joblib.dump(failed_keys, failed_key_path, compress=True)
-        motion_lib.update_soft_sampling_weight(failed_keys)
+        joblib.dump(failed_keys_unique, failed_key_path, compress=True)
+        motion_lib.update_soft_sampling_weight(failed_keys_unique)
         motion_sampling_state_path = os.path.join(self.log_dir, f"motion_sampling_state.pkl")
         motion_lib.export_sampling_state(motion_sampling_state_path)
 
@@ -350,15 +354,215 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             wandb.log(wandb_metric_dict, step=self.current_learning_iteration)
 
+        success_keys_unique = list(dict.fromkeys(success_keys))  # 保序去重
         result = {
-                "mean_reward": mean_rew,
-                "success_rate": success_rate,
-                "reward_until_fail_mean_failed": np.mean(
-                    reward_until_fail_list) if reward_until_fail_list else 0.0,
-                "num_success": num_success,
-                "num_total": num_total,
-            }
+            "mean_reward": mean_rew,
+            "success_rate": success_rate,
+            "reward_until_fail_mean_failed": np.mean(
+                reward_until_fail_list) if reward_until_fail_list else 0.0,
+            "num_success": num_success,
+            "num_total": num_total,
+            "success_keys": success_keys_unique,  # <<< 新增
+            "failed_keys": failed_keys_unique,  # <<< 已有但这里也返回（去重）
+        }
         return result
+
+    def rollout(self, motion_ids=None):
+        """
+        Assume len(motion_ids) = M <= num_envs.
+        Evenly fill ALL envs by repeating these M motions deterministically (no random padding).
+        Report per-motion success rate and export ONE successful rollout per motion (skip if all failed).
+        """
+
+        self.alg.set_eval()
+        self.env.eval_mode = True
+        # 放宽早停阈值（与你的 eval 一致做法）
+        self.env.early_termination_distance = torch.tensor(
+            [0.5] * len(self.env.early_termination_distance), device=self.device
+        ) ** 2
+
+        num_envs = self.env.num_envs
+        motion_lib = self.env._motion_lib
+        device = self.device
+        dt = self.env.dt
+
+        # 选择要评估的 motions（默认全量）；保证 M <= num_envs（调用方已保证）
+        if motion_ids is None:
+            motion_ids = list(range(motion_lib.num_motions()))
+        M = len(motion_ids)
+        assert M <= num_envs, "refine() assumes M <= num_envs."
+
+        # —— 均匀分配到 num_envs —— #
+        q, r = divmod(num_envs, M)
+        # indices: 长度 num_envs，值∈[0, M-1]，表示 env 使用第几个 motion_ids
+        indices = []
+        for i in range(M):
+            reps = q + (1 if i < r else 0)
+            indices.extend([i] * reps)
+        assert len(indices) == num_envs
+
+        env_motion_ids = [motion_ids[i] for i in indices]
+        env_motion_ids_tensor = torch.tensor(env_motion_ids, device=device, dtype=torch.long)
+
+        # 映射：env -> motion_key；统计：per-motion 尝试次数
+        env_to_key = []
+        per_motion_attempts = defaultdict(int)
+        env_ids_by_key = defaultdict(list)
+        for env_id, local_i in enumerate(indices):
+            key = motion_lib._motion_keys[motion_ids[local_i]]
+            env_to_key.append(key)
+            per_motion_attempts[key] += 1
+            env_ids_by_key[key].append(env_id)
+
+            # —— 重置并开启记录 —— #
+        self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
+        self.env.enable_data_recording()
+        with torch.inference_mode():
+            self.env.reset_with_motion_ids(env_motion_ids_tensor)
+        self.env.gym.simulate(self.env.sim)
+        with torch.inference_mode():
+            obs = self.env.reset_with_motion_ids(env_motion_ids_tensor)
+        torch.cuda.empty_cache()
+
+        # 每 env 统计
+        cum_rewards = torch.zeros(num_envs, device=device)
+        episode_lengths = torch.zeros(num_envs, dtype=torch.int32, device=device)
+        done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+        # 每 env 对应的参考长度（步数）
+        env_motion_lengths = (motion_lib._motion_lengths[env_motion_ids_tensor.tolist()] / dt).int()
+        max_steps = env_motion_lengths.max().item()
+
+        # —— rollout —— #
+        for _ in range(max_steps):
+            with torch.inference_mode():
+                if self.alg.normalize_obs:
+                    obs = self.alg.obs_mean_std(obs)
+                action = self.alg.actor_critic.act_inference(obs)
+                obs, _, rewards, dones, extras = self.env.step(action)
+                rewards = rewards.squeeze()
+                rewards[done_flags] = 0.0
+                cum_rewards += rewards
+                episode_lengths += (~done_flags).int()
+                done_flags |= dones.squeeze()
+            if done_flags.all():
+                break
+
+        # —— 成功判定 & 每 motion 聚合 —— #
+        per_motion_success = defaultdict(int)
+        best_env_for_motion = {}  # key -> (env_id, reward)
+
+        total_rewards_all_envs = []
+        success_flags_all_envs = []
+
+        for env_id in range(num_envs):
+            key = env_to_key[env_id]
+            ep_len = int(episode_lengths[env_id].item())
+            exp_len = int(env_motion_lengths[env_id].item())
+            success = (ep_len >= exp_len)
+            success_flags_all_envs.append(bool(success))
+            rew = float(cum_rewards[env_id].item())
+            total_rewards_all_envs.append(rew)
+
+            if success:
+                per_motion_success[key] += 1
+                cur = best_env_for_motion.get(key, None)
+                if (cur is None) or (rew > cur[1]):
+                    best_env_for_motion[key] = (env_id, rew)
+
+        # —— 导出每个 motion 的一个成功 rollout（若该 motion 全失败则跳过） —— #
+        saved_count = 0
+        failed_keys = []
+        for key, attempts in per_motion_attempts.items():
+            succ = per_motion_success.get(key, 0)
+
+            # 选择用于导出的 env_id：
+            if succ > 0:
+                # 成功则用奖励最高的那个
+                env_id, _ = best_env_for_motion[key]
+                save_dir = self.rollouts_succeed_path
+            else:
+                # 全失败：选 episode 长度最长的那个 env
+                candidates = env_ids_by_key.get(key, [])
+                if not candidates:
+                    failed_keys.append(key)
+                    continue
+                # 找出这些 env 的 episode_lengths，挑最长的
+                best_env = max(candidates, key=lambda eid: int(episode_lengths[eid].item()))
+                env_id = best_env
+                save_dir = self.rollouts_failed_path
+                failed_keys.append(key)  # 仍计入 failed_keys
+
+            frames = self.env.recorded_data[env_id]
+            if not frames:
+                # 没有记录到帧就跳过（极少见，通常是未开启/提前 reset）
+                continue
+
+            pred_pos = np.stack([f["body_pos"] for f in frames], axis=0)
+            gt_pos = np.stack([f["ref_body_pos"] for f in frames], axis=0)
+            pred_rot = np.stack([f["body_rot"] for f in frames], axis=0)
+            gt_rot = np.stack([f["ref_body_rot"] for f in frames], axis=0)
+
+            rollout = {
+                "pred_pos": pred_pos,
+                "gt_pos": gt_pos,
+                "pred_rot": pred_rot,
+                "gt_rot": gt_rot,
+            }
+            out_path = os.path.join(self.rollouts_succeed_path, f"{key}.pkl")
+            joblib.dump(rollout, out_path, compress=True)
+            saved_count += 1
+
+        # —— 打印统计 —— #
+        print("\n[Refine] Per-motion success rate:")
+        per_motion_sr = {}
+        for key in sorted(per_motion_attempts.keys()):
+            a = per_motion_attempts[key]
+            s = per_motion_success.get(key, 0)
+            sr = s / max(1, a)
+            per_motion_sr[key] = sr
+            print(f"   {key}: {s}/{a} = {sr:.2%}")
+
+        overall_success_rate = (np.mean(success_flags_all_envs) if success_flags_all_envs else 0.0)
+        mean_rew = (np.mean(total_rewards_all_envs) if total_rewards_all_envs else 0.0)
+        print(f"\n[Refine] Overall env-level success rate: {overall_success_rate:.2%}")
+        print(f"[Refine] Mean reward (across all envs): {mean_rew:.2f}")
+        print(
+            f"[Refine] Saved {saved_count} successful motion rollouts. Skipped {len(failed_keys)} motions (no success).")
+
+        # —— 失败 keys 更新采样权重（可选，与你 eval 保持一致） —— #
+        if len(failed_keys) > 0:
+            failed_key_path = os.path.join(self.eval_output_path,
+                                           f"refine_failed_keys_iter{self.current_learning_iteration}.pkl")
+            joblib.dump(failed_keys, failed_key_path, compress=True)
+            motion_lib.update_soft_sampling_weight(failed_keys)
+            motion_sampling_state_path = os.path.join(self.log_dir, f"motion_sampling_state.pkl")
+            motion_lib.export_sampling_state(motion_sampling_state_path)
+
+        # —— 复位环境 —— #
+        self.env.disable_data_recording()
+        self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance,
+                                                           device=self.device) ** 2
+        self.env.eval_mode = False
+        with torch.inference_mode():
+            self.env.reset()
+
+        # —— wandb 记录（可选） —— #
+        if wandb.run is not None:
+            wandb.log({
+                "Refine/overall_success_rate_env": overall_success_rate,
+                "Refine/mean_reward_env": mean_rew,
+                "Refine/saved_rollouts_count": saved_count,
+                "Refine/failed_motions_count": len(failed_keys),
+            }, step=self.current_learning_iteration)
+
+        return {
+            "overall_success_rate_env": overall_success_rate,
+            "mean_reward_env": mean_rew,
+            "per_motion_success_rate": per_motion_sr,
+            "saved_rollouts": saved_count,
+            "failed_motion_keys": failed_keys,
+        }
 
     def log(self, locs, width=80, pad=35):
         it = locs['it']

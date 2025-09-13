@@ -53,7 +53,7 @@ class LeggedRobotImi(LeggedRobot):
         else:
             motion_file = self.cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         self._load_motion(motion_file)
-        self._initialize_motion_offsets()
+
 
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
         self._sampled_motion_ids = torch.zeros(self.num_envs).long().to(self.device)
@@ -434,7 +434,9 @@ class LeggedRobotImi(LeggedRobot):
         body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
                                    - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
-        body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)  # → ℝ[num_envs]
+        body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
+        if self.eval_mode:
+            body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
         body_too_far *= (self.episode_length_buf > 1)
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | body_too_far
@@ -449,7 +451,7 @@ class LeggedRobotImi(LeggedRobot):
         if self.eval_mode:
             self.reset_buf = ref_out | body_too_far
             if not self.early_termination:
-                self.reset_buf =  ref_out
+                self.reset_buf = ref_out
             self.time_out_buf = time_out | ref_out
 
     def _reset_env_tensors(self, env_ids):
@@ -680,29 +682,6 @@ class LeggedRobotImi(LeggedRobot):
     #     return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
 
 
-    def _initialize_motion_offsets(self):
-        """
-        For each environment, generate a random heading rotation and compute:
-        - rotation_offset: quaternion of shape [num_envs, 4]
-        - pos_offset: [env_origins, env_key_pos_origins]
-        """
-        # Generate random heading angles in [-pi, pi]
-        heading_angles = torch_rand_float(-np.pi, np.pi, (self.num_envs, 1), device=self.device)
-        self.rotation_offset = torch.zeros(self.num_envs, 4, device=self.device)
-
-        # Heading quaternion (rotation around up-axis)
-        axis = torch.zeros(self.num_envs, 3, device=self.device)
-        axis[:, self.up_axis_idx] = 1.0
-        sin_half = torch.sin(heading_angles * 0.5)
-        cos_half = torch.cos(heading_angles * 0.5)
-        self.rotation_offset[:, :3] = axis * sin_half
-        self.rotation_offset[:, 3] = cos_half.squeeze()
-
-        # Positional offsets (env origins & key_pos origins already expanded properly)
-        self.pos_offset = {
-            "root": self.env_origins.clone(),
-            "body": self.env_origins.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1),
-        }
 
     def reset_with_motion_ids(self, motion_ids, random = False):
         """ Reset all environments with given motion ids. (For Evaluation)

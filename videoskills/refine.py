@@ -11,6 +11,173 @@ from tqdm import tqdm
 import subprocess
 from scripts.preprocess.convert_gvhmr_isaac import process_folder
 from pathlib import Path
+import os, shutil, tempfile
+from typing import List, Iterable, Tuple
+from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
+
+
+class MotionRefinePipeline:
+    def __init__(self, env_cfg, train_cfg, args, log_dir: str):
+        self.args = args
+        self.env_cfg = env_cfg
+        self.train_cfg = train_cfg
+        self.log_dir = log_dir
+
+        # 收集所有 motion（每个 .npy 即一个 motion）
+        self.motion_files = glob.glob(os.path.join(env_cfg.motion.file, f"**/*.npy"), recursive=True)
+        if not self.motion_files:
+            raise RuntimeError("No motion files found.")
+
+        # 用第一个文件初始化 env/runner
+        self.env_cfg.motion.file = self.motion_files
+        self.env, self.env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=self.env_cfg)
+        self.runner, self.train_cfg = task_registry.make_alg_runner(
+            env=self.env, name=args.task, args=args, train_cfg=self.train_cfg, log_dir=self.log_dir
+        )
+
+        # 训练/监控参数
+        self.target_eval_success = getattr(getattr(self.train_cfg, "refine", {}), "target_eval_success", 0.95)
+        self.hard_cap   = getattr(getattr(self.train_cfg, "refine", {}), "max_refine_epochs", 400)
+        self.interval   = getattr(getattr(self.train_cfg, "refine", {}), "refine_interval", 20)
+        self.et_window  = getattr(getattr(self.train_cfg, "refine", {}), "et_window", 20)
+        self.max_it     = self.train_cfg.runner.max_iterations
+
+        # 监控器
+        self.monitor = ConvergenceMonitor(N=20, alpha=1, cv_thr=0.08, trend_scale=1e-3, patience=3)
+
+        # W&B
+        if self.args.use_wandb and not self.args.dev:
+            os.makedirs(os.path.join(self.log_dir, "wandb"), exist_ok=True)
+            run_name = self.train_cfg.runner.run_name
+            wandb.init(
+                project=self.args.wandb_project, name=run_name, dir=self.log_dir,
+                config={**vars(self.args), **class_to_dict(self.train_cfg), **class_to_dict(self.env_cfg)}
+            )
+
+        self.runner.load()
+        self.tmp_root = os.path.join(self.log_dir, "_tmp_refine_batches")
+        os.makedirs(self.tmp_root, exist_ok=True)
+
+    # ------------------------ 外部主入口 ------------------------ #
+    def run(self, batch_size_easy: int = 18):
+        easy_files, hard_files = self.pre_eval_all()
+
+        # 分批 refine（easy 走批、hard 逐个）
+        group_size = min(batch_size_easy, self.runner.env.num_envs)
+        self.refine_easy(easy_files, group_size)
+        self.refine_hard(hard_files)
+
+        if wandb.run is not None:
+            wandb.log({"Refine/easy_count": len(easy_files), "Refine/hard_count": len(hard_files)})
+
+        if os.path.isdir(self.tmp_root) and not os.listdir(self.tmp_root):
+            os.rmdir(self.tmp_root)
+
+    # ------------------------ 预评估/分类 ------------------------ #
+
+    def pre_eval_all(self) -> Tuple[List[str], List[str]]:
+        """
+        先跑一次 runner.eval() 得到 success_keys / failed_keys，
+        再把 key 通过 `key.split('-')[-1]` -> 文件名 stem -> 映射回 *.npy 的绝对路径。
+        返回: (easy_files, hard_files)，均为 *.npy 的路径列表。
+        """
+        # 1) 跑评估（确保当前 MotionLib 已包含你要评估的 motions）
+        eval_out = self.runner.eval(motion_ids=None)
+
+        # 2) 读取 keys（去重保序）
+        def unique_keep_order(xs: List[str]) -> List[str]:
+            return list(dict.fromkeys(xs)) if xs else []
+
+        success_keys = unique_keep_order(eval_out.get("success_keys", []))
+        failed_keys = unique_keep_order(eval_out.get("failed_keys", []))
+
+        # 3) 预构建 stem -> fullpath 映射，stem 就是文件名不含后缀
+        #    例如 /.../Aerial_Kick_..._clip3.npy  ->  stem="Aerial_Kick_..._clip3"
+        stem2path = {}
+        for p in self.motion_files:
+            stem2path[Path(p).stem] = p
+
+        # 4) 把 key 映射回 *.npy
+        def keys_to_files(keys: List[str]) -> List[str]:
+            out, miss = [], []
+            for k in keys:
+                stem = k.split('-')[-1]  # 取最后一段作为文件名 stem
+                fp = stem2path.get(stem, None)  # 在已知的 motion_files 里找
+                if fp is not None:
+                    out.append(fp)
+                else:
+                    miss.append(k)
+            if miss:
+                print(f"[WARN] {len(miss)} keys not matched to any *.npy. Examples: {miss[:5]}")
+            return out
+
+        easy_files = keys_to_files(success_keys)
+        hard_files = keys_to_files(failed_keys)
+
+        return easy_files, hard_files
+
+    # ------------------------ refine（easy 批处理） ------------------------ #
+    def refine_easy(self, files: List[str], group_size: int):
+        if not files:
+            return
+        print(f"[Refine] Easy motions: {len(files)}; batching {group_size} per refine run.")
+        for batch_files in chunked(files, group_size):
+            batch_dir = make_symlink_batch_dir(batch_files, base_tmp=self.tmp_root)
+            try:
+                self.runner.load(load_iteration=False)
+                reset_motion_lib_dir(self.runner, batch_dir)  # 目录中每个 .npy 即一个 motion
+                self.training_loop()
+            finally:
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+    # ------------------------ refine（hard 单个） ------------------------ #
+    def refine_hard(self, files: List[str]):
+        if not files:
+            return
+        print(f"[Refine] Hard motions: {len(files)}; refining one-by-one.")
+        for file in files:
+            batch_dir = make_symlink_batch_dir([file], base_tmp=self.tmp_root)
+            try:
+                self.runner.load(load_iteration=False)
+                reset_motion_lib_dir(self.runner, batch_dir)
+                self.training_loop()
+            finally:
+                shutil.rmtree(batch_dir, ignore_errors=True)
+
+    # ------------------------ 可选：训练/收敛监控 ------------------------ #
+    def training_loop(self):
+        for it in range(0, self.max_it + 1, self.interval):
+            self.runner.learn(num_learning_iterations=self.interval, init_at_random_ep_len=False)
+
+            # 最近窗口的 early-termination 代理成功率
+            success_proxy = 1 - self.runner.mean_et_rate(k=self.et_window)
+            et_vals = self.runner.pop_recent_ET_rate(k=self.et_window)
+            success_series = 1.0 - np.array(et_vals, dtype=float)
+
+            converged = self.monitor.update(success_series, success_rate=success_proxy)
+
+            if wandb.run is not None:
+                to_log = dict(self.monitor.last_diag)
+                to_log.update({'CM/success_proxy': success_proxy,
+                               'Refine/et_window': self.et_window,
+                               'Refine/interval': self.interval})
+                wandb.log(to_log, step=self.runner.current_learning_iteration)
+
+            if converged:
+                eval_out = self.runner.rollout()
+                if isinstance(eval_out, dict) and 'success_rate' in eval_out:
+                    if float(eval_out['success_rate']) >= self.target_eval_success:
+                        print(f"[Converged+Eval OK] success={eval_out['success_rate']:.3f} "
+                              f"≥ {self.target_eval_success:.3f}")
+                        break
+                    else:
+                        print(f"[Converged+Eval FAIL] success={eval_out['success_rate']:.3f} "
+                              f"< {self.target_eval_success:.3f}")
+
+            if it >= self.hard_cap:
+                eval_out = self.runner.rollout()
+                print(f"[EarlyStop] Hit hard cap {self.hard_cap}.")
+                break
 
 
 def config(args):
@@ -18,89 +185,6 @@ def config(args):
     log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml")
 
     return log_dir, env_cfg, train_cfg
-
-def train(env_cfg, train_cfg, args):
-
-    motion_files = glob.glob(os.path.join(*env_cfg.motion.file.split('/'), f"**/*.npy"), recursive=True)
-    env_cfg.motion.file = motion_files[0]
-    env, env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-    runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,
-                                                      log_dir=log_dir)
-
-    monitor = ConvergenceMonitor(
-        N=20,
-        alpha=1,
-        cv_thr=0.08,
-        trend_scale=1e-3,
-        patience=3,
-        # target_success=getattr(getattr(train_cfg, "refine", {}), "success_proxy", None)  # e.g., 0.9
-    )
-
-    if args.use_wandb and not args.dev:
-        os.makedirs(os.path.join(log_dir, "wandb"), exist_ok=True)
-        run_name = train_cfg.runner.run_name
-        wandb.init(project=args.wandb_project, name=run_name,
-                   dir=log_dir,
-                   config={**vars(args), **class_to_dict(train_cfg), **class_to_dict(env_cfg)})
-
-    target_eval_success = getattr(getattr(train_cfg, "refine", {}), "target_eval_success", 0.95)
-    hard_cap   = getattr(getattr(train_cfg, "refine", {}), "max_refine_epochs", 20)
-    interval   = getattr(getattr(train_cfg, "refine", {}), "refine_interval", 20)
-    et_window  = getattr(getattr(train_cfg, "refine", {}), "et_window", 20)
-    max_it     = train_cfg.runner.max_iterations
-    runner.load()
-    #TODO: introduce a loop here, to load the motion and set the dataset
-    total = len(motion_files)
-    for i, file in enumerate(motion_files, start=1):
-        runner.load(load_iteration=False)
-        runner.reset_motion_lib(file)
-        for it in range(0, max_it + 1, interval):
-            runner.learn(num_learning_iterations=interval, init_at_random_ep_len=False)
-
-            # 最近这段训练中新结束的 episodic returns
-            if hasattr(runner, 'pop_recent_episode_rewards'):
-                recent_rewards = runner.pop_recent_mean_rewards()
-            else:
-                recent_rewards = list(getattr(runner, 'rewbuffer', []))[-monitor.N:]
-
-            success_proxy = 1 - runner.mean_et_rate(k=et_window)
-            et_vals = runner.pop_recent_ET_rate(k=et_window)
-            success_series = 1.0 - np.array(et_vals, dtype=float)
-
-            # 调用收敛监测
-            converged = monitor.update(success_series, success_rate=success_proxy)
-
-            # 统一把诊断项写入 wandb（包括 slope/cv/是否通过等）
-            if wandb.run is not None:
-                to_log = dict(monitor.last_diag)
-                to_log.update({
-                    'CM/success_proxy': success_proxy,
-                    'Refine/et_window': et_window,
-                    'Refine/interval': interval,
-                })
-                wandb.log(to_log, step=runner.current_learning_iteration)
-
-            if converged:
-                runner.rollout = True
-                eval_out = runner.eval()  # 你的 eval 里建议返回 dict（success_rate 等）
-                if isinstance(eval_out, dict) and 'success_rate' in eval_out:
-                    # if wandb.run is not None:
-                    #     wandb.log({f'Eval/{k}': v for k, v in eval_out.items() if isinstance(v, (int, float))}, step=it)
-                    if float(eval_out['success_rate']) >= target_eval_success:
-                        print(f"[Converged+Eval OK] success={eval_out['success_rate']:.3f} ≥ {target_eval_success:.3f}")
-                        # runner.save()
-                        print(f"[Progress] Done {i}/{total} files, remaining {total - i}.")
-                        break
-                    else:
-                        print(f"[Converged+Eval FAIL] success={eval_out['success_rate']:.3f} < {target_eval_success:.3f}")
-
-            if it >= hard_cap:
-                runner.rollout = True
-                eval_out = runner.eval()
-                # runner.save()
-                print(f"[EarlyStop] Hit hard cap {hard_cap}.")
-                print(f"[Progress] Done {i}/{total} files, remaining {total - i}.")
-                break
 
 
 if __name__ == '__main__':
@@ -111,7 +195,7 @@ if __name__ == '__main__':
             os.environ["PYGLET_HEADLESS"] = "True"
     log_dir, env_cfg, train_cfg = config(args)
 
-    # GVHMR
+    # 1.GVHMR
     folder = args.folder
     folder = Path(folder)
     gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
@@ -126,19 +210,21 @@ if __name__ == '__main__':
         print(f"Running: {' '.join(command)}")
         subprocess.run(command, env=dict(os.environ),cwd=str(gvhmr_root), check=True)
 
-    # preprocess or retarget
-    motion_data_dir = os.path.join(log_dir, 'motion_data')
+    # 2.preprocess or retarget
+    motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
     if args.task == 'smpl':
         result = process_folder(gvhmr_output_dir, motion_data_dir)
 
     env_cfg.motion.file = motion_data_dir
-    # TODO: test
-    env_cfg.motion.file = 'logs/smpl_ppo/refinement_folder_136_resume_Sep12_17-50-41/motion_data/gvhmr_output'
 
-    # refinement
-    train(env_cfg, train_cfg, args)
+    # 3.refinement
+    pipeline = MotionRefinePipeline(env_cfg, train_cfg, args, log_dir)
+    pipeline.run(batch_size_easy=18)
 
-    # rendering  # 需要把 render 改成在服务器上也能跑
+    # 4.rendering
+    render_failed = False
     if args.task == 'smpl':
         render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed', True)
-
+        if render_failed:
+            render(f'{log_dir}/rollouts/failed', f'{log_dir}/renders/failed', True)
+#
