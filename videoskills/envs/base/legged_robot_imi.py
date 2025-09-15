@@ -340,7 +340,7 @@ class LeggedRobotImi(LeggedRobot):
               or self._state_init == 'random'):
             self._reset_ref_state_init(env_ids)
         elif (self._state_init == 'hybrid'):
-            self._reset_hybrid_state_init(env_ids)
+            self._reset_ref_state_init(env_ids)
 
         self.motion_lengths = self._motion_lib.get_motion_length(self._sampled_motion_ids[env_ids])/ self.dt
         # from 0, therefore the real length is (int(motion_lengths) + 1)
@@ -367,11 +367,16 @@ class LeggedRobotImi(LeggedRobot):
         motion_ids = self._motion_lib.sample_motions(num_envs)
         self._sampled_motion_ids[env_ids] = motion_ids
 
-        if (self._state_init == 'random'
-                or self._state_init == 'hybrid'):
+        if self._state_init == 'random':
             motion_times = self._motion_lib.sample_time(motion_ids)
-        elif (self._state_init == 'start'):
+        elif self._state_init == 'start':
             motion_times = torch.zeros(num_envs, device=self.device)
+        elif self._state_init == 'hybrid':
+            start_prob = 0.05
+            start_mask = torch.rand(num_envs, device=self.device) < start_prob
+            motion_times = self._motion_lib.sample_time(motion_ids)
+            motion_times[start_mask] = 0.0
+
         else:
             assert (False), "Unsupported state initialization strategy: {:s}".format(str(self._state_init))
 

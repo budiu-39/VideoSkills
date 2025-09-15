@@ -14,6 +14,7 @@ from pathlib import Path
 import os, shutil, tempfile
 from typing import List, Iterable, Tuple
 from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
+import torch
 
 
 class MotionRefinePipeline:
@@ -30,6 +31,7 @@ class MotionRefinePipeline:
 
         # 用第一个文件初始化 env/runner
         self.env_cfg.motion.file = self.motion_files
+        self.env_cfg.init_state.type = 'hybrid'
         self.env, self.env_cfg = task_registry.make_env(name=args.task, args=args, env_cfg=self.env_cfg)
         self.runner, self.train_cfg = task_registry.make_alg_runner(
             env=self.env, name=args.task, args=args, train_cfg=self.train_cfg, log_dir=self.log_dir
@@ -40,7 +42,7 @@ class MotionRefinePipeline:
         self.hard_cap   = getattr(getattr(self.train_cfg, "refine", {}), "max_refine_epochs", 400)
         self.interval   = getattr(getattr(self.train_cfg, "refine", {}), "refine_interval", 20)
         self.et_window  = getattr(getattr(self.train_cfg, "refine", {}), "et_window", 20)
-        self.max_it     = self.train_cfg.runner.max_iterations
+        # self.max_it     = self.train_cfg.runner.max_iterations
 
         # 监控器
         self.monitor = ConvergenceMonitor(N=20, alpha=1, cv_thr=0.08, trend_scale=1e-3, patience=3)
@@ -146,9 +148,13 @@ class MotionRefinePipeline:
 
     # ------------------------ 可选：训练/收敛监控 ------------------------ #
     def training_loop(self):
-        for it in range(0, self.max_it + 1, self.interval):
-            self.runner.learn(num_learning_iterations=self.interval, init_at_random_ep_len=False)
 
+        it = 0
+        while it * self.interval <= self.hard_cap:
+            it += 1
+            self.runner.learn(num_learning_iterations=self.interval, init_at_random_ep_len=False)
+            self.runner.env.early_termination_distance = (torch.tensor(self.runner.env.cfg.early_termination.distance
+                                                               , device=self.runner.env.device) + 0.25 + 0.01 * it) ** 2
             # 最近窗口的 early-termination 代理成功率
             success_proxy = 1 - self.runner.mean_et_rate(k=self.et_window)
             et_vals = self.runner.pop_recent_ET_rate(k=self.et_window)
@@ -165,8 +171,8 @@ class MotionRefinePipeline:
 
             if converged:
                 eval_out = self.runner.rollout()
-                if isinstance(eval_out, dict) and 'success_rate' in eval_out:
-                    if float(eval_out['success_rate']) >= self.target_eval_success:
+                if isinstance(eval_out, dict) and 'per_motion_success_rate' in eval_out:
+                    if float(min(eval_out['per_motion_success_rate'].values())) >= self.target_eval_success:
                         print(f"[Converged+Eval OK] success={eval_out['success_rate']:.3f} "
                               f"≥ {self.target_eval_success:.3f}")
                         break
@@ -174,7 +180,7 @@ class MotionRefinePipeline:
                         print(f"[Converged+Eval FAIL] success={eval_out['success_rate']:.3f} "
                               f"< {self.target_eval_success:.3f}")
 
-            if it >= self.hard_cap:
+            if it * self.interval >= self.hard_cap:
                 eval_out = self.runner.rollout()
                 print(f"[EarlyStop] Hit hard cap {self.hard_cap}.")
                 break
@@ -199,8 +205,14 @@ if __name__ == '__main__':
     folder = args.folder
     folder = Path(folder)
     gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
-    gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_output')
-    mp4_paths = sorted(list(folder.glob("*.mp4")) + list(folder.glob("*.MP4")))
+    if args.gvhmr_output is not None:
+        gvhmr_output_dir = args.gvhmr_output
+    else:
+        gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_output')
+    mp4_paths = sorted(
+        [p.resolve() for p in folder.glob("*.mp4")] +
+        [p.resolve() for p in folder.glob("*.MP4")]
+    )
     print(f"Found {len(mp4_paths)} .mp4 files in {folder}")
     for mp4_path in tqdm(mp4_paths):
         command = ["python", "tools/demo/demo.py", "--video", str(mp4_path)]
@@ -208,7 +220,11 @@ if __name__ == '__main__':
         if args.static_cam:
             command += ["-s"]
         print(f"Running: {' '.join(command)}")
-        subprocess.run(command, env=dict(os.environ),cwd=str(gvhmr_root), check=True)
+        try:
+            subprocess.run(command, env=dict(os.environ), cwd=str(gvhmr_root), check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[WARN] GVHMR failed on {mp4_path} (rc={e.returncode}). Skip this clip.")
+            continue
 
     # 2.preprocess or retarget
     motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
@@ -224,7 +240,7 @@ if __name__ == '__main__':
     # 4.rendering
     render_failed = False
     if args.task == 'smpl':
-        render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed', True)
+        render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed', True, gvhmr_output_dir)
         if render_failed:
-            render(f'{log_dir}/rollouts/failed', f'{log_dir}/renders/failed', True)
+            render(f'{log_dir}/rollouts/failed', f'{log_dir}/renders/failed', True, gvhmr_output_dir)
 #

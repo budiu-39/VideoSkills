@@ -481,6 +481,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 # 成功则用奖励最高的那个
                 env_id, _ = best_env_for_motion[key]
                 save_dir = self.rollouts_succeed_path
+                rollout_length = episode_lengths[env_id]
             else:
                 # 全失败：选 episode 长度最长的那个 env
                 candidates = env_ids_by_key.get(key, [])
@@ -492,6 +493,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 env_id = best_env
                 save_dir = self.rollouts_failed_path
                 failed_keys.append(key)  # 仍计入 failed_keys
+                rollout_length = episode_lengths[env_id]
 
             frames = self.env.recorded_data[env_id]
             if not frames:
@@ -504,12 +506,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             gt_rot = np.stack([f["ref_body_rot"] for f in frames], axis=0)
 
             rollout = {
-                "pred_pos": pred_pos,
-                "gt_pos": gt_pos,
-                "pred_rot": pred_rot,
-                "gt_rot": gt_rot,
+                "pred_pos": pred_pos[:rollout_length],
+                "gt_pos": gt_pos[:rollout_length],
+                "pred_rot": pred_rot[:rollout_length],
+                "gt_rot": gt_rot[:rollout_length],
             }
-            out_path = os.path.join(self.rollouts_succeed_path, f"{key}.pkl")
+            out_path = os.path.join(save_dir, f"{key}.pkl")
             joblib.dump(rollout, out_path, compress=True)
             saved_count += 1
 

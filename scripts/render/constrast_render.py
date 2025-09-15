@@ -21,6 +21,8 @@ import torch
 from scripts.retarget.smpl_humanoid_tool import humanoid2smpl
 
 import tempfile, shutil
+import subprocess
+from pathlib import Path
 
 class Body:
     def __init__(self, faces, vertices, jtr):
@@ -42,7 +44,7 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
                 contact_color=[1.0, 0.0, 0.0],
                 render_bodies_static=None,
                 render_points_static=None,
-                cam_rot=None, sim_color = [0.8, 0.2, 0.2], ref_color = [0.2, 0.8, 0.2]):
+                cam_rot=None, sim_color = [0.2, 0.8, 0.2], ref_color = [0.8, 0.2, 0.2]):
     '''
     Visualizes the body model output of a smpl sequence.
     - body : body model output from SMPL forward pass (where the sequence is the batch)
@@ -147,7 +149,7 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
     del mv
 
 
-def render(ref_sim_data_path, output_path, use_offscreen):
+def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = None):
     MODEL_PATH = 'data/smpl'
     smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
     # 判断输入是文件还是目录
@@ -184,7 +186,7 @@ def render(ref_sim_data_path, output_path, use_offscreen):
         # os.makedirs(pic_path, exist_ok=1)
         os.makedirs(video_path, exist_ok=1)
 
-        ref_transl = ref_transl + torch.tensor([0.0, 2.0, 0.0])
+        ref_transl = ref_transl + torch.tensor([2.0, 0.0, 0.0])
         betas = torch.zeros(10).repeat(ref_transl.shape[0], 1)
 
         # === Ref body ===
@@ -205,6 +207,7 @@ def render(ref_sim_data_path, output_path, use_offscreen):
         tmp_dir = tempfile.mkdtemp(prefix="render_frames_")  # 临时帧目录
         pic_file = os.path.join(tmp_dir, key_name)
         video_file = os.path.join(video_path, key_name + '.mp4')
+        combo_video_file  = os.path.join(video_path, key_name + '_with_raw.mp4')  # 左右拼接后的最终视频
 
         mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
         viz_contrast_smpl_seq(
@@ -229,7 +232,36 @@ def render(ref_sim_data_path, output_path, use_offscreen):
 
         create_video(pic_file + '/frame_%08d.png', video_file, 30)
         shutil.rmtree(tmp_dir, ignore_errors=True)
-        print(f"Finished rendering {pkl_file} → {video_file}")
+
+        if raw_video_path:
+            raw_dir = Path(raw_video_path) / key_name
+            raw_input = raw_dir / "0_input_video.mp4"
+            if raw_input.is_file():
+                # 竖向拼接：两路都缩放到同宽 960（高度自适应为偶数），然后 vstack
+                combo_video_file = os.path.join(video_path, key_name + '_stack.mp4')
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(raw_input),
+                    "-i", str(video_file),
+                    "-filter_complex",
+                    # 先把左侧缩放到同高 1080（宽自适应，偶数），两路都设 sar=1，最后 hstack
+                    "[0:v]scale=-2:1080,setsar=1[v0];[1:v]setsar=1[v1];[v0][v1]hstack=inputs=2[v]",
+                    "-map", "[v]", "-map", "0:a?",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-r", "30", "-shortest",
+                    str(combo_video_file)
+                ]
+                try:
+                    subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    print(f"Finished rendering {pkl_file} → {combo_video_file}")
+                except subprocess.CalledProcessError as e:
+                    print(f"[WARN] ffmpeg vstack failed for {key_name}: {e}. Keep {video_file} only.")
+                    print(f"Finished rendering {pkl_file} → {video_file}")
+            else:
+                print(f"[INFO] No raw video found at {raw_input}. Keep {video_file} only.")
+                print(f"Finished rendering {pkl_file} → {video_file}")
+        else:
+            print(f"Finished rendering {pkl_file} → {video_file}")
 
 
 if __name__ == '__main__':
@@ -237,6 +269,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Render SMPL sequence')
     parser.add_argument('--pkl_file', type=str, required=True, help='Path to the .pkl file')
     parser.add_argument("--use_offscreen", action='store_true', help="flag to mark if input is test or not ")
+    parser.add_argument("--raw_video_path", type=str, required=False, help="raw video path for combining")
     opt = parser.parse_args()  #logs/smpl_ppo/refinement_folder_136_resume_Sep09_05-05-30/rollouts/failed
 
     ref_sim_data_path =  opt.pkl_file
@@ -246,6 +279,6 @@ if __name__ == '__main__':
             os.environ["PYOPENGL_PLATFORM"] = "egl"  # 若无 NVIDIA EGL，可改用 'osmesa'
             os.environ["PYGLET_HEADLESS"] = "True"
 
-    output_path = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/refinement_folder_136_resume_Sep12_18-20-52/renders/succeed'
+    output_path = 'output/render_smpl_contrast'
 
-    render(ref_sim_data_path, output_path, opt.use_offscreen)
+    render(ref_sim_data_path, output_path, opt.use_offscreen, opt.raw_video_path)

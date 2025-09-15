@@ -18,7 +18,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'refinement_folder_136_resume'
+        run_name = 'phc_flexer_ET'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -65,7 +65,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'random'  # 'hybrid' or 'default'
+        type = 'random'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
@@ -78,8 +78,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
     class motion:
-        rotate_motion = True
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        rotate_motion = False
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
@@ -87,7 +87,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_136')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_8')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_8')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8

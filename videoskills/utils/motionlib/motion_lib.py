@@ -235,7 +235,7 @@ class MotionLib():
             num_frames = curr_motion.tensor.shape[0]
             curr_len = 1.0 / motion_fps * (num_frames - 1)
 
-            self._motion_keys.append(self._get_amass_key(curr_file))
+            self._motion_keys.append(self._get_motion_key(curr_file))
             self._motion_fps.append(motion_fps)
             self._motion_dt.append(curr_dt)
             self._motion_num_frames.append(num_frames)
@@ -443,20 +443,20 @@ class MotionLib():
         self._motion_num_frames = [self._motion_num_frames[i] for i in sorted_indices]
         self._motion_keys = [self._motion_keys[i] for i in sorted_indices]
 
-    def _get_amass_key(self, filepath):
+    def _get_motion_key(self, filepath):
         """
         Generate a unique key for each motion file in the format: SUBSET-SUBFOLDER-FILENAME
         Example: 'CMU-86_05-walk_01'
         """
         import os
         parts = filepath.split(os.sep)
-        if len(parts) >= 4:
+        if 'AMASS' in parts:
             subset = parts[-3]
             subfolder = parts[-2]
             filename = os.path.splitext(parts[-1])[0]
             return f"{subset}-{subfolder}-{filename}"
         else:
-            return "UNKNOWN-UNKNOWN-UNKNOWN"
+            return os.path.splitext(parts[-1])[0]
 
     def update_soft_sampling_weight(self, failed_keys):
         # sampling weight based on evaluation, only "mostly" trained on "failed" sequences. Auto PMCP.

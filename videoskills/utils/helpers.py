@@ -189,8 +189,10 @@ def get_args():
         {"name": "--dev", "action": "store_true", "default": False, "help": "development mode, use smaller envs"},
         # {"name": "--load_run", "type": str, "default": False, "help": "logging path of resume experiment"},
 
+        # GVHMR
         {"name": "--folder", "type": str, "default": None, "help": "folder of videos for demo"},
-        {"name": "--static_cam", "action": "store_true", "default": False, "help": "If true, skip DPVO"}
+        {"name": "--static_cam", "action": "store_true", "default": False, "help": "If true, skip DPVO"},
+        {"name": "--gvhmr_output", "type": str, "default": None, "help": "folder of gvhmr outputs"},
     ]
     # parse arguments
     args = gymutil.parse_arguments(
