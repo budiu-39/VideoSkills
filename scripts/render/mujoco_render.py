@@ -4,6 +4,7 @@ import mujoco
 import imageio
 from scipy.spatial.transform import Rotation as sRot
 
+
 def export_mujoco_video(
         motion_traj: dict,
         output_path: str,

@@ -1,11 +1,10 @@
-import os
+import os, sys
 import numpy as np
 from videoskills.utils import get_args, task_registry
 from videoskills.utils.convergence_monitor import ConvergenceMonitor
 import wandb
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict
 import glob
-from scripts.render.constrast_render import render
 from smplx import SMPL
 from tqdm import tqdm
 import subprocess
@@ -15,9 +14,6 @@ import os, shutil, tempfile
 from typing import List, Iterable, Tuple
 from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
 import torch
-from scripts.retarget.fit_smpl_motion import retarget_from_gvhmr
-from scripts.render.vis_motion_rollout import mujoco_render
-
 
 
 class MotionRefinePipeline:
@@ -201,7 +197,6 @@ if __name__ == '__main__':
         if os.environ.get("DISPLAY", "") == "":
             os.environ["PYOPENGL_PLATFORM"] = "egl"
             os.environ["PYGLET_HEADLESS"] = "True"
-            os.environ["MUJOCO_GL"] = "egl"
     log_dir, env_cfg, train_cfg = config(args)
 
     # 1.GVHMR
@@ -236,12 +231,13 @@ if __name__ == '__main__':
         result = process_folder(gvhmr_output_dir, motion_data_dir)
         env_cfg.motion.file = motion_data_dir
     elif args.task == 'g1':
+        from scripts.retarget.fit_smpl_motion import retarget_from_gvhmr
         motion_data_dir = os.path.join(log_dir, 'retarget_result')
         retarget_result_render_dir = os.path.join(motion_data_dir, 'rendered_videos')
         retarget_from_gvhmr(
             input_dir=gvhmr_output_dir,
             output_dir=motion_data_dir,
-            render_dir=retarget_result_render_dir,
+            # render_dir=retarget_result_render_dir,
             num_jobs=1,
         )
         env_cfg.motion.file = motion_data_dir
@@ -252,21 +248,24 @@ if __name__ == '__main__':
     pipeline = MotionRefinePipeline(env_cfg, train_cfg, args, log_dir)
     pipeline.run(batch_size_easy=18)
 
+
     # 4.rendering
     render_failed = False
-    rollout_success_dir = os.path.join(log_dir, 'refine_result/succeed')
+    rollout_success_dir = os.path.join(log_dir, 'refine_results/succeed')
     if args.task == 'smpl':
-        render(rollout_success_dir, f'{log_dir}/refine_result/renders/succeed', True, gvhmr_output_dir)
+        from scripts.render.constrast_render import render
+        render(rollout_success_dir, f'{rollout_success_dir}/renders/succeed', True, gvhmr_output_dir)
         if render_failed:
             rollout_failed_dir = os.path.join(log_dir, 'refine_result/failed')
-            render(rollout_failed_dir, f'{log_dir}/refine_result/renders/failed', True, gvhmr_output_dir)
-    elif args.task == 'g1':
-        humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
-        mujoco_render(rollout_success_dir, f'{log_dir}/refine_result/renders/succeed', True, gvhmr_output_dir, \
-                      humanoid_model_file, retarget_result_render_dir)
-        if render_failed:
-            rollout_failed_dir = os.path.join(log_dir, 'refine_result/failed')
-            mujoco_render(rollout_failed_dir, f'{log_dir}/refine_result/renders/failed', True,
-                          gvhmr_output_dir, humanoid_model_file, retarget_result_render_dir)
+            render(rollout_failed_dir, f'{rollout_success_dir}/renders/failed', True, gvhmr_output_dir)
+    # elif args.task == 'g1':
+    #     from scripts.render.vis_motion_rollout import mujoco_render
+    #     humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
+    #     mujoco_render(rollout_success_dir, f'{rollout_success_dir}/renders/succeed', True, gvhmr_output_dir, \
+    #                   humanoid_model_file, retarget_result_render_dir)
+    #     if render_failed:
+    #         rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
+    #         mujoco_render(rollout_failed_dir, f'{rollout_success_dir}/renders/failed', True,
+    #                       gvhmr_output_dir, humanoid_model_file, retarget_result_render_dir)
 
 
