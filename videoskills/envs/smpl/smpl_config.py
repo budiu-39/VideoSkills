@@ -41,6 +41,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # num_mini_batches = 5
 
     class refine:
+
         success_rate = 0.98
         convergence_threshold = 0.03
         convergence_criteria = 'reward'  # 'reward' or 'mpjpe'

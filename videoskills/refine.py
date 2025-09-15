@@ -15,6 +15,9 @@ import os, shutil, tempfile
 from typing import List, Iterable, Tuple
 from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
 import torch
+from scripts.retarget.fit_smpl_motion import retarget_from_gvhmr
+from scripts.render.vis_motion_rollout import vis_mujoco_offscreen_render
+
 
 
 class MotionRefinePipeline:
@@ -39,7 +42,7 @@ class MotionRefinePipeline:
 
         # 训练/监控参数
         self.target_eval_success = getattr(getattr(self.train_cfg, "refine", {}), "target_eval_success", 0.95)
-        self.hard_cap   = getattr(getattr(self.train_cfg, "refine", {}), "max_refine_epochs", 400)
+        self.hard_cap   = getattr(getattr(self.train_cfg, "refine", {}), "max_refine_epochs", 20)
         self.interval   = getattr(getattr(self.train_cfg, "refine", {}), "refine_interval", 20)
         self.et_window  = getattr(getattr(self.train_cfg, "refine", {}), "et_window", 20)
         # self.max_it     = self.train_cfg.runner.max_iterations
@@ -173,12 +176,7 @@ class MotionRefinePipeline:
                 eval_out = self.runner.rollout()
                 if isinstance(eval_out, dict) and 'per_motion_success_rate' in eval_out:
                     if float(min(eval_out['per_motion_success_rate'].values())) >= self.target_eval_success:
-                        print(f"[Converged+Eval OK] success={eval_out['success_rate']:.3f} "
-                              f"≥ {self.target_eval_success:.3f}")
                         break
-                    else:
-                        print(f"[Converged+Eval FAIL] success={eval_out['success_rate']:.3f} "
-                              f"< {self.target_eval_success:.3f}")
 
             if it * self.interval >= self.hard_cap:
                 eval_out = self.runner.rollout()
@@ -202,45 +200,71 @@ if __name__ == '__main__':
     log_dir, env_cfg, train_cfg = config(args)
 
     # 1.GVHMR
-    folder = args.folder
-    folder = Path(folder)
-    gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
-    if args.gvhmr_output is not None:
-        gvhmr_output_dir = args.gvhmr_output
-    else:
-        gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_output')
-    mp4_paths = sorted(
-        [p.resolve() for p in folder.glob("*.mp4")] +
-        [p.resolve() for p in folder.glob("*.MP4")]
-    )
-    print(f"Found {len(mp4_paths)} .mp4 files in {folder}")
-    for mp4_path in tqdm(mp4_paths):
-        command = ["python", "tools/demo/demo.py", "--video", str(mp4_path)]
-        command += ["--output_root", gvhmr_output_dir]
-        if args.static_cam:
-            command += ["-s"]
-        print(f"Running: {' '.join(command)}")
-        try:
-            subprocess.run(command, env=dict(os.environ), cwd=str(gvhmr_root), check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"[WARN] GVHMR failed on {mp4_path} (rc={e.returncode}). Skip this clip.")
-            continue
-
-    # 2.preprocess or retarget
-    motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
-    if args.task == 'smpl':
-        result = process_folder(gvhmr_output_dir, motion_data_dir)
-
-    env_cfg.motion.file = motion_data_dir
-
-    # 3.refinement
-    pipeline = MotionRefinePipeline(env_cfg, train_cfg, args, log_dir)
-    pipeline.run(batch_size_easy=18)
+    # folder = args.folder
+    # folder = Path(folder)
+    # gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
+    # if args.gvhmr_output is not None:
+    #     gvhmr_output_dir = args.gvhmr_output
+    # else:
+    #     gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_output')
+    # mp4_paths = sorted(
+    #     [p.resolve() for p in folder.glob("*.mp4")] +
+    #     [p.resolve() for p in folder.glob("*.MP4")]
+    # )
+    # print(f"Found {len(mp4_paths)} .mp4 files in {folder}")
+    # for mp4_path in tqdm(mp4_paths):
+    #     command = ["python", "tools/demo/demo.py", "--video", str(mp4_path)]
+    #     command += ["--output_root", gvhmr_output_dir]
+    #     if args.static_cam:
+    #         command += ["-s"]
+    #     print(f"Running: {' '.join(command)}")
+    #     try:
+    #         subprocess.run(command, env=dict(os.environ), cwd=str(gvhmr_root), check=True)
+    #     except subprocess.CalledProcessError as e:
+    #         print(f"[WARN] GVHMR failed on {mp4_path} (rc={e.returncode}). Skip this clip.")
+    #         continue
+    #
+    # # 2.preprocess (smpl) or retarget (gvhmr)
+    #
+    # if args.task == 'smpl':
+    #     motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
+    #     result = process_folder(gvhmr_output_dir, motion_data_dir)
+    #     env_cfg.motion.file = motion_data_dir
+    # elif args.task == 'g1':
+    #     motion_data_dir = os.path.join(log_dir, 'retarget_result')
+    #     retarget_result_render_dir = os.path.join(motion_data_dir, 'rendered_videos')
+    #     retarget_from_gvhmr(
+    #         input_dir=gvhmr_output_dir,
+    #         output_dir=motion_data_dir,
+    #         render_dir=retarget_result_render_dir,
+    #         num_jobs=1,
+    #     )
+    #     env_cfg.motion.file = motion_data_dir
+    # else:
+    #     raise NotImplementedError(f"Task {args.task} not implemented for refine.py")
+    #
+    # # 3.refinement
+    # pipeline = MotionRefinePipeline(env_cfg, train_cfg, args, log_dir)
+    # pipeline.run(batch_size_easy=18)
 
     # 4.rendering
     render_failed = False
     if args.task == 'smpl':
-        render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed', True, gvhmr_output_dir)
+        render(f'{log_dir}/rollouts/succeed', f'{log_dir}/renders/succeed'
+               , True, gvhmr_output_dir)
         if render_failed:
-            render(f'{log_dir}/rollouts/failed', f'{log_dir}/renders/failed', True, gvhmr_output_dir)
+            render(f'{log_dir}/rollouts/failed', f'{log_dir}/renders/failed'
+                   , True, gvhmr_output_dir)
+    elif args.task == 'g1':
+        pkl_files = [f for f in os.listdir(gvhmr_output_dir) if f.endswith('.pkl')]
+        if not pkl_files:
+            raise FileNotFoundError(f"No .pkl files found in {gvhmr_output_dir}")
+        for pkl_file in pkl_files:
+            file_path = os.path.join(gvhmr_output_dir, pkl_file)
+            motion_data = joblib.load(file_path)
+            # motion_traj = next(iter(motion_data.values()))
+            print(f"Rendering motion from: {pkl_file}")
+            vis_mujoco_offscreen_render(motion_data, motion_key=pkl_file, humanoid_model_file=train_cfg.asset.file,
+                                        out_dir=output_dir)
+
 #

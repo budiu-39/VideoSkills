@@ -23,9 +23,9 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_silu_new_eval_torque'  # 默认带 tiffness   ver 是 pd 的版本号
+        run_name = 'g1_refine_test'  # 默认带 tiffness   ver 是 pd 的版本号
         use_amp_runner = False
-        load_run = ''
+        load_run = 'g1_sota'
         # load_run = 'g1_universal'
         experiment_name = 'g1_ppo'
 
@@ -85,7 +85,7 @@ class G1RoughCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = True
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_test')
+        file = ('/home/miku/Documents/VideoSkills/output/g1_motion/kungfu_4/GVHMR')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/G1_motion/AMASS_split_mid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/AMASS_train')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/g1_motion/GVHMR_2_test.pkl')
@@ -147,8 +147,8 @@ class G1RoughCfg( LeggedRobotCfg ):
 
 
     class asset( LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_29dof.xml'
-        file_urdf = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1_description/g1_29dof.urdf'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1/g1_29dof.xml'
+        file_urdf = '{LEGGED_GYM_ROOT_DIR}/data/robots/g1/g1_29dof.urdf'
         name = "g1"
         foot_name = "ankle_roll"
         penalize_contacts_on = ["hip", "knee"]

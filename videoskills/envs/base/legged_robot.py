@@ -129,7 +129,10 @@ class LeggedRobot(BaseTask):
             ref_body_pos_cpu = (self.ref_body_pos - self.pos_offset['body']).detach().cpu().numpy()
             body_rot_cpu = self.body_rot.detach().cpu().numpy()
             ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
+            dof_pos_cpu = self.dof_pos.detach().cpu().numpy()
+            ref_dof_pos_cpu = self.ref_dof_pos.detach().cpu().numpy()
             done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
+
 
             # 取所有 still-alive 的环境索引
             alive_ids = np.where(done_flags_cpu == False)[0]
@@ -141,6 +144,8 @@ class LeggedRobot(BaseTask):
                     'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
                     'body_rot': body_rot_cpu[env_id].copy(),
                     'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
+                    'dof_pos': dof_pos_cpu[env_id].copy(),
+                    'ref_dof_pos': ref_dof_pos_cpu[env_id].copy(),
                 })
 
         self.reset_idx(env_ids)
@@ -853,6 +858,8 @@ class LeggedRobot(BaseTask):
             ref_pos = np.stack([f['ref_body_pos'] for f in data], axis=0)
             body_rot = np.stack([f['body_rot'] for f in data], axis=0)
             ref_rot = np.stack([f['ref_body_rot'] for f in data], axis=0)
+            dof_pos = np.stack([f['dof_pos'] for f in data], axis=0)
+            ref_dof_pos = np.stack([f['ref_dof_pos'] for f in data], axis=0)
 
             filename = f"motion_{motion_id}_env_{env_id}.npz"
             filepath = os.path.join(output_dir, filename)

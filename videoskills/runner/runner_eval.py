@@ -504,12 +504,16 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             gt_pos = np.stack([f["ref_body_pos"] for f in frames], axis=0)
             pred_rot = np.stack([f["body_rot"] for f in frames], axis=0)
             gt_rot = np.stack([f["ref_body_rot"] for f in frames], axis=0)
+            pred_dof_pos = np.stack([f["dof_pos"] for f in frames], axis=0)
+            gt_dof_pos = np.stack([f["ref_dof_pos"] for f in frames], axis=0)
 
             rollout = {
                 "pred_pos": pred_pos[:rollout_length],
                 "gt_pos": gt_pos[:rollout_length],
                 "pred_rot": pred_rot[:rollout_length],
                 "gt_rot": gt_rot[:rollout_length],
+                "pred_dof_pos": pred_dof_pos[:rollout_length],
+                "gt_dof_pos": gt_dof_pos[:rollout_length],
             }
             out_path = os.path.join(save_dir, f"{key}.pkl")
             joblib.dump(rollout, out_path, compress=True)
