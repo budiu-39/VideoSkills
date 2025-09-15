@@ -71,9 +71,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         #     self.running_mean_std_temp = None
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
-        self.rollouts_path = os.path.join(log_dir, "rollouts")
-        self.rollouts_succeed_path = os.path.join(log_dir, "rollouts","succeed")
-        self.rollouts_failed_path = os.path.join(log_dir, "rollouts", "failed")
+        self.rollouts_path = os.path.join(log_dir, "refine_results")
+        self.rollouts_succeed_path = os.path.join(log_dir, "refine_results","succeed")
+        self.rollouts_failed_path = os.path.join(log_dir, "refine_results", "failed")
         os.makedirs(self.eval_output_path, exist_ok=True)
         os.makedirs(self.rollouts_succeed_path, exist_ok=True)
         os.makedirs(self.rollouts_failed_path, exist_ok=True)
@@ -538,9 +538,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         # —— 失败 keys 更新采样权重（可选，与你 eval 保持一致） —— #
         if len(failed_keys) > 0:
-            failed_key_path = os.path.join(self.eval_output_path,
-                                           f"refine_failed_keys_iter{self.current_learning_iteration}.pkl")
-            joblib.dump(failed_keys, failed_key_path, compress=True)
+            # failed_key_path = os.path.join(self.eval_output_path,
+            #                                f"refine_failed_keys_iter{self.current_learning_iteration}.pkl")
+            # joblib.dump(failed_keys, failed_key_path, compress=True)
             motion_lib.update_soft_sampling_weight(failed_keys)
             motion_sampling_state_path = os.path.join(self.log_dir, f"motion_sampling_state.pkl")
             motion_lib.export_sampling_state(motion_sampling_state_path)

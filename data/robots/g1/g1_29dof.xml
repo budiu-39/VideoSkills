@@ -1,7 +1,7 @@
 <mujoco model="g1_29dof">
   <compiler angle="radian" meshdir="meshes"/>
   <visual>
-  <global offwidth="1280" offheight="720"/>
+  <global offwidth="1920" offheight="1080"/>
   </visual>
   <default>
     <joint type="hinge" damping="0" stiffness="0" limited="true"/>
