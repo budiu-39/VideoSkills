@@ -59,6 +59,7 @@ class MotionRefinePipeline:
                 config={**vars(self.args), **class_to_dict(self.train_cfg), **class_to_dict(self.env_cfg)}
             )
 
+        self.runner.save_interval = 1000000 # refine 不存 checkpoint
         self.runner.load()
         self.tmp_root = os.path.join(self.log_dir, "_tmp_refine_batches")
         os.makedirs(self.tmp_root, exist_ok=True)
@@ -68,9 +69,17 @@ class MotionRefinePipeline:
         easy_files, hard_files = self.pre_eval_all()
 
         # 分批 refine（easy 走批、hard 逐个）
-        group_size = min(batch_size_easy, self.runner.env.num_envs)
-        self.refine_easy(easy_files, group_size)
-        self.refine_hard(hard_files)
+        if getattr(self.args, "sequential", False) or (hasattr(self.args, "accelerate") and not self.args.accelerate):
+            # 顺序模式（不加速）：easy + hard 全部逐个 refine
+            files = easy_files + hard_files
+            print(f"[Refine] Sequential mode ON (no acceleration). Total motions: {len(files)}")
+            self.refine_hard(files)
+        else:
+            # 加速模式（默认）：批量跑 easy + 单个跑 hard
+            group_size = min(batch_size_easy, self.runner.env.num_envs)
+            print(f"[Refine] Accelerated mode (default). Easy batch size = {group_size}")
+            self.refine_easy(easy_files, group_size)
+            self.refine_hard(hard_files)
 
         if wandb.run is not None:
             wandb.log({"Refine/easy_count": len(easy_files), "Refine/hard_count": len(hard_files)})
@@ -176,7 +185,10 @@ class MotionRefinePipeline:
                 eval_out = self.runner.rollout()
                 if isinstance(eval_out, dict) and 'per_motion_success_rate' in eval_out:
                     if float(min(eval_out['per_motion_success_rate'].values())) >= self.target_eval_success:
+                        print(f"[Converged+Eval OK] min success={min(eval_out['per_motion_success_rate'].values()):.3f} ≥ {self.target_eval_success:.3f}")
                         break
+                    else:
+                        print(f"[Converged+Eval FAIL] min success={min(eval_out['per_motion_success_rate'].values()):.3f} < {self.target_eval_success:.3f}")
 
             if it * self.interval >= self.hard_cap:
                 eval_out = self.runner.rollout()
@@ -190,6 +202,25 @@ def config(args):
 
     return log_dir, env_cfg, train_cfg
 
+def render(log_dir, render_failed=False):
+    rollout_dir = os.path.join(log_dir, 'refine_results')
+    rollout_success_dir = os.path.join(rollout_dir, 'succeed')
+    gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
+    if args.task == 'smpl':
+        from scripts.render.constrast_render import render as smpl_render
+        smpl_render(rollout_success_dir, f'{rollout_dir}/render_results/succeed', True, gvhmr_output_dir)
+        if render_failed:
+            rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
+            smpl_render(rollout_failed_dir, f'{rollout_dir}/render_results/failed', True, gvhmr_output_dir)
+    elif args.task == 'g1' and os.environ.get("DISPLAY", "") != "":
+        from scripts.render.vis_motion_rollout import mujoco_render as g1_render
+        humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
+        g1_render(rollout_success_dir, f'{rollout_dir}/render_results/succeed', True, gvhmr_output_dir, \
+                      humanoid_model_file)  #, retarget_result_render_dir)
+        if render_failed:
+            rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
+            g1_render(rollout_failed_dir, f'{rollout_dir}/render_results/failed', True,
+                          gvhmr_output_dir, humanoid_model_file) #, retarget_result_render_dir)
 
 if __name__ == '__main__':
     args = get_args()
@@ -197,7 +228,11 @@ if __name__ == '__main__':
         if os.environ.get("DISPLAY", "") == "":
             os.environ["PYOPENGL_PLATFORM"] = "egl"
             os.environ["PYGLET_HEADLESS"] = "True"
+
     log_dir, env_cfg, train_cfg = config(args)
+    if args.render_run:
+        render(args.render_run)
+        sys.exit(0)
 
     # 1.GVHMR
     folder = args.folder
@@ -206,7 +241,7 @@ if __name__ == '__main__':
     if args.gvhmr_output is not None:
         gvhmr_output_dir = args.gvhmr_output
     else:
-        gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_result')
+        gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
     mp4_paths = sorted(
         [p.resolve() for p in folder.glob("*.mp4")] +
         [p.resolve() for p in folder.glob("*.MP4")]
@@ -232,12 +267,14 @@ if __name__ == '__main__':
         env_cfg.motion.file = motion_data_dir
     elif args.task == 'g1':
         from scripts.retarget.fit_smpl_motion import retarget_from_gvhmr
-        motion_data_dir = os.path.join(log_dir, 'retarget_result')
+        motion_data_dir = os.path.join(log_dir, 'retarget_results')
         retarget_result_render_dir = os.path.join(motion_data_dir, 'rendered_videos')
+        if os.environ.get("DISPLAY", "") == "":
+            retarget_result_render_dir = None
         retarget_from_gvhmr(
             input_dir=gvhmr_output_dir,
             output_dir=motion_data_dir,
-            # render_dir=retarget_result_render_dir,
+            render_dir=retarget_result_render_dir,
             num_jobs=1,
         )
         env_cfg.motion.file = motion_data_dir
@@ -251,21 +288,7 @@ if __name__ == '__main__':
 
     # 4.rendering
     render_failed = False
-    rollout_success_dir = os.path.join(log_dir, 'refine_results/succeed')
-    if args.task == 'smpl':
-        from scripts.render.constrast_render import render
-        render(rollout_success_dir, f'{rollout_success_dir}/renders/succeed', True, gvhmr_output_dir)
-        if render_failed:
-            rollout_failed_dir = os.path.join(log_dir, 'refine_result/failed')
-            render(rollout_failed_dir, f'{rollout_success_dir}/renders/failed', True, gvhmr_output_dir)
-    # elif args.task == 'g1':
-    #     from scripts.render.vis_motion_rollout import mujoco_render
-    #     humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
-    #     mujoco_render(rollout_success_dir, f'{rollout_success_dir}/renders/succeed', True, gvhmr_output_dir, \
-    #                   humanoid_model_file, retarget_result_render_dir)
-    #     if render_failed:
-    #         rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
-    #         mujoco_render(rollout_failed_dir, f'{rollout_success_dir}/renders/failed', True,
-    #                       gvhmr_output_dir, humanoid_model_file, retarget_result_render_dir)
+    render(log_dir)
+
 
 

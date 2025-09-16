@@ -193,6 +193,10 @@ def get_args():
         {"name": "--folder", "type": str, "default": None, "help": "folder of videos for demo"},
         {"name": "--static_cam", "action": "store_true", "default": False, "help": "If true, skip DPVO"},
         {"name": "--gvhmr_output", "type": str, "default": None, "help": "folder of gvhmr outputs"},
+
+        # Refinepipeline
+        {"name": "--accelerate", "action": "store_true", "default": False, "help": "Use batched accelerated refining for easy motions (default: True)."},
+        {"name": "--render_run", "type": str, "default": None, "help": "Only render the motion from certain run without refining (default: False)."},
     ]
     # parse arguments
     args = gymutil.parse_arguments(

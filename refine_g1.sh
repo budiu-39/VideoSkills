@@ -32,5 +32,5 @@ ls $WORK # not necessary just here to illustrate that $WORK is available here
 # - determine commandline arguments for `srun` calls
 
 # Compute Phase
-srun python videoskills/refine.py --task=g1 --run_name=refine_test_2 --folder=demo/kungfu_136 --static_cam --headless --resume --use_wandb
+srun python videoskills/refine.py --task=g1 --folder=/mnt/lustre/work/ponsmoll/pba936/VideoSkills/demo/kungfu_136 --static_cam --headless --resume --use_wandb --run_name=kungfu_136
 # srun will automatically pickup the configuration defined via `#SBATCH` and `sbatch` command line arguments
