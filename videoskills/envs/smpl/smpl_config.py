@@ -25,7 +25,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
-        load_run = 'phc_sota'
+        load_run = 'phc_universal'
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
