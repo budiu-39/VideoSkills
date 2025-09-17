@@ -71,28 +71,24 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
 
 - `gvhmr_results/`  
   Motion Estimator 预测的人体运动结果
-
 - `*.pt`  
   训练得到的机器人控制模型（checkpoint 文件）
-
 - `refine_results/`  
   去噪后的运动结果  
-  
 - `render_results/`  
   渲染好的对比视频
 ---
 
 ## 训练 PHC 模型（通用模型）
 
-### G1
+
 
 ```bash
+# G1 robot
 python videoskills/train.py --task=g1
-```
 
-### SMPL
 
-```bash
+# SMPL robot
 python videoskills/train.py --task=smpl
 ```
 
