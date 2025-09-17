@@ -162,6 +162,7 @@ logs
 
 data/smpl
 dataset/
+!GVHMR/hmr4d/dataset
 .git/
 
 output/
