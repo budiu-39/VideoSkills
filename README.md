@@ -99,6 +99,7 @@ python videoskills/train.py --task=smpl
 
 ## 项目目录结构
 
+```bash
 project_root/
 ├── data/                         # 数据与模型
 │   ├── retarget/                 # 重定向过程数据
@@ -126,5 +127,5 @@ project_root/
 ├── rsl_rl/                       # 强化学习框架（RSL-RL）
 │
 └── README.md
-
+```
 
