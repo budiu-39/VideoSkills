@@ -1,167 +1,98 @@
-# README
+# VideoSkills
 
-## Environment Setup
+端到端的 pipeline：通过输入带有人类的运动视频，控制机器人做出相同的动作。  
 
-### 1. Create Conda Environment and Install Dependencies
+
+![Demo](demo/dance.gif)
+*Unitree G1 通过视频学习如何跳舞*
+![Demo](demo/gym.gif)
+*运动数据去噪功能：相较于Motion Estimator的输出（红色人物角色），去噪后的结果（绿色人物）更加稳定和真实*
+
+## 功能特性
+
+| 功能                               | 支持情况 |
+|------------------------------------|----------|
+| 训练通用运动模型                   | ✅       |
+| 训练针对单个/多个运动的专家模型     | ✅       |
+| 运动重定向                         | ✅       |
+| 运动数据去噪/改善                       | ✅       |
+| 通过语言控制运动                   | 🔜 Coming soon |
+
+
+## 支持的机器人平台
+
+| 平台        | 支持情况   |
+|-------------|------------|
+| SMPL robot  | ✅          |
+| Unitree G1  | ✅          |
+| Unitree H1  | 🔜 Coming soon |
+
+---
+
+## Setup
+
 ```bash
-git clone git@github.com:budiu-39/GVHMR_PHC.git
-cd GVHMR_PHC
+# 创建并激活环境
+conda create -n isaac python=3.8 -y
+conda activate isaac
 
-conda create -n isaac python=3.8
+# 安装依赖模块
+for d in . rsl_rl GVHMR isaacgym/python; do
+  (cd "$d" && pip install -e .)
+done
+
 pip install -r requirement.txt
+````
 
-# Optionally set CUDA path if necessary
-# export CUDA_HOME=/usr/local/cuda-11.8/
-# export PATH=$PATH:/usr/local/cuda-11.8/bin/
-```
+⚠️ 注意：安装 `numpy` 时可能会报不兼容警告，但**不影响使用**。
 
-### 2. Setup GVHMR Model and Dependencies
-```bash
-cd GVHMR
-pip install -e .
-
-# cd third-party/DPVO
-# wget https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.zip
-# unzip eigen-3.4.0.zip -d thirdparty && rm -rf eigen-3.4.0.zip
-
-mkdir inputs
-mkdir outputs
-mkdir -p inputs/checkpoints
-```
-
-1. You need to register to download [SMPL](https://smpl.is.tue.mpg.de/) and [SMPLX](https://smpl-x.is.tue.mpg.de/). Place the models in the following structure:
-
-```text
-GVHMR/inputs/checkpoints/
-├── body_models/smplx/
-│   └── SMPLX_{GENDER}.npz
-└── body_models/smpl/
-    └── SMPL_{GENDER}.pkl
-```
-
-2. Download other pretrained models from [Google Drive](https://drive.google.com/drive/folders/1eebJ13FUEXrKBawHpJroW0sNSxLjh9xD?usp=drive_link):
-```text
-GVHMR/inputs/checkpoints/
-├── dpvo/dpvo.pth
-├── gvhmr/gvhmr_siga24_release.ckpt
-├── hmr2/epoch=10-step=25000.ckpt
-├── vitpose/vitpose-h-multi-coco.pth
-└── yolo/yolov8x.pt
-```
-
-### 3. Setup PHC Model and Dependencies
-You need to register to download [SMPL](https://smpl.is.tue.mpg.de/). Place the models in the following structure:
-
-```text
-phc/data
-├── smpl
-    ├── SMPL_FEMALE.pkl
-    ├── SMPL_NEUTRAL.pkl
-    ├── SMPL_MALE.pkl
-```
-### 4. Install Isaac Gym
-Download and install [Isaac Gym Preview 4](https://developer.nvidia.com/isaac-gym).
-```bash
-cd IsaacGym_Preview_4_Package/isaacgym/python
-pip install -e .
-```
-
-### 5. Download Pretrained G1/H1 Universal Models
-```bash
-mkdir -p output
-gdown https://drive.google.com/uc?id=1MGwaxl3CKnux9UdcwfXBefRh3U6BpIgC -O output/pretrained_model.zip
-unzip -o output/pretrained_model.zip -d output/
-rm output/pretrained_model.zip
-```
-
-## Obtaining Original Motion Data
-
-### 1. From GVHMR (with test video)
-```bash
-cd GVHMR
-python tools/demo/demo_folder.py -f inputs/demo/ -d ../output/GVHMR_output/demo
-```
-
-### 2. From Dataset (e.g., AMASS)
-Download motion dataset (e.g., AMASS) from official sources or provided links.
-
-## Preprocessing and Retargeting
-
-### Step 1: Fit SMPL Shape
-```bash
-python scripts/data_process/fit_smpl_shape.py robot=unitree_h1_fitting
-python scripts/data_process/fit_smpl_shape.py robot=unitree_g1_fitting
-```
-
-### Step 2: Preprocess Motion
-- From AMASS:
-```bash
-python scripts/data_process/fit_smpl_motion.py robot=unitree_h1_fitting +num_jobs=16 +amass_root=../AMASS +robot.process_split=train
-python scripts/data_process/fit_smpl_motion.py robot=unitree_g1_fitting +num_jobs=16 +amass_root=../AMASS +robot.process_split=train
-```
-- From GVHMR output:
-```bash
-# For SMPL Robot
-python scripts/convert_gvhmr_isaac.py --folder_path=GVHMR/outputs/motionx/test_data_136 --output_path=dataset/smpl_motion/136_test
-```
-
-Retargeted motions will be stored in `output/Unitree_motion`.
-
-## Train Universal Model
-
-Note: Requires preprocessed AMASS motion data.
+### 下载代码与模型
 
 ```bash
-# For SMPL Robot
-python videoskills/train.py --task=smpl --use_wandb --headless
-
-# For Unitree G1
-python videoskills/train.py --task=g1 --use_wandb --headless
+git clone git@github.com:budiu-39/VideoSkills.git
+hf download Budiu39/VideoSkills --local-dir ./VideoSkills
 ```
 
-Tips:
-- Use `--dev` at the end of the command for development/debug mode.
-- If you encounter CUDA OOM, reduce `env.num_envs` (e.g., from 2048 to 512).
+---
 
-## Refine Motion Segments
-```bash
-python videoskills/refine.py --task=smpl --headless --use_wandb --resume
-```
+## Refine
+
+运行 refine 代码（指定视频文件夹位置为 `--folder` 参数）。
+
+### SMPL robot
+
+（总共 2 个运动片段，预计需要 5–10 分钟）
 
 ```bash
-python videoskills/refine.py --task=g1 --headless --use_wandb --resume
+python videoskills/refine.py --task=smpl --folder=demo/test_2 --static_cam --headless --accelerate
 ```
 
-## Visualize Refined Results
+### G1 robot
 
-### Render Rollouts (SMPL robots):
+（总共 2 个运动片段，预计需要 5–10 分钟）
+
 ```bash
-python scripts/render/constrast_render.py --pkl_file /home/miku/Documents/VideoSkills/output/rollout/refinement --use_offscreen
+python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headless --accelerate
 ```
 
-### Render Rollouts (Unitree robots):
+输出结果：
+
+* `logs/smpl_ppo/<对应 run>/refine_results` 内为 refine 结果
+* `refine_results/renders` 内为渲染视频
+
+---
+
+## 训练 PHC 模型
+
+### G1
+
 ```bash
-python scripts/vis_motion_rollout.py --motion_file=output/HumanoidRef/h1_universal_power0005/rollouts --humanoid_type=h1
+python videoskills/train.py --task=g1
 ```
 
-Results are saved to `output/render_out`.
+### SMPL
 
-
-## `output/` Directory Structure
-
-```text
-output/
-├── GVHMR_output/               # Output from the GVHMR model (e.g., hmr4d_results.pt, raw motion sequences)
-├── HumanoidIm/                 # Output from the Universal Tracker task
-│   ├── checkpoint              # Model checkpoints
-│   ├── rollout/                # Rollout results
-│   └── logs/                   # Training and evaluation logs
-├── HumanoidRef/                # Output from the Refine task
-│   ├── checkpoint/             # Expert checkpoints for each motion segment
-│   ├── rollout/                # Refined motion rollouts
-│   └── logs/
-├── Humanoid_motion/            # Preprocessed SMPL humanoid motion files
-├── Unitree_motion/             # Preprocessed Unitree robot motion files
-└── render_out/                 # Rendered rollout videos or images
+```bash
+python videoskills/train.py --task=smpl
 ```
 

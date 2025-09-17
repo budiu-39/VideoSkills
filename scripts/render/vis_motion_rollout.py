@@ -91,7 +91,7 @@ def _render_mujoco_offscreen_single(motion_traj: dict,
                                     output_video_path: str,
                                     humanoid_model_file: str,
                                     fps: int = 30,
-                                    width: int = 1920,
+                                    width: int = 1080,
                                     height: int = 1080):
     """
     依据 motion_traj 渲染单个视频（离屏）。motion_traj 需包含：

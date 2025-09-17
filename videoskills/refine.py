@@ -208,22 +208,23 @@ def render(log_dir, render_failed=False):
     gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
     if args.task == 'smpl':
         from scripts.render.constrast_render import render as smpl_render
-        smpl_render(rollout_success_dir, f'{rollout_dir}/render_results/succeed', True, gvhmr_output_dir)
+        smpl_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True, gvhmr_output_dir)
         if render_failed:
             rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
-            smpl_render(rollout_failed_dir, f'{rollout_dir}/render_results/failed', True, gvhmr_output_dir)
+            smpl_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True, gvhmr_output_dir)
     elif args.task == 'g1' and os.environ.get("DISPLAY", "") != "":
         from scripts.render.vis_motion_rollout import mujoco_render as g1_render
         humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
-        g1_render(rollout_success_dir, f'{rollout_dir}/render_results/succeed', True, gvhmr_output_dir, \
+        g1_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True, gvhmr_output_dir, \
                       humanoid_model_file)  #, retarget_result_render_dir)
         if render_failed:
             rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
-            g1_render(rollout_failed_dir, f'{rollout_dir}/render_results/failed', True,
+            g1_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True,
                           gvhmr_output_dir, humanoid_model_file) #, retarget_result_render_dir)
 
 if __name__ == '__main__':
     args = get_args()
+    args.resume = True
     if args.headless:
         if os.environ.get("DISPLAY", "") == "":
             os.environ["PYOPENGL_PLATFORM"] = "egl"
