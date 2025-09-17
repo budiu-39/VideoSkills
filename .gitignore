@@ -170,7 +170,7 @@ GVHMR/inputs
 #GVHMR/inputs/checkpoints
 GVHMR/outputs
 
-.sh
+*.sh
 
 demo/results
 demo/gym_11
