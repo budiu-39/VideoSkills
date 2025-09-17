@@ -46,8 +46,6 @@ for d in . rsl_rl GVHMR isaacgym/python; do
   (cd "$d" && pip install -e .)
 done
 
-
-
 pip install -r requirement.txt
 ```
 
