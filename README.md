@@ -1,6 +1,6 @@
 # VideoSkills
 
-端到端流程：输入人类运动视频，输出控制机器人执行相同动作，兼容多种机器人平台。目前已经实现了仿真部分。  
+端到端流程：输入人类运动视频，输出控制机器人执行相同动作，兼容多种机器人平台。  
 
 ## 功能特性
 
@@ -68,7 +68,6 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
 
 
 **输出结果说明**：所有结果保存在 `logs/<smpl/g1>_ppo/<run_name>` 目录下：
-
 - `gvhmr_results/`  
   Motion Estimator 预测的人体运动结果
 - `*.pt`  
