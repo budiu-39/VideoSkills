@@ -1,6 +1,6 @@
 # VideoSkills
 
-这是一个端到端的流程，输入带有人类运动的视频，可以控制机器人做出相同的动作，兼容多种机器人平台。目前已经实现了仿真部分。  
+端到端流程：输入人类运动视频，输出控制机器人执行相同动作，兼容多种机器人平台。目前已经实现了仿真部分。  
 
 ## 功能特性
 
@@ -28,7 +28,6 @@ Unitree G1 通过视频学习如何跳舞
 | Unitree G1  | ✅          |
 | Unitree H1  | 🔜 Coming soon |
 
----
 
 ## Setup
 
@@ -52,12 +51,12 @@ done
 pip install -r requirement.txt
 ```
 
-⚠️ 注意：安装 `numpy` 时可能会报不兼容警告，但**不影响使用**。
+⚠️ 注意：安装 `numpy` 时可能会报不兼容警告，但不影响使用。
 
 
 
 ## 使用说明
-运行以下代码，通过 `--task` 指定 机器人平台（smpl/g1),  `--folder` 指定视频。
+运行以下代码，通过 `--task` 指定机器人平台（smpl/g1）,  `--folder` 指定视频所在的文件夹。
 
 ```bash
 
@@ -70,8 +69,19 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
 ```
 
 
-输出结果在 `logs/<smpl/g1>_ppo/<run_name>`内，`gvhmr_results` 为 Motion Estimator 预测的运动，pt 文件为训练得到的机器人控制模型， `renders_results` 为去噪后的运动结果， `renders_results` 文件夹内为渲染好的对比视频。
+**输出结果说明**：所有结果保存在 `logs/<smpl/g1>_ppo/<run_name>` 目录下：
 
+- `gvhmr_results/`  
+  Motion Estimator 预测的人体运动结果
+
+- `*.pt`  
+  训练得到的机器人控制模型（checkpoint 文件）
+
+- `refine_results/`  
+  去噪后的运动结果  
+  
+- `render_results/`  
+  渲染好的对比视频
 ---
 
 ## 训练 PHC 模型（通用模型）
@@ -87,4 +97,36 @@ python videoskills/train.py --task=g1
 ```bash
 python videoskills/train.py --task=smpl
 ```
+
+
+## 项目目录结构
+
+project_root/
+├── data/                         # 数据与模型
+│   ├── retarget/                 # 重定向过程数据
+│   ├── robots/                   # MuJoCo 使用的 MJCF/XML 模型文件
+│   └── smpl/                     # SMPL 参数与模型文件
+│
+│
+├── logs/                         # 训练日志、检查点、rollout 与渲染结果
+│
+├── scripts/                      # 数据预处理与工具代码（与主代码分开）
+│   ├── preprocess/               # 数据转换与预处理工具
+│   ├── retarget/                 # 重定向工具
+│   ├── render/                   # 渲染与结果可视化
+│   └── poselib/                  # 动作与骨架操作工具
+│
+├── videoskills/                  # 核心实现
+│   ├── envs/                     # 任务逻辑、训练参数
+│   ├── learning/                 # 模型结构定义（拓展部分，主体在rsl_rl)
+│   ├── utils/                    # 工具模块
+│   ├── runner/                   # 训练主流程
+│   └── train.py / refine.py      # 入口脚本 / 启动脚本
+│
+├── GVHMR/                        # 动作估计模块（GVHMR）
+│
+├── rsl_rl/                       # 强化学习框架（RSL-RL）
+│
+└── README.md
+
 
