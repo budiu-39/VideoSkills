@@ -39,7 +39,7 @@ conda activate isaac
 # 下载代码与模型（提供在SMPL和G1机器人平台上训练好的PHC模型）
 
 git clone git@github.com:budiu-39/VideoSkills.git
-hf download Budiu39/VideoSkills --local-dir ./VideoSkills
+hf download VideoSkills/VideoSkills --local-dir ./VideoSkills
 
 # 安装依赖模块
 for d in . rsl_rl GVHMR isaacgym/python; do

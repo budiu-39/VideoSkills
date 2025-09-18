@@ -77,3 +77,4 @@ lapx
 numba
 gdown
 pypose
+pyrender

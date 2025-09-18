@@ -2,7 +2,7 @@ from smpl_sim.smpllib.smpl_joint_names import SMPL_BONE_ORDER_NAMES, SMPL_MUJOCO
 from scipy.spatial.transform import Rotation as sRot
 import torch
 
-from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 
 mujoco_2_smpl = [SMPL_MUJOCO_NAMES.index(q) for q in SMPL_BONE_ORDER_NAMES if q in SMPL_MUJOCO_NAMES]
 
