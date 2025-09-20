@@ -301,20 +301,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         success_rate = num_success / num_total
         mean_rew = np.mean(total_rewards)
 
-        # if self.rollout:
-        #     rollout = defaultdict(list)
-        #     rollout['pred_pos'] = pred_pos_all
-        #     rollout['gt_pos'] = gt_pos_all
-        #     rollout['pred_rot'] = pred_rot_all
-        #     rollout['gt_rot'] = gt_rot_all
-        #     if success_rate == 1.0:
-        #         out_path = os.path.join(self.rollouts_succeed_path,
-        #                                 f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
-        #     else:
-        #         out_path = os.path.join(self.rollouts_failed_path,
-        #                                 f"{motion_lib._motion_keys[motion_ids[0]]}.pkl")
-        #     joblib.dump(rollout, out_path, compress=True)
-
         # save failed keys and update soft sampling weight
         failed_keys_unique = sorted(set(failed_keys))
         failed_key_path = os.path.join(self.eval_output_path, f"failed_keys_iter{self.current_learning_iteration}.pkl")
