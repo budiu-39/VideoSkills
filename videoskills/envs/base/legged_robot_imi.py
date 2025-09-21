@@ -6,13 +6,11 @@ import torch
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot import LeggedRobot
-from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree
-from videoskills.utils.motionlib.motion_lib import MotionLib
+from utils.motion_lib import MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
 from torch import Tensor
-from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 
 
 class LeggedRobotImi(LeggedRobot):

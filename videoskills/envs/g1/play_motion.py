@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-from utils.motionlib.motion_lib import MotionLib
+from utils.motion_lib import MotionLib
 from isaacgym import gymapi, gymtorch, gymutil
 from envs.g1.g1_config import G1RoughCfg
 from videoskills import LEGGED_GYM_ROOT_DIR

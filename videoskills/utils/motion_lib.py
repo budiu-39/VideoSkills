@@ -4,7 +4,7 @@ from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonMotion, Skelet
 from videoskills.utils.poselib.core.rotation3d import *
 from isaacgym.torch_utils import *
 import xml.etree.ElementTree as ET
-from .. import torch_utils
+from utils import torch_utils
 import torch
 import joblib
 from tqdm import tqdm

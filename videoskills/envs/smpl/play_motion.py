@@ -4,7 +4,7 @@ import os
 import numpy as np
 
 from isaacgym import gymapi, gymtorch, gymutil
-from videoskills.utils.motionlib.motion_lib import MotionLib
+from utils.motion_lib import MotionLib
 from videoskills.envs.smpl.smpl_config import SMPLRobotCfg
 from videoskills import LEGGED_GYM_ROOT_DIR
 import torch

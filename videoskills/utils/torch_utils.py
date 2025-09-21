@@ -29,7 +29,7 @@
 from isaacgym.torch_utils import *
 import torch
 from torch import nn
-import videoskills.utils.motionlib.pytorch3d_transforms as ptr
+import utils.pytorch3d_transforms as ptr
 import torch.nn.functional as F
 
 

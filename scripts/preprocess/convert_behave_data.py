@@ -153,14 +153,12 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "BEHAVE_processed"
+    output_dir = "dataset/smpl_motion/behave_small_obj"
 
-    process_split = args.process_split
-    upright_start = True
     robot_cfg = {
         "mesh": False,
         "rel_joint_lm": True,
-        "upright_start": upright_start,
+        "upright_start": True,
         "remove_toe": False,
         "real_weight": True,
         "real_weight_porpotion_capsules": True,
@@ -177,56 +175,19 @@ if __name__ == "__main__":
         "actuator_params": {},
         "model": "smpl",
     }
-
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/smpl")
-    if not osp.isdir(args.path):
-        print("Please specify BEHAVE data path")
-        import ipdb;
-        ipdb.set_trace()
 
     # BEHAVE dataset structure: each sequence contains SMPL fits and object interactions
     # We look for sequences with SMPL fits
-    all_sequences = glob.glob(f"{args.path}/**/**/", recursive=True)
+    all_sequences = glob.glob(f"{args.path}/**/", recursive=True)
     behave_full_motion_dict = {}
-
-    # BEHAVE splits can be based on subjects or sequences
-    behave_splits = {
-        'valid': ['s1', 's2'],  # Example split by subjects
-        'test': ['s3'],
-        'train': ['s4', 's5', 's6', 's7', 's8']  # Remaining subjects
-    }
-
-    length_acc = []
-    fix_height_keys = []
-    fix_height_values = []
-
-    processed_count = 0
 
     for sequence_dir in tqdm(all_sequences):
         if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")):
             continue
 
         print("Processing", sequence_dir)
-
-        # Extract subject and sequence info from path
-        # path_parts = sequence_dir.strip('/').split("/")
-        # subject_id = None
-        # sequence_id = None
-        #
-        # for part in path_parts:
-        #     if part.startswith('s') and part[1:].isdigit():
-        #         subject_id = part
-        #     elif 'seq' in part.lower():
-        #         sequence_id = part
-        #
-        # if subject_id is None:
-        #     print(f"Could not determine subject from path: {sequence_dir}")
-        #     continue
-        #
-        # # Check if this subject belongs to our current split
-        # if subject_id not in behave_splits.get(process_split, []):
-        #     print(f"Skipping {subject_id} (not in {process_split} split)")
-        #     continue
 
         # Load BEHAVE sequence data
         try:
@@ -266,11 +227,8 @@ if __name__ == "__main__":
             print(f"Sequence too short ({N} frames), skipping")
             continue
 
-        # Convert to SMPL mujoco format
-        smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
-
+        # 模型
         D = pose_aa.shape[1]
-
         if D == 156:
             # SMPL-H：global(3) + body(23*3=69) + hands(30*3=90?) → 常见为 156（有的实现手是30*3=90）
             # 只保留 SMPL body（含 global），忽略手部，得到 72 维
@@ -285,36 +243,27 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unexpected SMPL pose dim {D}. Expect 69/72/156.")
 
-        # Use neutral gender and zero betas for consistency
-        beta = np.zeros(10)
-        gender_number, beta[:], gender = [0], 0, "neutral"
 
-        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
-
-        # 在生成 pose_aa_body72 之后插入（可选）
+        # 世界坐标系旋转
         R1 = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
         pose_aa_body72[:, :3], root_trans = rotate_root_and_trans(pose_aa_body72[:, :3], root_trans, R1)
         root_trans_offset = torch.from_numpy(root_trans).float() + skeleton_tree.local_translation[0]
 
+        # 关节重排
         pose_aa_mj = pose_aa_body72.reshape(N, 24, 3)
-
-        # 再做你原来的关节重排
         smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
         pose_aa_mj = pose_aa_mj[:, smpl_2_mujoco]
 
         # 轴角 -> 四元数（注意 scipy 返回 [x,y,z,w]）
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
-
-
         smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
-
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
             torch.from_numpy(pose_quat),
             root_trans_offset,
             is_local=True)
 
-        # Fix height to ground
+        # 高度修正
         frame_check = 100
         height_tolorance = 0
         fix_height = True  # 开启更稳妥
@@ -332,29 +281,73 @@ if __name__ == "__main__":
                 diff_fix = feet_z.min().item()
                 root_trans_offset[..., -1] -= diff_fix
 
-                key_str = os.path.basename(os.path.normpath(sequence_dir))
-                fix_height_keys.append(key_str)
-                fix_height_values.append(diff_fix)
 
+
+
+        # 局部坐标系旋转
         if robot_cfg['upright_start']:
             pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
                                 sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
-
             new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
                                                                             torch.from_numpy(pose_quat_global),
                                                                             root_trans_offset, is_local=False)
+        fps = 30
+        motion = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
 
-        fps = 30  # BEHAVE typically recorded at 30 FPS
+        # 物体修正
+        obj_angles = sequence_data.get('object', {}).get('angles', None)
+        obj_trans = sequence_data.get('object', {}).get('trans', None)
+        obj_times = sequence_data.get('object', {}).get('frame_times', None)
+        obj_angles_new, obj_trans_new = rotate_root_and_trans(obj_angles, obj_trans, R1)
 
-        motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+        obj_rot_xyzw = sRot.from_rotvec(obj_angles_new).as_quat().astype(np.float32)
+        # 位置
+        obj_pos = obj_trans_new.astype(np.float32)
+        # 速度
+        dt = 1.0 / fps
+        obj_pos_vel = np.zeros_like(obj_pos)
+        obj_pos_vel[1:] = (obj_pos[1:] - obj_pos[:-1]) / dt
 
-        # Construct save path
-        rel_path = osp.relpath(sequence_dir, args.path)
-        save_path = osp.join(output_dir, rel_path, "motion.npy")
-        os.makedirs(osp.dirname(save_path), exist_ok=True)
+        # 角速度
+        def angular_velocity_from_quats_world(q_xyzw, dt):
+            T = len(q_xyzw)
+            omega_w = np.zeros((T, 3), dtype=np.float32)
+            if T <= 1: return omega_w
+            r = sRot.from_quat(q_xyzw)
+            for t in range(1, T):
+                dq = r[t - 1].inv() * r[t]
+                rotvec = dq.as_rotvec()
+                omega_local = rotvec / dt
+                R_world = r[t].as_matrix()
+                omega_w[t] = (R_world @ omega_local).astype(np.float32)
+            return omega_w
+
+        obj_rot_vel = angular_velocity_from_quats_world(obj_rot_xyzw, dt)
+
+
+
+
 
         # Save motion object
-        motion_obj.to_file(save_path)
+        motion.to_dict( )  # Ensure compatibility
+
+        motion_dict = motion.to_dict()  # 与 motion.to_file() 里保存的结构一致
+        bundle = {
+            "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
+            "object": {
+                "obj_pos": obj_pos,
+                "obj_rot": obj_rot_xyzw,  # xyzw —— Isaac Gym 对齐
+                "obj_pos_vel": obj_pos_vel,
+                "obj_rot_vel": obj_rot_vel,
+            }
+        }
+
+        # Construct save path
+        key_str = os.path.basename(os.path.normpath(sequence_dir))
+        rel_path = osp.relpath(sequence_dir, args.path)
+        save_path = osp.join(output_dir, rel_path, f"{key_str}.npy")
+        os.makedirs(osp.dirname(save_path), exist_ok=True)
+        np.save(save_path, bundle, allow_pickle=True)
 
         # Optionally render
         if args.render:
@@ -363,16 +356,5 @@ if __name__ == "__main__":
             motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
             motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
             vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
-
-        processed_count += 1
-        length_acc.append(N)
-
-    print(f"Processed {processed_count} sequences")
-    print(f"Average sequence length: {np.mean(length_acc):.1f} frames")
-
-    # Save height fix information
-    fix_height_dict = {k: round(v, 5) for k, v in zip(fix_height_keys, fix_height_values)}
-    os.makedirs(output_dir, exist_ok=True)
-    joblib.dump(fix_height_dict, osp.join(output_dir, "fixed_height_keys.pkl"))
 
     print("Done")

@@ -82,7 +82,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         rotate_motion = True
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/BEHAVE_processed')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/BEHAVE_processed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
@@ -95,6 +95,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
         key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist",  "L_Wrist"]
+
+    class object:
+        object_density = 1000
 
     class domain_rand:
         randomize_friction = False

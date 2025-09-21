@@ -87,6 +87,8 @@ def process_folder(folder_path, output_path):
                         f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
                     root_trans_offset = root_trans + skeleton_tree.local_translation[0]
 
+
+                    # 这个是 根坐标的旋转
                     pose_aa[:, :3], root_trans_offset = rotate(pose_aa[:, :3], root_trans_offset.squeeze())
                     pose_aa[:, :3], root_trans_offset = rotate(pose_aa[:, :3], root_trans_offset.squeeze(),
                                                                [[1., 0., 0.], [0., -1., 0.], [0., 0., -1]])
