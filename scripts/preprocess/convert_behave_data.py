@@ -18,14 +18,42 @@ import torch
 import mujoco
 import time
 import pickle
+import json
 
-def rotate_root_and_trans(root_aa, trans, R):
-    # root_aa: (N,3) 仅 root 的轴角
-    r = sRot.from_rotvec(root_aa)
-    r_new = sRot.from_matrix(R) * r
-    root_aa_new = r_new.as_rotvec()
-    trans_new = (np.asarray(R) @ trans.T).T
-    return root_aa_new, trans_new
+Q_UPRIGHT_XYZW = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+Rupright = sRot.from_quat(Q_UPRIGHT_XYZW)
+
+def apply_cam2world_rotvec_trans(rotvec, trans, R3x3):
+    r_new = sRot.from_matrix(R3x3) * sRot.from_rotvec(rotvec)
+    t_new = (R3x3 @ trans.T).T
+    return r_new.as_rotvec().astype(np.float32), t_new.astype(np.float32)
+
+def apply_upright_quat_xyzw(q_xyzw):
+    # 人体做的是: global = global * Rupright.inv()  （SciPy右乘）
+    return (sRot.from_quat(q_xyzw) * Rupright.inv()).as_quat().astype(np.float32)
+
+# ------- 在 for sequence_dir 循环之前，加：-------
+# 你的中心化映射文件
+CENTROID_MAP_JSON = "/home/miku/Documents/VideoSkills/dataset/behave/objects_centroid/objects_centroid_map.json"
+with open(CENTROID_MAP_JSON, "r", encoding="utf-8") as f:
+    OBJ_MAP = json.load(f)
+
+# 选择使用哪种 OBJ（True=使用中心化后的OBJ；False=使用原始OBJ并动态修正trans）
+USE_CENTERED_MESH = True  # ← 你自己定：若仿真里加载 objects_centroid 下的 OBJ，就设 True
+
+def lookup_t_fix_local(object_name_str: str):
+    # 1) 优先用文件名匹配（如 'backpack'）
+    for k, v in OBJ_MAP.items():
+        # k 形如 'objects/objects/backpack/backpack'
+        base = os.path.splitext(os.path.basename(k))[0]
+        if base == object_name_str:
+            return np.asarray(v["t_fix_local"], dtype=np.float32)
+    # 2) 次选：路径片段里包含该名
+    for k, v in OBJ_MAP.items():
+        if object_name_str in k:
+            return np.asarray(v["t_fix_local"], dtype=np.float32)
+    return None  # 找不到就返回 None
+
 
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
@@ -245,10 +273,12 @@ if __name__ == "__main__":
 
 
         # 世界坐标系旋转
-        R1 = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
-        pose_aa_body72[:, :3], root_trans = rotate_root_and_trans(pose_aa_body72[:, :3], root_trans, R1)
-        root_trans_offset = torch.from_numpy(root_trans).float() + skeleton_tree.local_translation[0]
-
+        R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
+        # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
+        world_shift = np.zeros(3, dtype=np.float32)
+        root_trans_offset = root_trans + skeleton_tree.local_translation[0].numpy()
+        pose_aa_body72[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_body72[:, :3], root_trans_offset, R_cam2world)
+        root_trans_offset = torch.from_numpy(root_trans_offset).float()
         # 关节重排
         pose_aa_mj = pose_aa_body72.reshape(N, 24, 3)
         smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
@@ -263,7 +293,8 @@ if __name__ == "__main__":
             root_trans_offset,
             is_local=True)
 
-        # 高度修正
+
+
         frame_check = 100
         height_tolorance = 0
         fix_height = True  # 开启更稳妥
@@ -280,8 +311,7 @@ if __name__ == "__main__":
                 feet_z = (verts - offset[:, None])[..., -1]
                 diff_fix = feet_z.min().item()
                 root_trans_offset[..., -1] -= diff_fix
-
-
+                world_shift -= np.array([0, 0, diff_fix], dtype=np.float32)
 
 
         # 局部坐标系旋转
@@ -298,52 +328,74 @@ if __name__ == "__main__":
         obj_angles = sequence_data.get('object', {}).get('angles', None)
         obj_trans = sequence_data.get('object', {}).get('trans', None)
         obj_times = sequence_data.get('object', {}).get('frame_times', None)
-        obj_angles_new, obj_trans_new = rotate_root_and_trans(obj_angles, obj_trans, R1)
 
-        obj_rot_xyzw = sRot.from_rotvec(obj_angles_new).as_quat().astype(np.float32)
+        key_str = os.path.basename(os.path.normpath(sequence_dir))
+        object_name_str = key_str.split('_')[2]
+        t_fix_local = lookup_t_fix_local(object_name_str)  # origin->anchor (local)
+
+        if t_fix_local is not None:
+            # r_cam = sRot.from_rotvec(obj_angles)  # (T,) Rotation, local->cam
+            # R_cam = r_cam.as_matrix()  # (T,3,3)
+            # t_fix_cam = (R_cam @ t_fix_local.reshape(3, 1)).transpose(0, 2, 1).squeeze(-1)  # (T,3)
+            # t_fix_cam = (R_cam @ t_fix_local.reshape(3, 1)).transpose(0, 2, 1).squeeze(-1)
+            R_cam = sRot.from_rotvec(obj_angles).as_matrix()  # (T,3,3)
+            if R_cam.ndim == 2:  # 兼容 T=1 的情况
+                R_cam = R_cam[None, ...]  # (1,3,3)
+
+            # 旋到相机系：结果 (T,3)
+            t_fix_cam = (R_cam @ t_fix_local[:, None]).squeeze(-1)
+            obj_trans = (obj_trans).astype(np.float32)  # 现在 obj_trans 表示“原点”的 cam 坐标
+
+        obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
+        obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
+        # obj_quat_xyzw = apply_upright_quat_xyzw(obj_quat_xyzw)
+
         # 位置
-        obj_pos = obj_trans_new.astype(np.float32)
+        obj_pos = obj_trans_w.astype(np.float32)
+        obj_pos = (obj_pos + world_shift[None, :]).astype(np.float32)
         # 速度
         dt = 1.0 / fps
         obj_pos_vel = np.zeros_like(obj_pos)
         obj_pos_vel[1:] = (obj_pos[1:] - obj_pos[:-1]) / dt
 
         # 角速度
-        def angular_velocity_from_quats_world(q_xyzw, dt):
+        def angular_velocity_world_from_quat_xyzw(q_xyzw: np.ndarray, dt: float) -> np.ndarray:
+            """
+            输入:  q_xyzw 形状 (T,4)，SciPy/内存统一为 [x,y,z,w]
+            输出:  omega_w 形状 (T,3)，世界系角速度；omega_w[0]=0
+            做法:  dq = r[t-1]^{-1} * r[t] -> log(dq)/dt 在 t-1 局部系，
+                  再用 R_{t-1} 把它映到世界系。
+            """
             T = len(q_xyzw)
             omega_w = np.zeros((T, 3), dtype=np.float32)
-            if T <= 1: return omega_w
-            r = sRot.from_quat(q_xyzw)
+            if T <= 1 or dt <= 0:
+                return omega_w
+
+            r = sRot.from_quat(q_xyzw)  # [x,y,z,w]
             for t in range(1, T):
-                dq = r[t - 1].inv() * r[t]
-                rotvec = dq.as_rotvec()
-                omega_local = rotvec / dt
-                R_world = r[t].as_matrix()
-                omega_w[t] = (R_world @ omega_local).astype(np.float32)
+                dq = r[t - 1].inv() * r[t]  # 相对旋转（定义在 t-1 局部系）
+                w_local = dq.as_rotvec() / dt  # 局部角速度
+                R_prev = r[t - 1].as_matrix()
+                omega_w[t] = (R_prev @ w_local).astype(np.float32)
             return omega_w
 
-        obj_rot_vel = angular_velocity_from_quats_world(obj_rot_xyzw, dt)
+        obj_rot_vel = angular_velocity_world_from_quat_xyzw(obj_quat_xyzw, dt)
 
-
-
-
-
-        # Save motion object
-        motion.to_dict( )  # Ensure compatibility
-
+        key_str = os.path.basename(os.path.normpath(sequence_dir))
+        object_name_str = key_str.split('_')[2]
         motion_dict = motion.to_dict()  # 与 motion.to_file() 里保存的结构一致
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
             "object": {
+                "name": object_name_str,
                 "obj_pos": obj_pos,
-                "obj_rot": obj_rot_xyzw,  # xyzw —— Isaac Gym 对齐
+                "obj_rot": obj_quat_xyzw,  # xyzw —— Isaac Gym 对齐
                 "obj_pos_vel": obj_pos_vel,
                 "obj_rot_vel": obj_rot_vel,
             }
         }
 
         # Construct save path
-        key_str = os.path.basename(os.path.normpath(sequence_dir))
         rel_path = osp.relpath(sequence_dir, args.path)
         save_path = osp.join(output_dir, rel_path, f"{key_str}.npy")
         os.makedirs(osp.dirname(save_path), exist_ok=True)

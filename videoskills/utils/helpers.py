@@ -228,7 +228,7 @@ def export_policy_as_jit(actor_critic, path):
 
 def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
     motion_file = env_cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
-    if only_failed_key:
+    if only_failed_key:  # for AMASS
         failed_key_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', cfg.runner.experiment_name, cfg.runner.load_run
                                       , 'eval_outputs')
         pkl_files = [file for file in os.listdir(failed_key_dir) if 'failed_keys' in file]
@@ -255,6 +255,8 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
                 npy_paths.append(rel_path)
         return npy_paths
     else:
+        import glob
+        motion_file = glob.glob(os.path.join(motion_file, f"**/*{ext}"), recursive=True)
         return motion_file
 
 

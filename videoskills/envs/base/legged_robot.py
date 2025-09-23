@@ -107,11 +107,11 @@ class LeggedRobot(BaseTask):
         self.common_step_counter += 1
 
         # prepare quantities
-        self.base_pos[:] = self.root_states[:, 0:3]
-        self.base_quat[:] = self.root_states[:, 3:7]
+        self.base_pos[:] = self.robot_states[:, 0:3]
+        self.base_quat[:] = self.robot_states[:, 3:7]
         self.rpy[:] = get_euler_xyz_in_tensor(self.base_quat[:])
-        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 7:10])
+        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 10:13])
         self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
         self.body_pos[:] = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]
@@ -162,51 +162,7 @@ class LeggedRobot(BaseTask):
 
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
-        self.last_root_vel[:] = self.root_states[:, 7:13]
-
-    # def check_termination(self):
-    #     """ Check if environments need to be reset
-    #     """
-    #     self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
-    #     self.reset_buf |= torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)
-    #     self.time_out_buf = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
-    #     self.reset_buf |= self.time_out_buf
-
-    def reset_idx(self, env_ids):
-        """ Reset some environments.
-            Calls self._reset_dofs(env_ids), self._reset_root_states(env_ids), and self._resample_commands(env_ids)
-            [Optional] calls self._update_terrain_curriculum(env_ids), self.update_command_curriculum(env_ids) and
-            Logs episode info
-            Resets some buffers
-
-        Args:
-            env_ids (list[int]): List of environment ids which must be reset
-        """
-        if len(env_ids) == 0:
-            return
-
-        # reset robot states
-        self._reset_dofs(env_ids)
-        self._reset_root_states(env_ids)
-        self._resample_commands(env_ids)
-
-
-        # reset buffers
-        self.actions[env_ids] = 0.
-        self.last_actions[env_ids] = 0.
-        self.last_dof_vel[env_ids] = 0.
-        self.feet_air_time[env_ids] = 0.  # good idea!
-        self.episode_length_buf[env_ids] = 0
-        self.reset_buf[env_ids] = 1
-        # fill extras
-        self.extras["episode"] = {}
-        # self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
-        for key in self.episode_sums.keys():
-            self.extras["episode"]['rew_' + key] = torch.mean(self.episode_sums[key][env_ids]) / self.max_episode_length_s
-            self.episode_sums[key][env_ids] = 0.
-        if self.cfg.commands.curriculum:
-            self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]
-
+        self.last_root_vel[:] = self.robot_states[:, 7:13]
 
 
     def compute_reward(self):
@@ -426,27 +382,6 @@ class LeggedRobot(BaseTask):
 
         return torch.clip(torques, -self.torque_limits, self.torque_limits)
 
-    def _reset_dofs(self, env_ids):
-        """ Resets DOF position and velocities of selected environmments
-        Positions are randomly selected within 0.5:1.5 x default positions.
-        Velocities are set to zero.
-
-        Args:
-            env_ids (List[int]): Environemnt ids
-        """
-        self.dof_pos[env_ids] = self.pd_action_offset * torch_rand_float(0.5, 1.5, (len(env_ids), self.num_dofs), device=self.device)
-        self.dof_vel[env_ids] = 0.
-
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
-
-        self.gym.set_dof_state_tensor_indexed(self.sim,
-                                                  gymtorch.unwrap_tensor(self.dof_state),
-                                                  gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-        if self.drive_mode == gymapi.DOF_MODE_POS:
-            self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
-                                                            gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-
-
 
     def _reset_root_states(self, env_ids):
         """ Resets ROOT states position and velocities of selected environmments
@@ -537,15 +472,21 @@ class LeggedRobot(BaseTask):
 
         # create some wrapper tensors for different slices
         # 13 + dof * (1 + 1)
-        self.root_states = gymtorch.wrap_tensor(actor_root_state)
         self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
         self.dof_pos = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 0]
         self.dof_vel = self.dof_state.view(self.num_envs, self.num_dofs, 2)[..., 1]
-        self.base_quat = self.root_states[:, 3:7]
-        self.rpy = get_euler_xyz_in_tensor(self.base_quat)
-        self.base_pos = self.root_states[:self.num_envs, 0:3]
-        self.contact_forces = gymtorch.wrap_tensor(net_contact_forces).view(self.num_envs, -1, 3) # shape: num_envs, num_bodies, xyz axis
 
+        self.root_states = gymtorch.wrap_tensor(actor_root_state)
+        num_actors = self.gym.get_actor_count(self.envs[0])
+        self.robot_states = self.root_states.view(self.num_envs, num_actors, 13)[:, 0, :]
+        self.robot_actor_ids = num_actors * torch.arange(self.num_envs, device=self.device, dtype=torch.int32)
+        self.base_quat = self.robot_states[:, 3:7]
+        self.rpy = get_euler_xyz_in_tensor(self.base_quat)
+        self.base_pos = self.robot_states[:self.num_envs, 0:3]
+
+        contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
+        self.gym.refresh_net_contact_force_tensor(self.sim)
+        self.contact_forces = gymtorch.wrap_tensor(contact_force_tensor).view(self.num_envs, -1, 3)
 
         # initialize some data used later on
         self.common_step_counter = 0
@@ -554,18 +495,17 @@ class LeggedRobot(BaseTask):
         self.gravity_vec = to_torch(get_axis_params(-1., self.up_axis_idx), device=self.device).repeat((self.num_envs, 1))
         self.forward_vec = to_torch([1., 0., 0.], device=self.device).repeat((self.num_envs, 1))
         self.torques = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        # self.p_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
-        # self.d_gains = torch.zeros(self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_actions = torch.zeros(self.num_envs, self.num_actions, dtype=torch.float, device=self.device, requires_grad=False)
         self.last_dof_vel = torch.zeros_like(self.dof_vel)
-        self.last_root_vel = torch.zeros_like(self.root_states[:, 7:13])
+        self.last_root_vel = torch.zeros_like(self.robot_states[:, 7:13])
         self.commands = torch.zeros(self.num_envs, self.cfg.commands.num_commands, dtype=torch.float, device=self.device, requires_grad=False) # x vel, y vel, yaw vel, heading
         self.commands_scale = torch.tensor([self.obs_scales.lin_vel, self.obs_scales.lin_vel, self.obs_scales.ang_vel], device=self.device, requires_grad=False,)
         # self.feet_air_time = torch.zeros(self.num_envs, self.feet_indices.shape[0], dtype=torch.float, device=self.device, requires_grad=False)
         # self.last_contacts = torch.zeros(self.num_envs, len(self.feet_indices), dtype=torch.bool, device=self.device, requires_grad=False)
-        self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 7:10])
-        self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.root_states[:, 10:13])
+
+        self.base_lin_vel = quat_rotate_inverse(self.base_quat, self.robot_states[:, 7:10])
+        self.base_ang_vel = quat_rotate_inverse(self.base_quat, self.robot_states[:, 10:13])
         self.projected_gravity = quat_rotate_inverse(self.base_quat, self.gravity_vec)
 
         rigid_body_state = self.gym.acquire_rigid_body_state_tensor(self.sim)

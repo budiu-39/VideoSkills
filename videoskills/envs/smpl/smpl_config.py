@@ -79,10 +79,10 @@ class SMPLRobotCfg( LeggedRobotCfg ):
                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
     class motion:
-        rotate_motion = True
+        rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/BEHAVE_processed')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small_obj')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')

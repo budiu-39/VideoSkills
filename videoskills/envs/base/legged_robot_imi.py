@@ -44,15 +44,14 @@ class LeggedRobotImi(LeggedRobot):
         self._parse_cfg(self.cfg)
 
         self.early_termination_buf = torch.zeros(self.cfg.env.num_envs, device=sim_device, dtype=torch.bool)
-        super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         if isinstance(self.cfg.motion.file, list):
             motion_file = self.cfg.motion.file
         else:
             motion_file = self.cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+
+        super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
         self._load_motion(motion_file)
-
-
         self._motion_start_times = torch.zeros(self.num_envs).to(self.device)
         self._sampled_motion_ids = torch.zeros(self.num_envs).long().to(self.device)
 
@@ -177,6 +176,28 @@ class LeggedRobotImi(LeggedRobot):
             total_mass += prop.mass
         print("Total mass of the robot:", total_mass)
 
+    def _build_env(self, env_id, env_ptr, robot_asset):
+        col_group = env_id
+
+        start_pose = gymapi.Transform()
+        start_pose.p = gymapi.Vec3(*(self.base_init_state[:3] + self.env_origins[env_id]))
+        start_pose.r = gymapi.Quat(*self.base_init_state[3:7])
+
+        # here is the instance of the humanoid asset
+        robot_handle = self.gym.create_actor(env_ptr, robot_asset, start_pose, self.cfg.asset.name, col_group, 1,
+                                             0)
+        self.robot_handles.append(robot_handle)
+
+        if hasattr(self.cfg.rewards.scales, 'dof_force'):
+            self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
+
+        for j in range(self.num_bodies):
+            self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))
+
+        self.gym.set_actor_dof_properties(env_ptr, robot_handle, self.dof_props)
+
+        return
+
     def _build_dof_properties_from_urdf(self, asset_options, robot_asset):
         urdf_path = self.cfg.asset.file_urdf.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         ref_asset = self.gym.load_asset(self.sim,
@@ -271,7 +292,6 @@ class LeggedRobotImi(LeggedRobot):
             return
 
         self.gym.clear_lines(self.viewer)
-        # reset robot states
         self._reset_robot(env_ids)
         self._reset_env_tensors(env_ids)
 
@@ -350,29 +370,31 @@ class LeggedRobotImi(LeggedRobot):
         self._reset_default_env_ids = env_ids
 
         # base position
-        self.root_states[env_ids] = self.base_init_state
-        self.root_states[env_ids, :3] += self.env_origins[env_ids]
+        self.robot_states[env_ids] = self.base_init_state
+        self.robot_states[env_ids, :3] += self.env_origins[env_ids]
         # base velocities
-        self.root_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
+        self.robot_states[env_ids, 7:13] = torch_rand_float(-0.5, 0.5, (len(env_ids), 6), device=self.device) # [7:10]: lin vel, [10:13]: ang vel
 
         # no reference motion, reset tracking buffers
         self._sampled_motion_ids[env_ids] = 0
         self._motion_start_times[env_ids] = 0.0
 
-    def _reset_ref_state_init(self, env_ids):
-        num_envs = env_ids.shape[0]
-
+    def sample_motions(self, env_ids):
         motion_ids = self._motion_lib.sample_motions(num_envs)
         self._sampled_motion_ids[env_ids] = motion_ids
 
+    def _reset_ref_state_init(self, env_ids):
+        num_envs = env_ids.shape[0]
+        self.sample_motions(env_ids)
+
         if self._state_init == 'random':
-            motion_times = self._motion_lib.sample_time(motion_ids)
+            motion_times = self._motion_lib.sample_time(self._sampled_motion_ids[env_ids])
         elif self._state_init == 'start':
             motion_times = torch.zeros(num_envs, device=self.device)
         elif self._state_init == 'hybrid':
             start_prob = 0.05
             start_mask = torch.rand(num_envs, device=self.device) < start_prob
-            motion_times = self._motion_lib.sample_time(motion_ids)
+            motion_times = self._motion_lib.sample_time(self._sampled_motion_ids[env_ids])
             motion_times[start_mask] = 0.0
 
         else:
@@ -397,19 +419,13 @@ class LeggedRobotImi(LeggedRobot):
 
         self._motion_start_times[env_ids] = motion_times
 
-    # def _reward_action_rate(self):
-    #     diff = self.actions - self.last_actions
-    #     return -self.cfg.rewards.w_act_rate * torch.sum(diff ** 2, dim=1)
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel,
                        key_pos, key_rot, key_vel, key_ang_vel):
-        self.root_states[env_ids, 0:3] = root_pos
-        self.root_states[env_ids, 3:7] = root_rot
-        self.root_states[env_ids, 7:10] = root_vel
-        self.root_states[env_ids, 10:13] = root_ang_vel
-
-        # self.base_pos[:] = self.root_states[:, 0:3]
-        # self.base_quat[:] = self.root_states[:, 3:7]
+        self.robot_states[env_ids, 0:3] = root_pos
+        self.robot_states[env_ids, 3:7] = root_rot
+        self.robot_states[env_ids, 7:10] = root_vel
+        self.robot_states[env_ids, 10:13] = root_ang_vel
 
         self.dof_pos[env_ids] = dof_pos
         self.dof_vel[env_ids] = dof_vel
@@ -459,14 +475,14 @@ class LeggedRobotImi(LeggedRobot):
 
     def _reset_env_tensors(self, env_ids):
         # here dof_pos and dof_vel is view of dof_state
-        env_ids_int32 = env_ids.to(dtype=torch.int32)
+        env_ids_int32 = self.robot_actor_ids[env_ids]
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-        # if self.drive_mode == gymapi.DOF_MODE_POS:
         self.gym.set_dof_state_tensor_indexed(self.sim,
                                               gymtorch.unwrap_tensor(self.dof_state),
                                               gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
+        # TODO: 有点好奇这个重不重要？
         if self.drive_mode == gymapi.DOF_MODE_POS:
             self.gym.set_dof_position_target_tensor_indexed(self.sim, gymtorch.unwrap_tensor(self.dof_pos.contiguous()),
                                                             gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
