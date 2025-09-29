@@ -380,7 +380,7 @@ class LeggedRobotImi(LeggedRobot):
         self._motion_start_times[env_ids] = 0.0
 
     def sample_motions(self, env_ids):
-        motion_ids = self._motion_lib.sample_motions(num_envs)
+        motion_ids = self._motion_lib.sample_motions(len(env_ids))
         self._sampled_motion_ids[env_ids] = motion_ids
 
     def _reset_ref_state_init(self, env_ids):

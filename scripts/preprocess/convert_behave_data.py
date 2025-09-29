@@ -32,29 +32,6 @@ def apply_upright_quat_xyzw(q_xyzw):
     # 人体做的是: global = global * Rupright.inv()  （SciPy右乘）
     return (sRot.from_quat(q_xyzw) * Rupright.inv()).as_quat().astype(np.float32)
 
-# ------- 在 for sequence_dir 循环之前，加：-------
-# 你的中心化映射文件
-CENTROID_MAP_JSON = "/home/miku/Documents/VideoSkills/dataset/behave/objects_centroid/objects_centroid_map.json"
-with open(CENTROID_MAP_JSON, "r", encoding="utf-8") as f:
-    OBJ_MAP = json.load(f)
-
-# 选择使用哪种 OBJ（True=使用中心化后的OBJ；False=使用原始OBJ并动态修正trans）
-USE_CENTERED_MESH = True  # ← 你自己定：若仿真里加载 objects_centroid 下的 OBJ，就设 True
-
-def lookup_t_fix_local(object_name_str: str):
-    # 1) 优先用文件名匹配（如 'backpack'）
-    for k, v in OBJ_MAP.items():
-        # k 形如 'objects/objects/backpack/backpack'
-        base = os.path.splitext(os.path.basename(k))[0]
-        if base == object_name_str:
-            return np.asarray(v["t_fix_local"], dtype=np.float32)
-    # 2) 次选：路径片段里包含该名
-    for k, v in OBJ_MAP.items():
-        if object_name_str in k:
-            return np.asarray(v["t_fix_local"], dtype=np.float32)
-    return None  # 找不到就返回 None
-
-
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
         frame_check = pose_aa.shape[0]
@@ -324,31 +301,15 @@ if __name__ == "__main__":
         fps = 30
         motion = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
 
-        # 物体修正
+        # 物体修正(Behave 世界坐标系 -> Isaac Gym 世界坐标系)
         obj_angles = sequence_data.get('object', {}).get('angles', None)
         obj_trans = sequence_data.get('object', {}).get('trans', None)
         obj_times = sequence_data.get('object', {}).get('frame_times', None)
-
         key_str = os.path.basename(os.path.normpath(sequence_dir))
         object_name_str = key_str.split('_')[2]
-        t_fix_local = lookup_t_fix_local(object_name_str)  # origin->anchor (local)
-
-        if t_fix_local is not None:
-            # r_cam = sRot.from_rotvec(obj_angles)  # (T,) Rotation, local->cam
-            # R_cam = r_cam.as_matrix()  # (T,3,3)
-            # t_fix_cam = (R_cam @ t_fix_local.reshape(3, 1)).transpose(0, 2, 1).squeeze(-1)  # (T,3)
-            # t_fix_cam = (R_cam @ t_fix_local.reshape(3, 1)).transpose(0, 2, 1).squeeze(-1)
-            R_cam = sRot.from_rotvec(obj_angles).as_matrix()  # (T,3,3)
-            if R_cam.ndim == 2:  # 兼容 T=1 的情况
-                R_cam = R_cam[None, ...]  # (1,3,3)
-
-            # 旋到相机系：结果 (T,3)
-            t_fix_cam = (R_cam @ t_fix_local[:, None]).squeeze(-1)
-            obj_trans = (obj_trans).astype(np.float32)  # 现在 obj_trans 表示“原点”的 cam 坐标
 
         obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
         obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
-        # obj_quat_xyzw = apply_upright_quat_xyzw(obj_quat_xyzw)
 
         # 位置
         obj_pos = obj_trans_w.astype(np.float32)

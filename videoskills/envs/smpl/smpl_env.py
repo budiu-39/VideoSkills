@@ -1,9 +1,10 @@
 from isaacgym import gymapi
 import torch
+from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 from videoskills.envs.base.legged_robot_hoi import LeggedRobotHoi
 
 
-class SMPLRobot(LeggedRobotHoi):
+class SMPLRobot(LeggedRobotImi):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)

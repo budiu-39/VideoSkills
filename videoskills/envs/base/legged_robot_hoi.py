@@ -54,7 +54,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _load_target_asset(self):  # smplx
-        asset_root = "dataset/behave/objects_centroid_mean"
+        asset_root = "dataset/behave/objects_centered"
         self._target_asset = []
         points_num = []
         self.object_points = []
@@ -150,7 +150,6 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.gym.set_actor_root_state_tensor_indexed(self.sim,
                                                      gymtorch.unwrap_tensor(self.root_states),
                                                      gymtorch.unwrap_tensor(env_ids_int32), len(env_ids_int32))
-
 
     def sample_motions(self, env_ids):
         obj_ids = self.env_object_ids[env_ids]  # [B]

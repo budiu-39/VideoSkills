@@ -80,9 +80,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small_obj')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small_obj')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
@@ -207,7 +207,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v2.xml'
+        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]

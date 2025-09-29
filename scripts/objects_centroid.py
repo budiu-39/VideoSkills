@@ -58,32 +58,78 @@ def compute_anchor_offset(mesh, mode="vertex_mean", up_axis="z"):
         raise ValueError("mode must be vertex_mean/bbox_center/bottom_center")
 
 
+import glob
+
+def try_find_simplified_mesh_for(obj_path: str):
+    """
+    在与 obj 同目录下，尝试寻找 BEHAVE 风格的简化模板，如 *_f*.ply。
+    找到就返回其路径，否则返回 None。
+    """
+    d = osp.dirname(obj_path)
+    base = osp.splitext(osp.basename(obj_path))[0]  # eg. backpack
+    # 常见命名：backpack_f1000.ply、chairblack_f2500.ply、monitor_closed_f1000.ply 等
+    pattns = [
+        osp.join(d, f"{base}_f*.ply"),
+        osp.join(d, f"{base}*_f*.ply"),   # 兼容 monitor_closed 这类命名
+        osp.join(d, "*.ply")
+    ]
+    for p in pattns:
+        cands = sorted(glob.glob(p))
+        for c in cands:
+            # 只要是简化网格就行；如果你想更严格，可判断顶点数<某阈值
+            return c
+    return None
+
+
 def recenter_mesh(mesh: trimesh.Trimesh, anchor: np.ndarray) -> trimesh.Trimesh:
     m2 = mesh.copy(); m2.apply_translation(-anchor); return m2
 
 def process_one_obj(src_obj_path: str, dst_obj_path: str, mode: str, up_axis: str) -> Tuple[np.ndarray, Dict]:
-    mesh = trimesh.load_mesh(src_obj_path, process=False)
-    if isinstance(mesh, trimesh.Scene):
-        mesh = trimesh.util.concatenate(tuple(g for g in mesh.dump().geometry.values()))
-    anchor = compute_anchor_offset(mesh, mode=mode, up_axis=up_axis)  # origin->anchor (local)
-    centered = recenter_mesh(mesh, anchor)
+    # 1) 载入 full 模型（保持 process=False，避免任何重排/清理）
+    mesh_full = trimesh.load_mesh(src_obj_path, process=False)
+    if isinstance(mesh_full, trimesh.Scene):
+        mesh_full = trimesh.util.concatenate(tuple(g for g in mesh_full.dump().geometry.values()))
+
+    # 2) 优先寻找“简化模板”来计算 center（与 BEHAVE 对齐）
+    simp_path = try_find_simplified_mesh_for(src_obj_path)
+    center_mesh = None
+    if simp_path and osp.exists(simp_path):
+        center_mesh = trimesh.load_mesh(simp_path, process=False)
+        if isinstance(center_mesh, trimesh.Scene):
+            center_mesh = trimesh.util.concatenate(tuple(g for g in center_mesh.dump().geometry.values()))
+    else:
+        center_mesh = mesh_full  # 回退：找不到简化模板，就用 full 的顶点集
+
+    # 3) 计算 anchor（建议使用 vertex_mean）
+    anchor = compute_anchor_offset(center_mesh, mode=mode, up_axis=up_axis)  # origin->anchor (local)
+
+    # 4) 用该 anchor 对 full 模型做平移（“recenter”为 canonical）
+    centered = recenter_mesh(mesh_full, anchor)
+
+    # 5) 导出及资源拷贝
     os.makedirs(osp.dirname(dst_obj_path), exist_ok=True)
     centered.export(dst_obj_path)
     copy_mtl_and_textures(src_obj_path, dst_obj_path)
+
     meta = {
-        "src": src_obj_path, "dst": dst_obj_path,
-        "mode": mode, "up_axis": up_axis,
+        "src": src_obj_path,
+        "dst": dst_obj_path,
+        "mode": mode,
+        "up_axis": up_axis,
         "num_vertices": int(centered.vertices.shape[0]),
         "num_faces": int(centered.faces.shape[0]),
+        "simplified_used": simp_path if simp_path else None
     }
     t_fix_local = anchor.astype(np.float32)
     return t_fix_local, meta
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="源根目录，例如 .../dataset/behave/objects")
     ap.add_argument("--dst", required=True, help="目标根目录，例如 .../dataset/behave/objects_centroid")
-    ap.add_argument("--mode", default="mesh_centroid", choices=["bbox_center","bottom_center","vertex_mean"])
+    ap.add_argument("--mode", default="vertex_mean", choices=["vertex_mean", "mesh_centroid",
+                                                              "bbox_center", "bottom_center"],)
     ap.add_argument("--up", default="z", choices=["x","y","z"])
     ap.add_argument("--suffix", default="", help="输出文件名追加后缀（可留空）")
     args = ap.parse_args()
