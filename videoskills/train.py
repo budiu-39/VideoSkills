@@ -24,7 +24,7 @@ def train(args):
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,
                                                           log_dir=log_dir)
 
-    if args.load_motionlib_state:
+    if args.load_motion_sampling_state:
         motionlib_state_file = os.path.join(LEGGED_GYM_ROOT_DIR,'logs', train_cfg.runner.experiment_name,
                                                train_cfg.runner.load_run, "motion_sampling_state.pkl")
         env._motion_lib.load_sampling_state(motionlib_state_file)
