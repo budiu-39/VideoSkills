@@ -490,6 +490,41 @@ class MotionLib():
     def _fix_height_based_on_geom(self, curr_motion):
         return
 
+    def load_sampling_state(self, filepath):
+        """
+        Load the termination history and sampling probabilities from a .pkl file.
+        The file should contain a dictionary with motion keys as keys, and each entry is a dict with:
+            - 'termination_count'
+            - 'sampling_prob'
+        """
+        if not os.path.isfile(filepath):
+            print(f"[MotionLib] Sampling state file not found: {filepath}")
+            return
+
+        loaded_dict = joblib.load(filepath)
+        if not isinstance(loaded_dict, dict):
+            print(f"[MotionLib] Invalid format in sampling state file: {filepath}")
+            return
+
+        # Initialize termination history and sampling probabilities
+        self._termination_history = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)
+        self._sampling_prob = torch.ones(len(self._motions), dtype=torch.float32, device=self._device) / len(self._motions)
+
+        all_keys = self._motion_keys
+        for key, data in loaded_dict.items():
+            if key in all_keys:
+                idx = all_keys.index(key)
+                term_count = data.get("termination_count", 1)
+                samp_prob = data.get("sampling_prob", 1.0 / len(self._motions))
+                print('find motion in motion sampling state!')
+
+                self._termination_history[idx] = term_count
+                self._sampling_prob[idx] = samp_prob
+
+        # Normalize sampling probabilities
+        self._sampling_prob /= self._sampling_prob.sum()
+        print(f"[MotionLib] Sampling state loaded from {filepath}")
+
 
 
     def _fetch_motion_files(self, input_motion_sequences: str, ext=".npy", amass_root="AMASS_processed") -> list:
