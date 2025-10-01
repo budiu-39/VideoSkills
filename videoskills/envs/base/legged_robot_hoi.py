@@ -9,12 +9,21 @@ from videoskills.utils.torch_utils import to_torch
 import trimesh
 from videoskills.utils.motion_lib_hoi import MotionLibHoi
 import time
+from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_to_tan_norm, quat_rotate
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, normalize
+from videoskills.envs.base.legged_robot_imi import (
+    compute_humanoid_observations_jit,
+    compute_mimic_observations_jit,
+    compute_amp_observations_jit,
+)
+
 
 class LeggedRobotHoi(LeggedRobotImi):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         self.cfg = cfg
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
+        # TODO: Hacky code here for Behave dataset
         self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
@@ -32,7 +41,7 @@ class LeggedRobotHoi(LeggedRobotImi):
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)
 
-        self._build_target(env_id, env_ptr)
+        self._build_obj(env_id, env_ptr)
         return
 
     def _load_motion(self, motion_file):
@@ -44,18 +53,21 @@ class LeggedRobotHoi(LeggedRobotImi):
                                      rotate_motion=self.cfg.motion.rotate_motion,
                                      device=self.device)
 
+    def dof_to_body(dof_name: str) -> str:
+        if len(dof_name) >= 2 and dof_name[-2:] in ("_x", "_y", "_z"):
+            return dof_name[:-2]
+        return dof_name
 
     def _create_envs(self):
 
-        self._target_handles = []
-        self._load_target_asset()
+        self._obj_handles = []
+        self._load_obj_asset()
         super()._create_envs()
-
         return
 
-    def _load_target_asset(self):  # smplx
+    def _load_obj_asset(self):  # smplx
         asset_root = "dataset/behave/objects_centered"
-        self._target_asset = []
+        self._obj_asset = []
         points_num = []
         self.object_points = []
         for i, object_name in enumerate(self.object_name):
@@ -76,7 +88,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             asset_options.vhacd_params.max_num_vertices_per_ch = 64
             asset_options.vhacd_params.resolution = 300000
 
-            self._target_asset.append(self.gym.load_asset(self.sim, asset_root, asset_file, asset_options))
+            self._obj_asset.append(self.gym.load_asset(self.sim, asset_root, asset_file, asset_options))
 
             mesh_obj = trimesh.load(obj_file, force='mesh')
             obj_verts = mesh_obj.vertices
@@ -92,9 +104,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.object_points = torch.stack(self.object_points, dim=0)
         return
 
-    def _build_target_tensors(self):
+    def _build_obj_tensors(self):
         num_actors = self.gym.get_actor_count(self.envs[0])
-        self._target_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
+        self._obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
 
         self.tar_actor_ids = self.robot_actor_ids + 1
 
@@ -106,22 +118,22 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _init_buffers(self):
         super()._init_buffers()
-        self._build_target_tensors()
+        self._build_obj_tensors()
 
         return
 
-    def _build_target(self, env_id, env_ptr):
+    def _build_obj(self, env_id, env_ptr):
         col_group = env_id
         col_filter = 0
         segmentation_id = 0
 
         default_pose = gymapi.Transform()
 
-        target_handle = self.gym.create_actor(env_ptr, self._target_asset[env_id % len(self.object_name)], default_pose,
+        obj_handle = self.gym.create_actor(env_ptr, self._obj_asset[env_id % len(self.object_name)], default_pose,
                                               self.object_name[env_id % len(self.object_name)], col_group, col_filter,
                                               segmentation_id)
 
-        props = self.gym.get_actor_rigid_shape_properties(env_ptr, target_handle)
+        props = self.gym.get_actor_rigid_shape_properties(env_ptr, obj_handle)
         for p_idx in range(len(props)):
             props[p_idx].restitution = 0.05
             props[p_idx].friction = 0.6
@@ -132,17 +144,16 @@ class LeggedRobotHoi(LeggedRobotImi):
                 props[p_idx].rest_offset = 0.015
             else:
                 props[p_idx].rest_offset = 0.002
-        self.gym.set_actor_rigid_shape_properties(env_ptr, target_handle, props)
+        self.gym.set_actor_rigid_shape_properties(env_ptr, obj_handle, props)
 
-        self._target_handles.append(target_handle)
-        # self.gym.set_actor_scale(env_ptr, target_handle, self.ball_size)
+        self._obj_handles.append(obj_handle)
 
         return
 
 
     def _reset_robot(self, env_ids):
         super()._reset_robot(env_ids)  # 内部调用 _reset_ref_state_init
-        self._reset_target(env_ids)
+        self._reset_obj(env_ids)
 
     def _reset_env_tensors(self, env_ids):
         super()._reset_env_tensors(env_ids)
@@ -156,18 +167,51 @@ class LeggedRobotHoi(LeggedRobotImi):
         motion_ids = self._motion_lib.sample_motions_by_object(obj_ids)  # [B]
         self._sampled_motion_ids[env_ids] = motion_ids
 
-    def _reset_target(self, env_ids):
+    def _reset_obj(self, env_ids):
         # 计算这些 env 对应的 motion_id 与 time
         motion_ids = self._sampled_motion_ids[env_ids]  # [B]
         motion_times = self._motion_start_times[env_ids] + self.episode_length_buf[env_ids] * self.dt  # [B]
 
-        hoi = self._motion_lib.get_hoi_state(motion_ids, motion_times)
+        hoi_state = self._motion_lib.get_hoi_state(motion_ids, motion_times)
 
-        self._target_states[env_ids, :3] = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
-        self._target_states[env_ids, 3:7] = hoi["obj_rot"]  # xyzw
-        self._target_states[env_ids, 7:10] = hoi["obj_pos_vel"]
-        self._target_states[env_ids, 10:13] = hoi["obj_rot_vel"]
+        self._obj_states[env_ids, :3] = hoi_state["obj_pos"] + self.pos_offset['root'][env_ids]
+        self._obj_states[env_ids, 3:7] = hoi_state["obj_rot"]  # xyzw
+        self._obj_states[env_ids, 7:10] = hoi_state["obj_pos_vel"]
+        self._obj_states[env_ids, 10:13] = hoi_state["obj_rot_vel"]
         return
+
+    def compute_observations(self):
+        # 有 4 类 obs：humanoid, mimic(for humanoid), obj(相对于人类）, interaction
+
+        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt
+        motion_times = progress + self._motion_start_times
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
+        hoi_state = self._motion_lib.get_hoi_state(self._sampled_motion_ids, motion_times)
+
+        self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
+        self.ref_root_rot[:] = motion_state["root_rot"]
+        self.ref_dof_pos[:] = motion_state["dof_pos"]
+        self.ref_body_pos = motion_state["key_pos"] + self.pos_offset['body']
+        self.ref_body_rot = motion_state["key_rot"]
+        self.ref_body_vel = motion_state["key_vel"]
+        self.ref_body_ang_vel = motion_state["key_ang_vel"]
+        self.ref_obj_pos = hoi_state["obj_pos"] + self.pos_offset['root']
+        self.ref_obj_rot = hoi_state["obj_rot"]
+        self.ref_obj_pos_vel = hoi_state["obj_pos_vel"]
+        self.ref_obj_rot_vel = hoi_state["obj_rot_vel"]
+
+
+        humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
+                                                         self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
+                                                         activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
+
+        mimic_obs = self.compute_mimic_observations()
+
+        obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self._obj_states,
+                                               self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
+
+        self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, self.actions), dim=-1)
+
 
 
     @torch.no_grad()
@@ -239,17 +283,17 @@ class LeggedRobotHoi(LeggedRobotImi):
                     root_vel=motion_state["root_vel"],
                     root_ang_vel=motion_state["root_ang_vel"],
                     dof_vel=motion_state["dof_vel"],
-                    key_pos=motion_state["key_pos"] + self.pos_offset['body'],
-                    key_rot=motion_state["key_rot"],
-                    key_vel=motion_state["key_vel"],
-                    key_ang_vel=motion_state["key_ang_vel"]
+                    # key_pos=motion_state["key_pos"] + self.pos_offset['body'],
+                    # key_rot=motion_state["key_rot"],
+                    # key_vel=motion_state["key_vel"],
+                    # key_ang_vel=motion_state["key_ang_vel"]
                 )
 
                 # d) 写物体状态（到缓存 _target_states）
-                self._target_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
-                self._target_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
-                self._target_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
-                self._target_states[env_ids, 10:13] = hoi["obj_rot_vel"]
+                self._obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
+                self._obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
+                self._obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
+                self._obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
 
                 # e) 把缓存写回 sim（注意 dof_pos contiguous）
                 self._reset_env_tensors(env_ids)   # LeggedRobotHoi 覆盖版会同时推 actor_root（人物+物体）
@@ -274,3 +318,44 @@ class LeggedRobotHoi(LeggedRobotImi):
         # 让最后一帧停顿一下（看清）
         if not self.headless:
             time.sleep(0.5)
+@torch.jit.script
+def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):
+    tar_pos = obj_states[:, 0:3]
+    tar_rot = obj_states[:, 3:7]
+    tar_vel = obj_states[:, 7:10]
+    tar_ang_vel = obj_states[:, 10:13]
+
+    heading_rot = calc_heading_quat_inv(root_rot)
+    heading_inv_rot = calc_heading_quat(root_rot)
+
+    local_tar_pos = tar_pos - root_pos
+    local_tar_pos[..., -1] = tar_pos[..., -1]
+    local_tar_pos = quat_rotate(heading_rot, local_tar_pos)
+    local_tar_vel = quat_rotate(heading_rot, tar_vel)
+    local_tar_ang_vel = quat_rotate(heading_rot, tar_ang_vel)
+
+    local_tar_rot = quat_mul(heading_rot, tar_rot)
+    local_tar_rot_obs = quat_to_tan_norm(local_tar_rot)
+
+    diff_global_obj_pos = ref_obj_pos - tar_pos
+    diff_local_obj_pos_flat = quat_rotate(heading_rot, diff_global_obj_pos)
+
+    local_ref_obj_pos = ref_obj_pos - root_pos  # preserves the body position
+    local_ref_obj_pos = quat_rotate(heading_rot, local_ref_obj_pos)
+
+
+    diff_global_obj_rot = normalize(quat_mul(quat_conjugate(ref_obj_rot), tar_rot))
+    diff_local_obj_rot_flat = quat_mul(quat_mul(heading_rot, diff_global_obj_rot.view(-1, 4)), heading_inv_rot)  # Need to be change of basis
+    diff_local_obj_rot_obs = quat_to_tan_norm(diff_local_obj_rot_flat)
+
+    local_ref_obj_rot = quat_mul(heading_rot, ref_obj_rot)
+    local_ref_obj_rot = quat_to_tan_norm(local_ref_obj_rot)
+
+    diff_global_vel = ref_obj_vel - tar_vel
+    diff_local_vel = quat_rotate(heading_rot, diff_global_vel)
+
+    diff_global_ang_vel = ref_obj_ang_vel - tar_ang_vel
+    diff_local_ang_vel = quat_rotate(heading_rot, diff_global_ang_vel)
+
+    obs = torch.cat([local_tar_vel, local_tar_ang_vel, diff_local_obj_pos_flat, diff_local_obj_rot_obs, diff_local_vel, diff_local_ang_vel], dim=-1)
+    return obs

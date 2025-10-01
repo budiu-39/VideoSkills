@@ -412,16 +412,18 @@ class LeggedRobotImi(LeggedRobot):
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
                             dof_vel=motion_state["dof_vel"],
-                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
-                            key_rot= motion_state["key_rot"],
-                            key_vel=motion_state["key_vel"],
-                            key_ang_vel=motion_state["key_ang_vel"])
+                            # key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                            # key_rot= motion_state["key_rot"],
+                            # key_vel=motion_state["key_vel"],
+                            # key_ang_vel=motion_state["key_ang_vel"]
+                            )
 
         self._motion_start_times[env_ids] = motion_times
 
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel,
-                       key_pos, key_rot, key_vel, key_ang_vel):
+                       # key_pos, key_rot, key_vel, key_ang_vel
+                       ):
         self.robot_states[env_ids, 0:3] = root_pos
         self.robot_states[env_ids, 3:7] = root_rot
         self.robot_states[env_ids, 7:10] = root_vel
@@ -431,10 +433,10 @@ class LeggedRobotImi(LeggedRobot):
         self.dof_vel[env_ids] = dof_vel
 
         # self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-        self.body_pos[env_ids,:] = key_pos
-        self.body_rot[env_ids,:] = key_rot
-        self.body_vel[env_ids,:] = key_vel
-        self.body_ang_vel[env_ids,:] = key_ang_vel
+        # self.body_pos[env_ids,:] = key_pos
+        # self.body_rot[env_ids,:] = key_rot
+        # self.body_vel[env_ids,:] = key_vel
+        # self.body_ang_vel[env_ids,:] = key_ang_vel
 
         return
 
@@ -537,7 +539,7 @@ class LeggedRobotImi(LeggedRobot):
                                 self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
                                 activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
 
-        task_obs = compute_task_observations_jit(self.base_pos, self.base_quat,
+        task_obs = compute_mimic_observations_jit(self.base_pos, self.base_quat,
                                self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
                                self.ref_body_pos, self.ref_body_rot, self.ref_body_vel, self.ref_body_ang_vel,
                                activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
@@ -589,65 +591,29 @@ class LeggedRobotImi(LeggedRobot):
 
         return amp_obs_demo_flat
 
-    def compute_humanoid_observations(self):
-        root_h = self.base_pos[:, 2:3]
-        heading_rot_inv = calc_heading_quat_inv(self.base_quat)
-        heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)
-        root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)  # [N, K, 3]
-        local_body_pos = quat_apply(heading_rot_inv_expand, self.body_pos - root_base_expand)[:,1:].view(self.num_envs, -1)
-        local_body_rot = quat_mul(heading_rot_inv_expand, self.body_rot).view(self.num_envs, -1)
-        if self.activate_quat_to_tan_norm:
-            local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(self.num_envs, -1) # [N, K, 4]
-        local_body_vel = quat_apply(heading_rot_inv_expand, self.body_vel).view(self.num_envs, -1)
-        local_body_ang_vel = quat_apply(heading_rot_inv_expand, self.body_ang_vel).view(self.num_envs, -1)
+    # def compute_humanoid_observations(self):
+    #     root_h = self.base_pos[:, 2:3]
+    #     heading_rot_inv = calc_heading_quat_inv(self.base_quat)
+    #     heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)
+    #     root_base_expand = self.base_pos.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)  # [N, K, 3]
+    #     local_body_pos = quat_apply(heading_rot_inv_expand, self.body_pos - root_base_expand)[:,1:].view(self.num_envs, -1)
+    #     local_body_rot = quat_mul(heading_rot_inv_expand, self.body_rot).view(self.num_envs, -1)
+    #     if self.activate_quat_to_tan_norm:
+    #         local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(self.num_envs, -1) # [N, K, 4]
+    #     local_body_vel = quat_apply(heading_rot_inv_expand, self.body_vel).view(self.num_envs, -1)
+    #     local_body_ang_vel = quat_apply(heading_rot_inv_expand, self.body_ang_vel).view(self.num_envs, -1)
+    #
+    #     # 1 +  3 * (K - 1) + 4 * K + 3 * K + 3 * K = 1 + 3K + 4K + 3K + 3K - 3 = 13 * 24 - 2  # 310
+    #     obs = torch.cat((root_h, local_body_pos, local_body_rot, local_body_vel, local_body_ang_vel), dim=-1)
+    #     return obs
 
-        # 1 +  3 * (K - 1) + 4 * K + 3 * K + 3 * K = 1 + 3K + 4K + 3K + 3K - 3 = 13 * 24 - 2  # 310
-        obs = torch.cat((root_h, local_body_pos, local_body_rot, local_body_vel, local_body_ang_vel), dim=-1)
-        return obs
+    def compute_mimic_observations(self):
+        task_obs = compute_mimic_observations_jit(self.base_pos, self.base_quat,
+                               self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
+                               self.ref_body_pos, self.ref_body_rot, self.ref_body_vel, self.ref_body_ang_vel,
+                               activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
 
-    def compute_task_observations(self):
-        obs = []
-        heading_rot_inv = calc_heading_quat_inv(self.base_quat)
-        heading_rot = calc_heading_quat(self.base_quat)
-        heading_rot_expand = heading_rot.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)
-        heading_rot_inv_expand = heading_rot_inv.unsqueeze(1).expand(-1, self.body_pos.shape[1], -1)
-
-        diff_global_body_pos = self.ref_body_pos - self.body_pos
-        diff_local_body_pos_flat = quat_apply(heading_rot_inv_expand, diff_global_body_pos).view(self.num_envs, -1)
-
-        # 这个应该相同才对吧，目前不同，反倒是 diff_global_body_rot 相同 # 解决了！
-        diff_global_body_rot = quat_mul(self.ref_body_rot, quat_conjugate(
-            self.body_rot))
-        diff_local_body_rot_flat =quat_mul(
-            quat_mul(heading_rot_inv_expand, diff_global_body_rot),
-            heading_rot_expand).view(self.num_envs, -1)
-        if self.activate_quat_to_tan_norm:
-            diff_local_body_rot_flat = quat_to_tan_norm(diff_local_body_rot_flat.view(-1, 4)).view(self.num_envs, -1)
-
-        diff_global_body_vel = self.ref_body_vel - self.body_vel
-        diff_local_body_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_body_vel).view(self.num_envs, -1)
-
-        diff_global_body_ang_vel = self.ref_body_ang_vel - self.body_ang_vel
-        diff_local_body_ang_vel_flat = quat_apply(heading_rot_inv_expand, diff_global_body_ang_vel).view(self.num_envs, -1)
-
-        local_ref_body_pos = self.ref_body_pos - self.base_pos.unsqueeze(1).expand(-1, self.ref_body_pos.shape[1], -1)
-        local_ref_body_pos = quat_apply(heading_rot_inv_expand, local_ref_body_pos).view(self.num_envs, -1)
-        # 这里的 local_ref_body_rot 是在 heading frame 下的，而不是相对父节点的！
-        local_ref_body_rot = quat_mul(heading_rot_inv_expand, self.ref_body_rot).view(
-            self.num_envs, -1)
-        if self.activate_quat_to_tan_norm:
-            local_ref_body_rot = quat_to_tan_norm(local_ref_body_rot.view(-1, 4)).view(self.num_envs, -1)
-
-        obs.append(diff_local_body_pos_flat)  # 3
-        obs.append(diff_local_body_rot_flat)  # 4
-        obs.append(diff_local_body_vel_flat)  # 3
-        obs.append(diff_local_body_ang_vel_flat) # 3
-        obs.append(local_ref_body_pos) # 3
-        obs.append(local_ref_body_rot) # 4
-
-        obs = torch.cat(obs, dim=-1)
-
-        return obs
+        return task_obs
 
     def _build_key_body_ids_tensor(self, key_body_names):
         body_ids = [self.body_names.index(name) for name in key_body_names]
@@ -728,10 +694,12 @@ class LeggedRobotImi(LeggedRobot):
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
                             dof_vel=motion_state["dof_vel"],
-                            key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
-                            key_rot=motion_state["key_rot"],
-                            key_vel=motion_state["key_vel"],
-                            key_ang_vel=motion_state["key_ang_vel"])
+                            # key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
+                            # key_rot=motion_state["key_rot"],
+                            # key_vel=motion_state["key_vel"],
+                            # key_ang_vel=motion_state["key_ang_vel"]
+                            )
+
 
         self._motion_start_times[env_ids] = motion_times
         self._reset_env_tensors(env_ids)
@@ -853,7 +821,7 @@ def compute_amp_observations_jit(
     return obs
 
 @torch.jit.script
-def compute_task_observations_jit(
+def compute_mimic_observations_jit(
     base_pos: Tensor,             # [N, 3]
     base_quat: Tensor,            # [N, 4]
     body_pos: Tensor,              # [N, K, 3]

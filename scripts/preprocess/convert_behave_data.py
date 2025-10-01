@@ -10,9 +10,9 @@ from tqdm import tqdm
 import argparse
 import glob
 from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
-from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
+from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-from smpl_sim.smpllib.smpl_parser import SMPL_Parser
+from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 import joblib
 import torch
 import mujoco
@@ -158,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "dataset/smpl_motion/behave_small_obj"
+    output_dir = "dataset/smplx_motion/behave_small"
 
     robot_cfg = {
         "mesh": False,
@@ -178,10 +178,10 @@ if __name__ == "__main__":
         "joint_params": {},
         "geom_params": {},
         "actuator_params": {},
-        "model": "smpl",
+        "model": "smplx",
     }
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/smpl")
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v1.xml")
+    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
     # BEHAVE dataset structure: each sequence contains SMPL fits and object interactions
     # We look for sequences with SMPL fits
@@ -234,13 +234,13 @@ if __name__ == "__main__":
 
         # 模型
         D = pose_aa.shape[1]
+        # TODO: 这里对于 非 156 的缺少 padding
         if D == 156:
-            # SMPL-H：global(3) + body(23*3=69) + hands(30*3=90?) → 常见为 156（有的实现手是30*3=90）
-            # 只保留 SMPL body（含 global），忽略手部，得到 72 维
-            pose_aa_body72 = pose_aa[:, :72].copy()
+            # SMPL-X 全身
+            pose_aa = pose_aa
         elif D == 72:
             # 已是 SMPL body
-            pose_aa_body72 = pose_aa
+            pose_aa = pose_aa
         elif D == 69:
             # 缺少 global；补 3 维零作为 global
             pose_aa_body72 = np.concatenate([np.zeros((pose_aa.shape[0], 3), dtype=pose_aa.dtype),
@@ -248,22 +248,30 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unexpected SMPL pose dim {D}. Expect 69/72/156.")
 
-
+        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v1.xml")
         # 世界坐标系旋转
         R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
         # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
         world_shift = np.zeros(3, dtype=np.float32)
-        root_trans_offset = root_trans + skeleton_tree.local_translation[0].numpy()
-        pose_aa_body72[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_body72[:, :3], root_trans_offset, R_cam2world)
+        root_trans_offset = root_trans + skeleton_tree_smpl.local_translation[0].numpy()
+        # root_trans_offset = root_trans
+        pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa[:, :3], root_trans_offset, R_cam2world)
         root_trans_offset = torch.from_numpy(root_trans_offset).float()
         # 关节重排
-        pose_aa_mj = pose_aa_body72.reshape(N, 24, 3)
-        smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
+        pose_aa_mj = pose_aa.reshape(N, 52, 3)
+        smpl_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
         pose_aa_mj = pose_aa_mj[:, smpl_2_mujoco]
 
         # 轴角 -> 四元数（注意 scipy 返回 [x,y,z,w]）
-        pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
-        smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
+        pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 52, 4)
+        smplx_parser_n = SMPLX_Parser(
+            model_path='data/SMPL/smplx',
+            gender='neutral',
+            use_pca=False,  # 关键：不用 PCA，接受 45D/手
+            create_transl=False,
+            flat_hand_mean=True,
+            num_betas=20  # SMPL-X 20 维 beta
+        )
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
             torch.from_numpy(pose_quat),
@@ -278,12 +286,12 @@ if __name__ == "__main__":
         if fix_height:
             with torch.no_grad():
                 frame_check = min(frame_check, N)
-                pose_t = torch.from_numpy(pose_aa_body72[:frame_check]).float()  # (F,72) 关键！
-                beta_np = np.zeros(10, dtype=np.float32)  # 10 维 betas
+                pose_t = torch.from_numpy(pose_aa[:frame_check]).float()  # (F,72) 关键！
+                beta_np = np.zeros(20, dtype=np.float32)  # 10 维 betas
                 beta_t = torch.from_numpy(beta_np[None, ...]).float()  # (1,10)
                 trans_t = root_trans_offset[:frame_check].float()  # (F,3)
 
-                verts, joints = smpl_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
+                verts, joints = smplx_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
                 offset = joints[:, 0] - trans_t
                 feet_z = (verts - offset[:, None])[..., -1]
                 diff_fix = feet_z.min().item()

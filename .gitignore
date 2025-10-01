@@ -160,7 +160,7 @@ cython_debug/
 # logs
 logs
 
-data/smpl
+data/SMPL/
 dataset/
 !GVHMR/hmr4d/dataset
 .git/

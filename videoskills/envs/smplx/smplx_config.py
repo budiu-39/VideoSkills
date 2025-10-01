@@ -1,6 +1,6 @@
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
 
-class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
+class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
         init_noise_std = 0.055
         fixed_std = True
@@ -63,25 +63,25 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
             replay_buffer_size = 200000
             demo_buffer_size = 200000
 
-class SMPLRobotCfg( LeggedRobotCfg ):
+class SMPLXRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'hybrid'
+        type = 'random'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
-        distance = [0.25] * 24
+        distance = [0.25] * 52
 
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
-                     'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+                     'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_4')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
@@ -123,12 +123,12 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         eval_mode = False
         land_event_detect = False
         num_envs = 4096
-        num_actions = 69
+        num_actions = 153
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
         activate_quat_to_tan_norm = True
-        norm_num_observations = 358 + 576 + 69
+        norm_num_observations = 778 + 528 + 21 + 153
 
     class control:
         # PD Drive parameters:
@@ -206,7 +206,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v2.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
