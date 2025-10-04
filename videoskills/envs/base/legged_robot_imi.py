@@ -228,13 +228,11 @@ class LeggedRobotImi(LeggedRobot):
 
     def render(self):
         if not self.headless and hasattr(self, "ref_body_pos"):
-            self.gym.clear_lines(self.viewer)
             max_vis_envs = self.num_envs
             T = gymapi.Transform()
             for i in range(max_vis_envs):
                 env_ptr = self.envs[i]  # 当前环境的指针
                 pts = self.ref_body_pos[i].cpu().numpy()  # (K,3)
-
                 for p in pts:
                     T.p.x, T.p.y, T.p.z = map(float, p)
                     gymutil.draw_lines(self._sphere_geom,
@@ -243,7 +241,7 @@ class LeggedRobotImi(LeggedRobot):
                                        env_ptr,
                                        T)
 
-            # Draw arrows at feet that just landed
+                # Draw arrows at feet that just landed
             if hasattr(self, "just_landed_event"):
                 feet_pos = self._rigid_body_state_reshaped[..., self.feet_indices, 0:3]  # [num_envs, num_feet, 3]
 
@@ -412,17 +410,17 @@ class LeggedRobotImi(LeggedRobot):
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
                             dof_vel=motion_state["dof_vel"],
-                            # key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
-                            # key_rot= motion_state["key_rot"],
-                            # key_vel=motion_state["key_vel"],
-                            # key_ang_vel=motion_state["key_ang_vel"]
+                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                            key_rot= motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"]
                             )
 
         self._motion_start_times[env_ids] = motion_times
 
 
     def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel,
-                       # key_pos, key_rot, key_vel, key_ang_vel
+                       key_pos, key_rot, key_vel, key_ang_vel
                        ):
         self.robot_states[env_ids, 0:3] = root_pos
         self.robot_states[env_ids, 3:7] = root_rot
@@ -433,10 +431,10 @@ class LeggedRobotImi(LeggedRobot):
         self.dof_vel[env_ids] = dof_vel
 
         # self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-        # self.body_pos[env_ids,:] = key_pos
-        # self.body_rot[env_ids,:] = key_rot
-        # self.body_vel[env_ids,:] = key_vel
-        # self.body_ang_vel[env_ids,:] = key_ang_vel
+        self.body_pos[env_ids,:] = key_pos
+        self.body_rot[env_ids,:] = key_rot
+        self.body_vel[env_ids,:] = key_vel
+        self.body_ang_vel[env_ids,:] = key_ang_vel
 
         return
 
@@ -547,13 +545,13 @@ class LeggedRobotImi(LeggedRobot):
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
         # self.obs_buf = torch.cat((humanoid_obs, task_obs), dim=-1)
 
-        if self.activate_amp:
-            key_body_pos = self.body_pos[:, self.key_body_ids, :]
-            self._curr_amp_obs_buf[:] = compute_amp_observations_jit(self.base_pos, self.base_quat, self.base_lin_vel,
-                              self.base_ang_vel, self.dof_pos, self.dof_vel, key_body_pos)
-            self.extras["amp_state"] = self._amp_obs_buf.clone().reshape(self.num_envs, -1)
-
-            self._update_hist_amp_obs()
+        # if self.activate_amp:
+        #     key_body_pos = self.body_pos[:, self.key_body_ids, :]
+        #     self._curr_amp_obs_buf[:] = compute_amp_observations_jit(self.base_pos, self.base_quat, self.base_lin_vel,
+        #                       self.base_ang_vel, self.dof_pos, self.dof_vel, key_body_pos)
+        #     self.extras["amp_state"] = self._amp_obs_buf.clone().reshape(self.num_envs, -1)
+        #
+        #     self._update_hist_amp_obs()
 
 
     def _update_hist_amp_obs(self, env_ids=None):
@@ -694,10 +692,10 @@ class LeggedRobotImi(LeggedRobot):
                             root_vel=motion_state["root_vel"],
                             root_ang_vel=motion_state["root_ang_vel"],
                             dof_vel=motion_state["dof_vel"],
-                            # key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
-                            # key_rot=motion_state["key_rot"],
-                            # key_vel=motion_state["key_vel"],
-                            # key_ang_vel=motion_state["key_ang_vel"]
+                            key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
+                            key_rot=motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"]
                             )
 
 
@@ -730,7 +728,6 @@ class LeggedRobotImi(LeggedRobot):
 
         motion_lens = self._motion_lib._motion_lengths[motion_ids]
         self.extras["motion_length"] = motion_lens.clone()
-
         self.compute_observations()
 
         # obs, _, _, _, _ = self.step(

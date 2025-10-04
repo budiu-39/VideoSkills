@@ -10,7 +10,7 @@ def play_hoi(args):
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)
 
     # 播放期禁用随机项/困难地形等
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 32)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 16)
     env_cfg.early_termination.enabled = False
     env_cfg.terrain.curriculum = False
     env_cfg.noise.add_noise = False

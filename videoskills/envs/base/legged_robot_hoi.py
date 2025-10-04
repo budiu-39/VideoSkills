@@ -10,7 +10,7 @@ import trimesh
 from videoskills.utils.motion_lib_hoi import MotionLibHoi
 import time
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_to_tan_norm, quat_rotate
-from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, normalize
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, normalize, quat_to_angle_axis
 from videoskills.envs.base.legged_robot_imi import (
     compute_humanoid_observations_jit,
     compute_mimic_observations_jit,
@@ -26,6 +26,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         # TODO: Hacky code here for Behave dataset
         self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
+        self.reward_weights = self.cfg.rewards.scales
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         env_obj_names = [self.object_name[i % len(self.object_name)] for i in range(self.num_envs)]
@@ -93,9 +94,9 @@ class LeggedRobotHoi(LeggedRobotImi):
             mesh_obj = trimesh.load(obj_file, force='mesh')
             obj_verts = mesh_obj.vertices
             center = np.mean(obj_verts, 0)
-            object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2024)
+            object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
 
-            object_points = to_torch(object_points - center)
+            object_points = to_torch(object_points  - center)
 
             while object_points.shape[0] < 1024:
                 object_points = torch.cat([object_points, object_points[:1024 - object_points.shape[0]]], dim=0)
@@ -108,6 +109,12 @@ class LeggedRobotHoi(LeggedRobotImi):
         num_actors = self.gym.get_actor_count(self.envs[0])
         self._obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
 
+        self.obj_pos = self._obj_states[..., 0:3]
+        self.obj_quat = self._obj_states[..., 3:7]
+        self.obj_vel = self._obj_states[..., 7:10]
+        self.obj_ang_vel = self._obj_states[..., 10:13]
+
+
         self.tar_actor_ids = self.robot_actor_ids + 1
 
         bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
@@ -117,6 +124,10 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _init_buffers(self):
+        self.contact_reset = torch.zeros((self.num_envs,2), device=self.device, dtype=torch.long)
+        self.kinematic_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self.ig_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+
         super()._init_buffers()
         self._build_obj_tensors()
 
@@ -124,7 +135,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _build_obj(self, env_id, env_ptr):
         col_group = env_id
-        col_filter = 0
+        col_filter = -1
         segmentation_id = 0
 
         default_pose = gymapi.Transform()
@@ -155,6 +166,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         super()._reset_robot(env_ids)  # 内部调用 _reset_ref_state_init
         self._reset_obj(env_ids)
 
+        self.contact_reset[env_ids] = 0
+        self.kinematic_reset[env_ids] = 0
+
     def _reset_env_tensors(self, env_ids):
         super()._reset_env_tensors(env_ids)
         env_ids_int32 = self.tar_actor_ids[env_ids]
@@ -174,15 +188,19 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         hoi_state = self._motion_lib.get_hoi_state(motion_ids, motion_times)
 
-        self._obj_states[env_ids, :3] = hoi_state["obj_pos"] + self.pos_offset['root'][env_ids]
-        self._obj_states[env_ids, 3:7] = hoi_state["obj_rot"]  # xyzw
-        self._obj_states[env_ids, 7:10] = hoi_state["obj_pos_vel"]
-        self._obj_states[env_ids, 10:13] = hoi_state["obj_rot_vel"]
+        self.obj_pos[env_ids] =  hoi_state["obj_pos"] + self.pos_offset['root'][env_ids]
+        self.obj_quat[env_ids] = hoi_state["obj_rot"]  # xyzw
+        self.obj_vel[env_ids] = hoi_state["obj_pos_vel"]
+        self.obj_ang_vel[env_ids] = hoi_state["obj_rot_vel"]
+
+        self.ig = hoi_state['ig']
+        self.body_contact = hoi_state['human_contact']
+
         return
 
     def compute_observations(self):
         # 有 4 类 obs：humanoid, mimic(for humanoid), obj(相对于人类）, interaction
-
+        # TODO：思考一下，这些有必要写成 self 吗？好像没必要，可以节省更多显存。哦哦哦哦有些是有必要写的，为了 rollout
         progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt
         motion_times = progress + self._motion_start_times
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
@@ -199,6 +217,22 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.ref_obj_rot = hoi_state["obj_rot"]
         self.ref_obj_pos_vel = hoi_state["obj_pos_vel"]
         self.ref_obj_rot_vel = hoi_state["obj_rot_vel"]
+        self.ref_ig = hoi_state["ig"]
+
+        # 要做的是 环境数 * 人体点数 * 3   对于物体做一个 view 先把变成 环境数 * 物体点数，3
+        # ref_obj_rot_extend = hoi_state['obj_rot'].unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
+        object_points_extend = self.object_points[self.env_object_ids].unsqueeze(0).view(-1, 3)
+        # ref_obj_points = (quat_rotate(ref_obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3)
+        #               + self.ref_obj_pos.unsqueeze(1))
+
+        # ref_ig = compute_sdf(self.ref_body_pos.view(-1, 52, 3), ref_obj_points).view(-1, 3)
+
+        obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
+        obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
+        ig = compute_sdf(self.body_pos.view(-1, 52, 3), obj_points).view(-1, 3)
+
+        self.ig = ig.detach().view(self.num_envs, -1, 3)
+        # self.ref_ig = ref_ig.detach().view(self.num_envs, -1, 3)
 
 
         humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
@@ -210,11 +244,15 @@ class LeggedRobotHoi(LeggedRobotImi):
         obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self._obj_states,
                                                self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
 
-        self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, self.actions), dim=-1)
+        hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig, ig)
+
+        self.body_contact = torch.any(torch.abs(self.contact_forces[:, self.body_ids]) > 0.1, dim=-1).float()
+
+        self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, hoi_obs, self.body_contact, self.actions), dim=-1)
 
 
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def play_hoi(self,
                  motion_ids: torch.Tensor = None,
                  random_start: bool = False,
@@ -232,7 +270,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             sleep_when_render: 渲染时是否用 sleep 做节流。
         """
         # 播放期：固定、可复现
-        self.eval_mode = True
+        self.eval_mode = False
         self.early_termination = False
 
         env_ids = torch.arange(self.num_envs, device=self.device)
@@ -247,7 +285,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             self._sampled_motion_ids[:] = motion_ids
 
         # 2) 初始化到起始帧
-        self.reset_with_motion_ids(motion_ids, random=random_start)
+        # self.reset_with_motion_ids(motion_ids, random=random_start)
         # 清掉提前终止/timeout
         self.reset_buf[:] = 0
         self.time_out_buf[:] = 0
@@ -256,8 +294,6 @@ class LeggedRobotHoi(LeggedRobotImi):
         # 3) 获取各 env 轨迹时长(秒)，确定一次 loop 的步数
         motion_lens = self._motion_lib.get_motion_length(motion_ids)    # [num_envs]
         steps_per_loop = int(float(motion_lens.max().item()) / self.dt) + 1
-
-        t0 = time.perf_counter()
 
         for loop in range(max_loops):
             # 从头来一遍
@@ -283,41 +319,299 @@ class LeggedRobotHoi(LeggedRobotImi):
                     root_vel=motion_state["root_vel"],
                     root_ang_vel=motion_state["root_ang_vel"],
                     dof_vel=motion_state["dof_vel"],
-                    # key_pos=motion_state["key_pos"] + self.pos_offset['body'],
-                    # key_rot=motion_state["key_rot"],
-                    # key_vel=motion_state["key_vel"],
-                    # key_ang_vel=motion_state["key_ang_vel"]
+                    key_pos=motion_state["key_pos"] + self.pos_offset['body'],
+                    key_rot=motion_state["key_rot"],
+                    key_vel=motion_state["key_vel"],
+                    key_ang_vel=motion_state["key_ang_vel"]
                 )
 
+                # self._reset_obj(env_ids)   # 直接写入物体状态
                 # d) 写物体状态（到缓存 _target_states）
                 self._obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
                 self._obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
                 self._obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
                 self._obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
+                self.ig = hoi['ig']
+                self.body_contact = hoi['contact_robot']
 
                 # e) 把缓存写回 sim（注意 dof_pos contiguous）
                 self._reset_env_tensors(env_ids)   # LeggedRobotHoi 覆盖版会同时推 actor_root（人物+物体）
 
                 # f) 推仿真 + 渲染（为显示；物理不会主导状态）
                 self.gym.simulate(self.sim)
-                self.gym.fetch_results(self.sim, True)
+                # self.gym.fetch_results(self.sim, True)
+                # if (step_idx % 4) == 0:
                 self.gym.step_graphics(self.sim)
+                self.gym.clear_lines(self.viewer)
                 self.render()
 
                 # g) 推进内部计步器
                 self.episode_length_buf += 1
 
                 # h) 实时节流
-                if real_time and sleep_when_render and not self.headless:
-                    target_elapsed = (loop * steps_per_loop + step_idx + 1) * self.dt
-                    now = time.perf_counter() - t0
-                    remain = target_elapsed - now
-                    if remain > 0:
-                        time.sleep(min(remain, self.dt))
+                # if real_time and sleep_when_render and not self.headless:
+                #     target_elapsed = (loop * steps_per_loop + step_idx + 1) * self.dt
+                #     now = time.perf_counter() - t0
+                #     remain = target_elapsed - now
+                #     if remain > 0:
+                #         time.sleep(min(remain, self.dt))
 
         # 让最后一帧停顿一下（看清）
         if not self.headless:
             time.sleep(0.5)
+
+    def render(self):
+        if not self.headless:
+            max_vis_envs = self.num_envs
+            for i in range(max_vis_envs):
+                env_ptr = self.envs[i]  # 当前环境的指针
+
+                body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
+                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                obj_near_env = body_pos_env - ig_env
+
+                num_lines = body_pos_env.shape[0]
+                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                verts[0::2] = body_pos_env
+                verts[1::2] = obj_near_env
+
+                # 颜色（蓝色）
+                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+
+                # 画线
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+
+                for j in range(self.num_bodies):
+                    if self.body_contact[i, j]:
+                        self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
+                                                      gymapi.Vec3(1., 0., 0.))
+                    else:
+                        self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
+                                                      gymapi.Vec3(1., 1., 1.))
+
+        super().render()
+
+    def check_termination(self):
+        """ Check if environments need to be reset
+        """
+        time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
+        progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # progress is the current ref_motion
+        motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
+        ref_out = (progress + self._motion_start_times ) > motion_lens
+
+        # --------- ③ 汇总三个条件 ----------
+        # self.reset_buf = fall | time_out | body_too_far
+        self.early_termination_buf = self.kinematic_reset |  torch.any(self.contact_reset > 10, dim=-1) * (self.episode_length_buf > 1)
+        self.time_out_buf = time_out | ref_out
+        self.reset_buf = self.time_out_buf | self.early_termination_buf
+
+        if not self.early_termination:
+            self.reset_buf = time_out | ref_out
+            self.time_out_buf = time_out | ref_out
+
+        if self.eval_mode:
+            self.reset_buf = ref_out | self.early_termination_buf
+            if not self.early_termination:
+                self.reset_buf = ref_out
+            self.time_out_buf = time_out | ref_out
+
+    def compute_reward(self):
+        # TODO: just for develop now
+        self.rew_buf[:] = 1.0
+        for i in range(len(self.reward_functions)):
+            name = self.reward_names[i]
+            rew = self.reward_functions[i]() * self.reward_scales[name]
+            self.rew_buf[:] *= rew
+            self.episode_sums[name] += rew
+        kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
+        self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
+        # index = torch.arange(self._curr_reward.shape[0])
+        # # # print(self._humanoid_root_states.dtype)
+        # self._curr_reward[index, self.progress_buf - self.start_times] = self.rew_buf
+        # self._sum_reward[index] += self.rew_buf
+        # self._curr_state[index, self.progress_buf - self.start_times, :] = torch.cat([
+        #     self._humanoid_root_states,
+        #     self._dof_pos,
+        #     self._dof_vel,
+        #     self._target_states,
+        # ], dim=1)
+        if self.cfg.rewards.only_positive_rewards:
+            self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
+        return
+
+
+    def _reward_humanoid(self):
+        # body pos reward
+        w = self.reward_weights
+        body_nohand = self.body_no_hand_ids
+        dof_nohand = self.dof_no_hand_ids
+
+        ref_ig_norm = self.ref_ig.norm(dim=-1)
+        weight_h = (-5 * ref_ig_norm).exp()
+        weight_hp = weight_h.clone().detach()
+        # 这里好像有问题!
+        ancle_toe_ids = [i for i in range(self.num_bodies) if 'Ankle' in self.body_names[i] or 'Toe' in self.body_names[i]]
+        weight_hp[:, ancle_toe_ids] = 1
+
+        ep = torch.mean(((self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]) ** 2).sum(dim=-1)
+                        * weight_hp[:, body_nohand], dim=-1)
+        rp = torch.exp(-ep * w.p)
+
+        diff_quat_data = normalize(quat_mul(quat_conjugate(self.ref_body_rot[:, body_nohand].reshape(-1, 4)),
+                                                   self.body_rot[:, body_nohand].reshape(-1, 4)))
+        diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
+        diff = diff_angle.view(-1, 52)
+        weight_hr = 1 - weight_h
+
+        er = torch.mean(diff[:, :] * weight_hr, dim=-1)
+        rr = torch.exp(-er * w.r)
+
+        # body pos vel reward
+        epv = torch.mean((self.ref_body_vel[:, body_nohand] - self.body_vel[:, body_nohand]) ** 2, dim=-1)
+        rpv = torch.exp(-epv * w.pv)
+
+        # body rot vel reward
+        erv = torch.mean((self.body_ang_vel[:, body_nohand] - self.ref_body_ang_vel[:, body_nohand]) ** 2, dim=-1)
+        rrv = torch.exp(-erv * w.rv)
+
+        # energy penalty
+        # TODO: 这里要修正,不要 hand !
+        enerpy = torch.abs(torch.multiply(self.dof_force_tensor[:, dof_nohand], self.dof_vel[:, dof_nohand])).sum(dim=-1)
+        energy = enerpy.mul(-w.eg1).exp()
+
+        rb = rp * rr * rpv * rrv * energy
+        self.robot_reset = (self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]).norm(dim=-1).mean(dim=-1) > 0.5
+
+        return rb
+
+    def _reward_obj(self):
+        w = self.reward_weights
+        heading_rot = calc_heading_quat_inv(self.base_quat)
+        ref_heading_rot = calc_heading_quat_inv(self.ref_root_rot)
+
+        local_obj_pos = self.obj_pos - self.base_pos
+        local_obj_pos[..., -1] = self.obj_pos[..., -1]
+        local_obj_pos = quat_rotate(heading_rot, local_obj_pos)
+
+
+        ref_local_obj_pos = self.ref_obj_pos - self.ref_root_pos  # preserves the body position
+        ref_local_obj_pos = quat_rotate(ref_heading_rot, ref_local_obj_pos)
+        eop = torch.mean(((ref_local_obj_pos - local_obj_pos) ** 2), dim=-1)  # * (1 - weight_h.max(dim=-1)[0])
+        rop = torch.exp(-eop * w['op'])
+
+        # object rot reward
+        local_obj_rot = quat_mul(heading_rot, self.obj_quat)
+        ref_local_obj_rot = quat_mul(ref_heading_rot, self.ref_obj_rot)
+        diff_quat_data = normalize(quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot))
+        diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
+        diff = diff_angle.view(-1, 1)
+
+        eor = torch.mean(diff, dim=-1)
+        ror = torch.exp(-eor * w['obj_r'])
+
+        # object pos vel reward
+        eopv = torch.mean((self.ref_obj_pos_vel - self.obj_vel) ** 2, dim=-1)
+        ropv = torch.exp(-eopv * w['opv'])
+
+        # object rot vel reward
+        eorv = torch.mean((self.ref_obj_rot_vel - self.obj_ang_vel) ** 2, dim=-1)
+        rorv = torch.exp(-eorv * w['orv'])
+
+        obj_energy = torch.abs(torch.multiply(self.obj_vel, self.obj_ang_vel)).sum(dim=-1)
+        obj_energy = obj_energy.mul(-w['eg2']).exp()
+        ro = rop * ror * ropv * rorv * obj_energy
+
+        pos_thresh = 0.30  # 位置阈值（米），按需要调整
+        rot_thresh = 0.50  # 朝向阈值（弧度），~28.6°，按需要调整
+
+        pos_err = torch.norm(ref_local_obj_pos - local_obj_pos, dim=-1)  # [N]
+        dq = quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot)  # 相对四元数
+        angle_err = quat_to_angle_axis(dq)[0]  # [N,3] 的角轴角度向量
+        angle_err = torch.norm(angle_err, dim=-1)  # 角度幅值（弧度）
+
+        self.object_reset = torch.logical_or(pos_err > pos_thresh, angle_err > rot_thresh)
+
+        return ro
+
+    def _reward_ig(self):
+        w = self.reward_weights
+        body_nohand = self.body_no_hand_id
+
+        ig = self.ig[:, body_nohand]
+        ref_ig = self.ref_ig[:, body_nohand]
+        ### interaction graph reward ###
+        weight_1 = (1 / torch.clamp((ig**2).sum(dim=-1), min=0.01))
+        weight_1 = weight_1 / weight_1.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
+        weight_2 = (1 / torch.clamp((ref_ig**2).sum(dim=-1), min=0.01))
+        weight_2 = weight_2 / weight_2.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
+
+        eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)
+
+        rig = torch.exp(-w['ig'] * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
+
+        reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ref_ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
+        reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
+        self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2)
+        return rig
+
+    def _reward_cg(self):
+        # TODO: 公式还不太能理解
+        contact_thres = 0.1
+        w = self.reward_weights
+        ref_human_contact = self.ref_contact_forces
+        human_contact = self.contact_forces[:, self.body_ids]
+        left_contact_hand_ids = list(range(17, 33))
+
+        ref_left_contact_hand = ref_human_contact[:, left_contact_hand_ids]
+        ref_left_contact_hand_any = torch.any(ref_left_contact_hand > contact_thres, dim=-1).float()
+        left_hand_contact = human_contact[:, left_contact_hand_ids].clone()
+        left_hand_contact_any = torch.any(left_hand_contact > contact_thres, dim=-1, keepdim=True).float()
+
+        ecg_left = (((ref_left_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
+            left_hand_contact - ref_left_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
+        rcg_left = 0.5 * (1 + torch.exp(-ecg_left * w['cg_hand'])) * (ref_left_contact_hand_any) + (
+                    1 - ref_left_contact_hand_any)
+
+        right_contact_hand_ids = list(range(36, 52))
+
+        ref_right_contact_hand = ref_human_contact[:, right_contact_hand_ids]
+        ref_right_contact_hand_any = torch.any(ref_right_contact_hand > contact_thres, dim=-1).float()
+        right_hand_contact = human_contact[:, right_contact_hand_ids].clone()
+        right_hand_contact_any = torch.any(right_hand_contact > contact_thres, dim=-1, keepdim=True).float()
+
+        contact_reset = torch.cat([
+            torch.abs(
+                ref_left_contact_hand_any.unsqueeze(-1) - left_hand_contact_any) * ref_left_contact_hand_any.unsqueeze(
+                -1),
+            torch.abs(ref_right_contact_hand_any.unsqueeze(
+                -1) - right_hand_contact_any) * ref_right_contact_hand_any.unsqueeze(-1),
+        ], dim=-1)
+
+        ecg_right = (((ref_right_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
+            right_hand_contact - ref_right_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
+        rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w['cg_hand'])) * (ref_right_contact_hand_any) + (
+                    1 - ref_right_contact_hand_any)
+
+        rcg_hand = rcg_left * rcg_right
+
+        other_ids = [i for i in range(len(self.body_ids)) if
+                     i not in left_contact_hand_ids and i not in right_contact_hand_ids]
+        ref_other_contact = ref_human_contact[:, other_ids]
+        other_contact = human_contact[:, other_ids]
+        ecg_other = ((torch.abs(other_contact - ref_other_contact) * (ref_other_contact > contact_thres))).mean(dim=-1)
+        rcg_other = torch.exp(-ecg_other * w['cg_other'])
+
+        no_contact = torch.abs(human_contact) < contact_thres
+        ecg_all = (torch.abs(no_contact + ref_human_contact) * (ref_human_contact < -contact_thres)).mean(dim=-1)
+        rcg_all = torch.exp(-ecg_all * w['cg_all'])
+
+        contact_all = self.contact_forces.clone().abs().sum(dim=-1).sum(dim=-1)
+        contact_energy = contact_all.pow(2).mul(-w['eg3']).exp()
+
+        rcg = rcg_hand * rcg_other * rcg_all * contact_energy
+        self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
+        return rcg
+
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):
     tar_pos = obj_states[:, 0:3]
@@ -359,3 +653,30 @@ def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, re
 
     obs = torch.cat([local_tar_vel, local_tar_ang_vel, diff_local_obj_pos_flat, diff_local_obj_rot_obs, diff_local_vel, diff_local_ang_vel], dim=-1)
     return obs
+
+
+@torch.jit.script
+def compute_sdf(points1, points2):
+    # type: (Tensor, Tensor) -> Tensor
+    dis_mat = points1.unsqueeze(2) - points2.unsqueeze(1)
+    dis_mat_lengths = torch.norm(dis_mat, dim=-1)
+    min_length_indices = torch.argmin(dis_mat_lengths, dim=-1)
+    B_indices, N_indices = torch.meshgrid(torch.arange(points1.shape[0]), torch.arange(points1.shape[1]), indexing='ij')
+    min_dis_mat = dis_mat[B_indices, N_indices, min_length_indices].contiguous()
+    return min_dis_mat
+
+@torch.jit.script
+def compute_hoi_observation_jit(root_rot, ref_ig, ig):
+    N = root_rot.shape[0]
+    root_rot_extend = root_rot.view(-1, 4)
+    heading_rot = calc_heading_quat_inv(root_rot_extend)
+
+    local_ref_ig = quat_rotate(heading_rot, ref_ig)
+    local_ig = quat_rotate(heading_rot, ig)
+
+    diff_ig = local_ref_ig - local_ig
+
+    diff_ig = diff_ig.view(N, -1)
+    local_ig = local_ig.view(N, -1)
+
+    return torch.cat([local_ig, diff_ig], dim = -1)

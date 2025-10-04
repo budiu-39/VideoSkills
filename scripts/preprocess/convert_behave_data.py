@@ -9,10 +9,14 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import glob
+
 from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
+from scripts.preprocess.mujoco_contact_inference import build_local_templates_from_xml, contacts_from_xml_pointcloud
+from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state
+import trimesh
 import joblib
 import torch
 import mujoco
@@ -20,8 +24,67 @@ import time
 import pickle
 import json
 
+from scripts.preprocess.hoi_visualization import visualize_contact_frame
+import os
+import os.path as osp
+import json
+import numpy as np
+
+
 Q_UPRIGHT_XYZW = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
 Rupright = sRot.from_quat(Q_UPRIGHT_XYZW)
+
+GRAVITY = torch.tensor([0.0, 0.0, -9.81])  # z 轴向上坐标系
+AIRBORNE_H = 0.05        # 空中判定高度阈值（m）
+ACC_DEV_THR = 2.0        # “偏离重力”判定阈值（m/s^2）
+GROUND_H_TOL = 0.02      # 认为在地面的 z 高度容差（m）
+SPEED_THR = 0.05         # 地面时“仍在运动”的速度阈值（m/s）
+CLOSE_MIN_THR = 0.05     # 最近距离判定交互阈值（m）
+ADAPTIVE_PAD = 0.005     # sigma_t = min_dist + 0.005（m）
+FIXED_SIGMA_NO_INTERACT = 0.02  # 若不满足三条交互条件时的保底阈值（可选）
+
+# 构建一次，全局使用
+name2idx52 = {name: i for i, name in enumerate(SMPLH_MUJOCO_NAMES)}
+
+def build_bodyid_to_52_map(mj_model):
+    m = {}
+    for bid in range(mj_model.nbody):
+        nm = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, bid)
+        if nm in name2idx52:
+            m[bid] = name2idx52[nm]
+    return m
+
+mj_model, local_clouds = build_local_templates_from_xml("data/robots/smpl/smplx_humanoid_v1.xml",
+                                                        samples_per_geom=100)
+
+BODYID_TO_52 = build_bodyid_to_52_map(mj_model)
+
+def worldize_clouds_per_frame(mj_model, mj_data, local_clouds):
+    body_clouds = {}
+    for pts_local, body_id, g in local_clouds:
+        # ⭐ 将 MuJoCo body_id 映射到 0..51
+        mapped = BODYID_TO_52.get(body_id, None)
+        if mapped is None:
+            continue
+        xpos = mj_data.geom_xpos[g].copy()
+        xmat = mj_data.geom_xmat[g].reshape(3, 3)
+        pts_world = (pts_local @ xmat.T) + xpos[None, :]
+        if mapped not in body_clouds:
+            body_clouds[mapped] = pts_world
+        else:
+            body_clouds[mapped] = np.vstack([body_clouds[mapped], pts_world])
+    return body_clouds
+
+def _quat_rotate_xyzw(q, v):
+    """快速批量旋转: q:[T,4] (xyzw)，v:[P,3] 或 [T,P,3]"""
+    if v.dim() == 2:
+        v = v.unsqueeze(0).expand(q.shape[0], -1, -1)   # -> [T,P,3]
+    qv = q[:, :3]                                       # [T,3]
+    qw = q[:, 3:4]                                      # [T,1]
+    # 公式: v' = v + 2*qv×(qw*v + qv×v)
+    cross_qv_v = torch.cross(qv.unsqueeze(1).expand_as(v), v, dim=-1)
+    term = qw.unsqueeze(1)*v + cross_qv_v
+    return v + 2.0*torch.cross(qv.unsqueeze(1).expand_as(v), term, dim=-1)
 
 def apply_cam2world_rotvec_trans(rotvec, trans, R3x3):
     r_new = sRot.from_matrix(R3x3) * sRot.from_rotvec(rotvec)
@@ -67,11 +130,6 @@ def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
             time.sleep(1 / 30)
-
-import os
-import os.path as osp
-import json
-import numpy as np
 
 def _to_float32_safe(arr, allow_strings_prefix_t=False):
     """Cast to float32, optionally parse string like 't0003.000'."""
@@ -150,6 +208,15 @@ def load_behave_sequence(sequence_path, parse_frame_times=True, strict=True):
 
     return out
 
+def compute_sdf(points1, points2):
+    # type: (Tensor, Tensor) -> Tensor
+    dis_mat = points1.unsqueeze(2) - points2.unsqueeze(1)
+    dis_mat_lengths = torch.norm(dis_mat, dim=-1)
+    min_length_indices = torch.argmin(dis_mat_lengths, dim=-1)
+    B_indices, N_indices = torch.meshgrid(torch.arange(points1.shape[0]), torch.arange(points1.shape[1]), indexing='ij')
+    min_dis_mat = dis_mat[B_indices, N_indices, min_length_indices].contiguous()
+    return min_dis_mat
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", default=False)
@@ -182,6 +249,7 @@ if __name__ == "__main__":
     }
     skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v1.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
+
 
     # BEHAVE dataset structure: each sequence contains SMPL fits and object interactions
     # We look for sequences with SMPL fits
@@ -254,7 +322,7 @@ if __name__ == "__main__":
         # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
         world_shift = np.zeros(3, dtype=np.float32)
         root_trans_offset = root_trans + skeleton_tree_smpl.local_translation[0].numpy()
-        # root_trans_offset = root_trans
+        # root_trans_offset = root_tran
         pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa[:, :3], root_trans_offset, R_cam2world)
         root_trans_offset = torch.from_numpy(root_trans_offset).float()
         # 关节重排
@@ -316,6 +384,8 @@ if __name__ == "__main__":
         key_str = os.path.basename(os.path.normpath(sequence_dir))
         object_name_str = key_str.split('_')[2]
 
+
+
         obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
         obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
 
@@ -353,6 +423,72 @@ if __name__ == "__main__":
         key_str = os.path.basename(os.path.normpath(sequence_dir))
         object_name_str = key_str.split('_')[2]
         motion_dict = motion.to_dict()  # 与 motion.to_file() 里保存的结构一致
+
+        # ==== 推理接触 ====
+        # 1) 准备 body_pos (世界坐标): [T,52,3]
+        body_pos_t = new_sk_state.global_translation  # Tensor, 与上文一致
+        if not isinstance(body_pos_t, torch.Tensor):
+            body_pos_t = torch.from_numpy(body_pos_t)
+        body_pos_t = body_pos_t.to(torch.float32)  # [T,52,3]
+
+        # 2) 准备物体表面点（以物体中心为原点）
+        obj_root = "dataset/behave/objects_centered"  # 根据你的资源路径调整
+        obj_name = object_name_str
+        obj_mesh_path = osp.join(obj_root, "objects", obj_name, f"{obj_name}.obj")
+        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
+        mean = mesh_obj.vertices.mean(axis=0)
+        obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
+        obj_points = torch.from_numpy((obj_points - mean).astype(np.float32))  # [P,3]
+
+        q_xyzw = torch.from_numpy(obj_quat_xyzw.astype(np.float32))  # [T,4]
+        p_w = torch.from_numpy(obj_pos.astype(np.float32))  # [T,3]
+        dt = 1.0 / fps
+
+        # obj_quat_xyzw_upright = apply_upright_quat_xyzw(obj_quat_xyzw)  # = q * Rupright.inv(), 保持 xyzw
+        # q_xyzw = torch.from_numpy(obj_quat_xyzw_upright.astype(np.float32))  # 后续一律用这个 q
+
+        # contact_human, contact_obj, min_pair_idx = infer_reference_contacts(
+        #     body_pos=body_pos_t,  # [T,52,3]
+        #     obj_pos=p_w,  # [T,3]
+        #     obj_quat_xyzw=q_xyzw,  # [T,4] (xyzw)
+        #     obj_points_centered=obj_points,  # [P,3]
+        #     dt=dt,
+        #     ground_height=0.0,  # 如地面不在 z=0 请改成该序列的地面标高
+        #     device=body_pos_t.device,
+        #     chunk_size=256
+        # )
+
+        obj_points_local = torch.from_numpy(
+            trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)[0].astype(np.float32))
+        obj_pts_world = _quat_rotate_xyzw(q_xyzw, obj_points_local) + p_w.unsqueeze(1)  # [T,P,3]
+
+        with torch.no_grad():
+            # obj_pts_world 已在上文计算
+            ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
+            ref_ig = ig_torch.cpu().numpy().astype(np.float32)
+
+        # # 5) 转 numpy 存入 bundle（contact 也是 float32）
+        # contact_human_np = contact_human.cpu().numpy().astype(np.float32)  # [T,52]
+        # contact_obj_np = contact_obj.cpu().numpy().astype(np.float32)   # [T,1]
+
+        # 用与你渲染一致的 xml（例如 data/robots/smpl/smpl_humanoid.xml 或 smplx_humanoid_v1.xml）
+        qpos_seq_np = build_qpos_seq_from_state(mj_model, new_sk_state)
+
+        obj_pts_world_np = obj_pts_world.cpu().numpy().astype(np.float32)  # [T,P,3]
+        obj_pos_np = p_w.cpu().numpy().astype(np.float32)  # [T,3]
+        obj_vel_np = obj_pos_vel.astype(np.float32)  # [T,3]
+        obj_acc_np = np.zeros_like(obj_vel_np, dtype=np.float32)
+        obj_acc_np[1:] = (obj_vel_np[1:] - obj_vel_np[:-1]) / dt
+
+        contact_robot = contacts_from_xml_pointcloud(
+            mj_model, local_clouds,
+            qpos_seq=qpos_seq_np.astype(np.float32),
+            obj_pts_world=obj_pts_world_np,  # [T,P,3]
+            obj_pos=obj_pos_np, vel=obj_vel_np, acc=obj_acc_np,
+            sigma_pad=ADAPTIVE_PAD, sigma_no_interact=FIXED_SIGMA_NO_INTERACT,
+            ground_height=0.0
+        ).astype(np.float32)
+
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
             "object": {
@@ -361,8 +497,33 @@ if __name__ == "__main__":
                 "obj_rot": obj_quat_xyzw,  # xyzw —— Isaac Gym 对齐
                 "obj_pos_vel": obj_pos_vel,
                 "obj_rot_vel": obj_rot_vel,
+            },
+            "interaction": {
+                "ig": ref_ig,  # (T,52,3) float32（世界系）
+                "contact_robot": contact_robot,  # (T,52)   0/1 float32
+                # "contact_obj": contact_obj_np,  # (T,1)    0/1 float32
             }
         }
+
+        # === 可视化
+
+        t = min(100, obj_pts_world_np.shape[0] - 1)  # 举例挑一帧
+        mj_data = mujoco.MjData(mj_model)
+        mj_data.qpos[:] = qpos_seq_np[t]
+        mujoco.mj_forward(mj_model, mj_data)
+
+        visualize_contact_frame(
+            mj_model=mj_model,
+            mj_data=mj_data,
+            local_clouds=local_clouds,
+            obj_pts_world_frame=obj_pts_world_np[t],
+            body_pos_frame=body_pos_t[t],  # 可选
+            ig_frame=ref_ig[t],  # 可选
+            contact_row=(contact_robot[t] if 'contact_robot' in locals() else None),  # 可选
+            title=f"seq:{key_str} t={t}",
+            show=True,
+            save_path=f"debug_{key_str}_t{t}.glb"  # 想导出就填；headless 时很有用
+        )
 
         # Construct save path
         rel_path = osp.relpath(sequence_dir, args.path)
@@ -379,3 +540,4 @@ if __name__ == "__main__":
             vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
 
     print("Done")
+

@@ -69,9 +69,9 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
-        enabled = True
+        enabled = False
         # distance = [0.25] * 24
-        distance = [0.25] * 52
+        distance = [0.5] * 52
 
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -81,7 +81,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_4')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
@@ -128,7 +128,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
         activate_quat_to_tan_norm = True
-        norm_num_observations = 778 + 528 + 21 + 153
+        norm_num_observations = 778 + 528 + 21 + 156 + 153 + 52 + 156
 
     class control:
         # PD Drive parameters:
@@ -229,28 +229,32 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
-        class task_w:
-            k_ang_vel = 0.1
-            k_pos = 100
-            k_rot = 10
-            k_vel = 0.1
-            w_ang_vel = 0.1
-            w_pos = 0.3
-            w_rot = 0.5
-            w_vel = 0.1
-            # k_ang_vel = 0.1
-            # k_pos = 100
-            # k_rot = 10
-            # k_vel = 0.1
-            # w_ang_vel = 0.5
-            # w_pos = 0.5
-            # w_rot = 0.5
-            # w_vel = 0.5
+        class weight:
+            p = 30.
+            r = 1.5
+            pv = 0.
+            rv = 0.
+
+            op = 5.0
+            obj_r = 0.1
+            opv = 0.1
+            orv = 0.
+
+            ig = 5.
+
+            cg_hand = 5.
+            cg_other = 5.
+            cg_all = 3.
+
+            eg1 = 0.00002
+            eg2 = 0.00002
+            eg3 = 0.00000000001
         class scales:
-            imitation = 1.0
-            # torques = -0.000001
-            dof_force = -0.0005
-            # action_rate = - 0.02
+            humanoid = 1.0
+            obj = 1.0
+            ig = 1.0
+            cg = 1.0
+
 
     class sim(LeggedRobotCfg.sim):
         dt =  0.0166667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30

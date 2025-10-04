@@ -39,6 +39,8 @@ class MotionLibHoi(MotionLib):
         self._obj_rot_vel_list = []
         self._has_object = False
         self._motion_obj_names = []
+        self.ig = []  # interaction guide
+        self.contact_robot = []  # contact map on human (52 body SMPLH/X robot joints)
 
         # 实际加载
         self._load_motions_hoi(motion_file)
@@ -112,6 +114,7 @@ class MotionLibHoi(MotionLib):
             # 采集 object 通道（若 bundle）
             if is_bundle and ("object" in payload):
                 objd = payload["object"] or {}
+                hoi = payload['interaction']
                 def _to_torch_clip(arr, last_dim=None):
                     if arr is None: return None
                     t = torch.as_tensor(arr, dtype=torch.float32)
@@ -123,6 +126,8 @@ class MotionLibHoi(MotionLib):
                 o_rot     = _to_torch_clip(objd.get("obj_rot"),     4)  # xyzw
                 o_pos_vel = _to_torch_clip(objd.get("obj_pos_vel"), 3)
                 o_rot_vel = _to_torch_clip(objd.get("obj_rot_vel"), 3)
+                ig = _to_torch_clip(hoi.get("ig"), 3)
+                contact_robot = _to_torch_clip(hoi.get("contact_robot"), 52)
                 obj_name = (payload["object"] or {}).get("name", None)
 
                 if (o_pos is not None) and (o_rot is not None):
@@ -130,6 +135,8 @@ class MotionLibHoi(MotionLib):
                     self._obj_rot_list.append(o_rot)
                     self._obj_pos_vel_list.append(o_pos_vel if o_pos_vel is not None else torch.zeros((num_frames,3)))
                     self._obj_rot_vel_list.append(o_rot_vel if o_rot_vel is not None else torch.zeros((num_frames,3)))
+                    self.ig.append(ig if ig is not None else torch.zeros((num_frames,3)))
+                    self.contact_robot.append(contact_robot if contact_robot is not None else torch.zeros((num_frames,52)))
                     self._motion_obj_names.append(obj_name)
                     self._has_object = True
                 else:
@@ -138,6 +145,7 @@ class MotionLibHoi(MotionLib):
                     self._obj_rot_list.append(torch.tensor([[0,0,0,1]]).repeat(num_frames,1))
                     self._obj_pos_vel_list.append(torch.zeros((num_frames,3)))
                     self._obj_rot_vel_list.append(torch.zeros((num_frames,3)))
+
 
         # 排序（含 HOI 列表）
         self._sort_motions_by_length_hoi()
@@ -154,6 +162,8 @@ class MotionLibHoi(MotionLib):
             self.obj_rot     = torch.cat(self._obj_rot_list,     dim=0).to(self._device)   # xyzw
             self.obj_pos_vel = torch.cat(self._obj_pos_vel_list, dim=0).to(self._device)
             self.obj_rot_vel = torch.cat(self._obj_rot_vel_list, dim=0).to(self._device)
+            self.ig = torch.cat(self.ig, dim=0).to(self._device)
+            self.contact_robot = torch.cat(self.contact_robot, dim=0).to(self._device)
 
         # 唯一物体名 & 词表
         uniq_names = sorted(set(self._motion_obj_names))
@@ -226,11 +236,16 @@ class MotionLibHoi(MotionLib):
         o_pos_vel = self.obj_pos_vel[f0l]  # [B,3]
         o_rot_vel = self.obj_rot_vel[f0l]  # [B,3]
 
+        ig = self.ig[f0l]  # [B,3]
+        contact_robot = self.contact_robot[f0l]
+
         return {
             "obj_pos": o_pos,
             "obj_rot": o_rot,  # xyzw
             "obj_pos_vel": o_pos_vel,
             "obj_rot_vel": o_rot_vel,
+            "ig": ig,
+            "contact_robot": contact_robot,
         }
 
     def sample_motions_by_object(self, object_ids: torch.Tensor) -> torch.Tensor:
