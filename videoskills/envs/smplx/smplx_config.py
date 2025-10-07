@@ -69,7 +69,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
-        enabled = False
+        enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 52
 
@@ -206,7 +206,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v2.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_v2.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"

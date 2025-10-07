@@ -82,7 +82,6 @@ class LeggedRobotImi(LeggedRobot):
         asset_options.angular_damping = 0.0
         asset_options.max_angular_velocity = 100.0
         asset_options.default_dof_drive_mode = self.drive_mode
-
         asset_path = self.cfg.asset.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
         asset_root = os.path.dirname(asset_path)
         asset_file = os.path.basename(asset_path)
@@ -188,8 +187,8 @@ class LeggedRobotImi(LeggedRobot):
                                              0)
         self.robot_handles.append(robot_handle)
 
-        if hasattr(self.cfg.rewards.scales, 'dof_force'):
-            self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
+        # if hasattr(self.cfg.rewards.scales, 'dof_force'):
+        self.gym.enable_actor_dof_force_sensors(env_ptr, robot_handle)
 
         for j in range(self.num_bodies):
             self.gym.set_rigid_body_color(env_ptr, robot_handle, j, gymapi.MESH_VISUAL, gymapi.Vec3(0.54, 0.85, 0.2))

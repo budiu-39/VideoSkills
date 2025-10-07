@@ -14,17 +14,13 @@ from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree, Skeleton
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.preprocess.mujoco_contact_inference import build_local_templates_from_xml, contacts_from_xml_pointcloud
-from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state
+from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
+from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
+from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
 import trimesh
 import joblib
 import torch
 import mujoco
-import time
-import pickle
-import json
-
-from scripts.preprocess.hoi_visualization import visualize_contact_frame
 import os
 import os.path as osp
 import json
@@ -39,41 +35,14 @@ AIRBORNE_H = 0.05        # 空中判定高度阈值（m）
 ACC_DEV_THR = 2.0        # “偏离重力”判定阈值（m/s^2）
 GROUND_H_TOL = 0.02      # 认为在地面的 z 高度容差（m）
 SPEED_THR = 0.05         # 地面时“仍在运动”的速度阈值（m/s）
-CLOSE_MIN_THR = 0.05     # 最近距离判定交互阈值（m）
+CLOSE_MIN_THR = 0.1     # 最近距离判定交互阈值（m）
 ADAPTIVE_PAD = 0.005     # sigma_t = min_dist + 0.005（m）
 FIXED_SIGMA_NO_INTERACT = 0.02  # 若不满足三条交互条件时的保底阈值（可选）
 
-# 构建一次，全局使用
-name2idx52 = {name: i for i, name in enumerate(SMPLH_MUJOCO_NAMES)}
 
-def build_bodyid_to_52_map(mj_model):
-    m = {}
-    for bid in range(mj_model.nbody):
-        nm = mujoco.mj_id2name(mj_model, mujoco.mjtObj.mjOBJ_BODY, bid)
-        if nm in name2idx52:
-            m[bid] = name2idx52[nm]
-    return m
 
-mj_model, local_clouds = build_local_templates_from_xml("data/robots/smpl/smplx_humanoid_v1.xml",
-                                                        samples_per_geom=100)
 
-BODYID_TO_52 = build_bodyid_to_52_map(mj_model)
 
-def worldize_clouds_per_frame(mj_model, mj_data, local_clouds):
-    body_clouds = {}
-    for pts_local, body_id, g in local_clouds:
-        # ⭐ 将 MuJoCo body_id 映射到 0..51
-        mapped = BODYID_TO_52.get(body_id, None)
-        if mapped is None:
-            continue
-        xpos = mj_data.geom_xpos[g].copy()
-        xmat = mj_data.geom_xmat[g].reshape(3, 3)
-        pts_world = (pts_local @ xmat.T) + xpos[None, :]
-        if mapped not in body_clouds:
-            body_clouds[mapped] = pts_world
-        else:
-            body_clouds[mapped] = np.vstack([body_clouds[mapped], pts_world])
-    return body_clouds
 
 def _quat_rotate_xyzw(q, v):
     """快速批量旋转: q:[T,4] (xyzw)，v:[P,3] 或 [T,P,3]"""
@@ -112,24 +81,6 @@ def fix_trans_height(pose_aa, trans, betas, mesh_parser):
 
         trans[..., -1] -= diff_fix
         return trans, diff_fix
-
-def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
-
-    print(mujoco.__version__)  # 应该输出 3.2.3
-    print(hasattr(mujoco, "viewer"))
-
-    mj_model = mujoco.MjModel.from_xml_path(xml_path)
-    mj_data = mujoco.MjData(mj_model)
-    num_frames = len(motion_traj['root_trans_offset'])
-
-    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
-        for t in range(num_frames):
-            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
-            mj_data.qpos[3:7] = motion_traj['root_rotation'][t][[3, 0, 1, 2]]  # Convert from wxyz to xyzw
-            mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
-            mujoco.mj_forward(mj_model, mj_data)
-            viewer.sync()
-            time.sleep(1 / 30)
 
 def _to_float32_safe(arr, allow_strings_prefix_t=False):
     """Cast to float32, optionally parse string like 't0003.000'."""
@@ -217,6 +168,27 @@ def compute_sdf(points1, points2):
     min_dis_mat = dis_mat[B_indices, N_indices, min_length_indices].contiguous()
     return min_dis_mat
 
+
+def angular_velocity_world_from_quat_xyzw(q_xyzw: np.ndarray, dt: float) -> np.ndarray:
+    """
+    输入:  q_xyzw 形状 (T,4)，SciPy/内存统一为 [x,y,z,w]
+    输出:  omega_w 形状 (T,3)，世界系角速度；omega_w[0]=0
+    做法:  dq = r[t-1]^{-1} * r[t] -> log(dq)/dt 在 t-1 局部系，
+          再用 R_{t-1} 把它映到世界系。
+    """
+    T = len(q_xyzw)
+    omega_w = np.zeros((T, 3), dtype=np.float32)
+    if T <= 1 or dt <= 0:
+        return omega_w
+
+    r = sRot.from_quat(q_xyzw)  # [x,y,z,w]
+    for t in range(1, T):
+        dq = r[t - 1].inv() * r[t]  # 相对旋转（定义在 t-1 局部系）
+        w_local = dq.as_rotvec() / dt  # 局部角速度
+        R_prev = r[t - 1].as_matrix()
+        omega_w[t] = (R_prev @ w_local).astype(np.float32)
+    return omega_w
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", default=False)
@@ -247,7 +219,7 @@ if __name__ == "__main__":
         "actuator_params": {},
         "model": "smplx",
     }
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v1.xml")
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v2.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
 
@@ -346,8 +318,6 @@ if __name__ == "__main__":
             root_trans_offset,
             is_local=True)
 
-
-
         frame_check = 100
         height_tolorance = 0
         fix_height = True  # 开启更稳妥
@@ -366,7 +336,6 @@ if __name__ == "__main__":
                 root_trans_offset[..., -1] -= diff_fix
                 world_shift -= np.array([0, 0, diff_fix], dtype=np.float32)
 
-
         # 局部坐标系旋转
         if robot_cfg['upright_start']:
             pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
@@ -384,8 +353,6 @@ if __name__ == "__main__":
         key_str = os.path.basename(os.path.normpath(sequence_dir))
         object_name_str = key_str.split('_')[2]
 
-
-
         obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
         obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
 
@@ -398,26 +365,6 @@ if __name__ == "__main__":
         obj_pos_vel[1:] = (obj_pos[1:] - obj_pos[:-1]) / dt
 
         # 角速度
-        def angular_velocity_world_from_quat_xyzw(q_xyzw: np.ndarray, dt: float) -> np.ndarray:
-            """
-            输入:  q_xyzw 形状 (T,4)，SciPy/内存统一为 [x,y,z,w]
-            输出:  omega_w 形状 (T,3)，世界系角速度；omega_w[0]=0
-            做法:  dq = r[t-1]^{-1} * r[t] -> log(dq)/dt 在 t-1 局部系，
-                  再用 R_{t-1} 把它映到世界系。
-            """
-            T = len(q_xyzw)
-            omega_w = np.zeros((T, 3), dtype=np.float32)
-            if T <= 1 or dt <= 0:
-                return omega_w
-
-            r = sRot.from_quat(q_xyzw)  # [x,y,z,w]
-            for t in range(1, T):
-                dq = r[t - 1].inv() * r[t]  # 相对旋转（定义在 t-1 局部系）
-                w_local = dq.as_rotvec() / dt  # 局部角速度
-                R_prev = r[t - 1].as_matrix()
-                omega_w[t] = (R_prev @ w_local).astype(np.float32)
-            return omega_w
-
         obj_rot_vel = angular_velocity_world_from_quat_xyzw(obj_quat_xyzw, dt)
 
         key_str = os.path.basename(os.path.normpath(sequence_dir))
@@ -436,27 +383,12 @@ if __name__ == "__main__":
         obj_name = object_name_str
         obj_mesh_path = osp.join(obj_root, "objects", obj_name, f"{obj_name}.obj")
         mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-        mean = mesh_obj.vertices.mean(axis=0)
         obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
-        obj_points = torch.from_numpy((obj_points - mean).astype(np.float32))  # [P,3]
 
         q_xyzw = torch.from_numpy(obj_quat_xyzw.astype(np.float32))  # [T,4]
         p_w = torch.from_numpy(obj_pos.astype(np.float32))  # [T,3]
         dt = 1.0 / fps
 
-        # obj_quat_xyzw_upright = apply_upright_quat_xyzw(obj_quat_xyzw)  # = q * Rupright.inv(), 保持 xyzw
-        # q_xyzw = torch.from_numpy(obj_quat_xyzw_upright.astype(np.float32))  # 后续一律用这个 q
-
-        # contact_human, contact_obj, min_pair_idx = infer_reference_contacts(
-        #     body_pos=body_pos_t,  # [T,52,3]
-        #     obj_pos=p_w,  # [T,3]
-        #     obj_quat_xyzw=q_xyzw,  # [T,4] (xyzw)
-        #     obj_points_centered=obj_points,  # [P,3]
-        #     dt=dt,
-        #     ground_height=0.0,  # 如地面不在 z=0 请改成该序列的地面标高
-        #     device=body_pos_t.device,
-        #     chunk_size=256
-        # )
 
         obj_points_local = torch.from_numpy(
             trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)[0].astype(np.float32))
@@ -467,11 +399,9 @@ if __name__ == "__main__":
             ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
             ref_ig = ig_torch.cpu().numpy().astype(np.float32)
 
-        # # 5) 转 numpy 存入 bundle（contact 也是 float32）
-        # contact_human_np = contact_human.cpu().numpy().astype(np.float32)  # [T,52]
-        # contact_obj_np = contact_obj.cpu().numpy().astype(np.float32)   # [T,1]
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid_v2.xml",
+                                                                samples_per_geom=500)
 
-        # 用与你渲染一致的 xml（例如 data/robots/smpl/smpl_humanoid.xml 或 smplx_humanoid_v1.xml）
         qpos_seq_np = build_qpos_seq_from_state(mj_model, new_sk_state)
 
         obj_pts_world_np = obj_pts_world.cpu().numpy().astype(np.float32)  # [T,P,3]
@@ -480,14 +410,25 @@ if __name__ == "__main__":
         obj_acc_np = np.zeros_like(obj_vel_np, dtype=np.float32)
         obj_acc_np[1:] = (obj_vel_np[1:] - obj_vel_np[:-1]) / dt
 
-        contact_robot = contacts_from_xml_pointcloud(
-            mj_model, local_clouds,
+        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+        names = np.array([str(n) for n in skeleton_tree.node_names])  # or skeleton_tree.body_names
+        # 你想标记为“地面/脚/胸”的集合（名字要与 XML/Skeleton 一致）
+        mask_names = {"L_Ankle", "R_Ankle", "L_Toe", "R_Toe"}
+        # Skeleton 顺序的布尔掩码：True 表示该 body 属于“接地”集合
+        ground_mask_sk = np.isin(names, list(mask_names))
+        # 调 contacts + ig
+        contact_robot, ig_np = contacts_from_xml_pointcloud(
+            mj_model, body_clouds,
             qpos_seq=qpos_seq_np.astype(np.float32),
-            obj_pts_world=obj_pts_world_np,  # [T,P,3]
+            obj_pts_world=obj_pts_world_np,
             obj_pos=obj_pos_np, vel=obj_vel_np, acc=obj_acc_np,
             sigma_pad=ADAPTIVE_PAD, sigma_no_interact=FIXED_SIGMA_NO_INTERACT,
-            ground_height=0.0
-        ).astype(np.float32)
+            ground_height=0.0,
+            sk2mj=sk2mj, mj2sk=mj2sk,
+            ig_body_pos_world = body_pos_t.numpy().astype(np.float32),
+            ig_body_rot_world = new_sk_state.global_rotation.numpy().astype(np.float32),
+            ground_mask_sk=ground_mask_sk,
+        )
 
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
@@ -501,29 +442,48 @@ if __name__ == "__main__":
             "interaction": {
                 "ig": ref_ig,  # (T,52,3) float32（世界系）
                 "contact_robot": contact_robot,  # (T,52)   0/1 float32
-                # "contact_obj": contact_obj_np,  # (T,1)    0/1 float32
             }
         }
 
         # === 可视化
-
-        t = min(100, obj_pts_world_np.shape[0] - 1)  # 举例挑一帧
+        t = min(100, obj_pts_world_np.shape[0] - 1)
         mj_data = mujoco.MjData(mj_model)
         mj_data.qpos[:] = qpos_seq_np[t]
         mujoco.mj_forward(mj_model, mj_data)
 
-        visualize_contact_frame(
-            mj_model=mj_model,
-            mj_data=mj_data,
-            local_clouds=local_clouds,
-            obj_pts_world_frame=obj_pts_world_np[t],
-            body_pos_frame=body_pos_t[t],  # 可选
-            ig_frame=ref_ig[t],  # 可选
-            contact_row=(contact_robot[t] if 'contact_robot' in locals() else None),  # 可选
-            title=f"seq:{key_str} t={t}",
-            show=True,
-            save_path=f"debug_{key_str}_t{t}.glb"  # 想导出就填；headless 时很有用
-        )
+        body_pos_frame = body_pos_t[t].cpu().numpy().astype(np.float64)
+        body_rot_frame = new_sk_state.global_rotation[t].cpu().numpy().astype(np.float64)
+        # body_pos_frame = mj_data.xpos[sk2mj].copy()  # 严格用 MJCF body 原点
+        quick_viz = False
+
+        if quick_viz:
+            quick_viz_frame(
+                mj_model, mj_data,
+                body_local_clouds=body_clouds,
+                obj_pts=obj_pts_world_np[t],
+                contact_row=contact_robot[t],
+                body_rot_frame=body_rot_frame,
+                mj2sk=mj2sk,
+                title=f"seq:{key_str} t={t}",
+                body_pos_frame=body_pos_frame,
+                ig_frame=ig_np[t],
+            )
+
+        if args.render:
+            temp_xml = create_temp_xml_with_object(
+                "data/robots/smpl/smplx_humanoid_v2.xml",
+                obj_mesh_path
+            )
+            motion_traj = {}
+            motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
+            motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
+            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
+            vis_mujoco_hoi(
+                motion_traj,
+                obj_pos=obj_pos,
+                obj_quat_xyzw=obj_quat_xyzw,
+                xml_path=temp_xml
+            )
 
         # Construct save path
         rel_path = osp.relpath(sequence_dir, args.path)
@@ -531,13 +491,6 @@ if __name__ == "__main__":
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         np.save(save_path, bundle, allow_pickle=True)
 
-        # Optionally render
-        if args.render:
-            motion_traj = {}
-            motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
-            motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
-            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
-            vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
 
     print("Done")
 

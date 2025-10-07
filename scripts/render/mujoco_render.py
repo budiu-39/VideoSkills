@@ -73,7 +73,7 @@ def export_mujoco_video(
     writer.close()
     print(f" video saved →  {output_path}")
 
-def vis_mujoco(motion_traj, xml_path, humanoid_type = 'g1'):
+def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
 
     print(mujoco.__version__)  # 应该输出 3.2.3
     print(hasattr(mujoco, "viewer"))
@@ -83,17 +83,110 @@ def vis_mujoco(motion_traj, xml_path, humanoid_type = 'g1'):
     num_frames = len(motion_traj['root_trans_offset'])
 
     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
-        # 设置摄像机参数
-        viewer.cam.lookat[:] = motion_traj['root_trans_offset'][0]  # 朝向机器人初始位置
-        viewer.cam.distance = 3.0  # 相机距离，可调整
-        viewer.cam.azimuth = -90  # 方位角（左侧视图）
-        viewer.cam.elevation = -15  # 仰角（往下看）
-
         for t in range(num_frames):
             mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
-            mj_data.qpos[3:7] = sRot.from_rotvec(motion_traj['pose_aa'][t][0]).as_quat()[[3, 0, 1, 2]]
+            mj_data.qpos[3:7] = motion_traj['root_rotation'][t][[3, 0, 1, 2]]  # Convert from wxyz to xyzw
             mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
             time.sleep(1 / 30)
 
+def vis_mujoco_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path):
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+    mj_data  = mujoco.MjData(mj_model)
+    num_frames = len(motion_traj['root_trans_offset'])
+
+    def xyzw_to_wxyz(q): return q[[3,0,1,2]]
+
+    obj_mocap_bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "object_body")
+    obj_mocap_id  = obj_mocap_bid - mj_model.nbody + mj_model.nmocap
+
+    with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+        for t in range(num_frames):
+            mj_data.qpos[:3]  = motion_traj['root_trans_offset'][t]
+            mj_data.qpos[3:7] = motion_traj['root_rotation'][t][[3,0,1,2]]
+            mj_data.qpos[7:]  = motion_traj['dof'][t].flatten()
+
+            mj_data.mocap_pos[obj_mocap_id]  = obj_pos[t]
+            mj_data.mocap_quat[obj_mocap_id] = xyzw_to_wxyz(obj_quat_xyzw[t])
+
+            mujoco.mj_forward(mj_model, mj_data)
+            viewer.sync()
+            time.sleep(1/30)
+
+# def vis_mujoco(motion_traj, xml_path, humanoid_type = 'g1'):
+#
+#     print(mujoco.__version__)  # 应该输出 3.2.3
+#     print(hasattr(mujoco, "viewer"))
+#
+#     mj_model = mujoco.MjModel.from_xml_path(xml_path)
+#     mj_data = mujoco.MjData(mj_model)
+#     num_frames = len(motion_traj['root_trans_offset'])
+#
+#     with mujoco.viewer.launch_passive(mj_model, mj_data) as viewer:
+#         # 设置摄像机参数
+#         viewer.cam.lookat[:] = motion_traj['root_trans_offset'][0]  # 朝向机器人初始位置
+#         viewer.cam.distance = 3.0  # 相机距离，可调整
+#         viewer.cam.azimuth = -90  # 方位角（左侧视图）
+#         viewer.cam.elevation = -15  # 仰角（往下看）
+#
+#         for t in range(num_frames):
+#             mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
+#             mj_data.qpos[3:7] = sRot.from_rotvec(motion_traj['pose_aa'][t][0]).as_quat()[[3, 0, 1, 2]]
+#             mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
+#             mujoco.mj_forward(mj_model, mj_data)
+#             viewer.sync()
+#             time.sleep(1 / 30)
+
+import os
+import tempfile
+from lxml import etree
+
+def create_temp_xml_with_object(base_xml_path, obj_mesh_path=None):
+    """
+    基于现有 humanoid xml，添加一个 mocap 物体 body。
+    若 obj_mesh_path=None，则创建一个 box 占位。
+    返回：新 xml 的路径（临时文件，可直接传给 mujoco.MjModel.from_xml_path）
+    """
+    tree = etree.parse(base_xml_path)
+    root = tree.getroot()
+
+    # 确保有 worldbody 和 asset
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        worldbody = etree.SubElement(root, "worldbody")
+
+    asset = root.find("asset")
+    if asset is None:
+        asset = etree.SubElement(root, "asset")
+
+    # ---- 添加 mesh asset（可选） ----
+    geom_type = "box"
+    mesh_name = "MY_OBJ_MESH"
+    obj_mesh_path = os.path.abspath(obj_mesh_path) if obj_mesh_path is not None else None
+    if obj_mesh_path is not None and os.path.exists(obj_mesh_path):
+        geom_type = "mesh"
+        mesh_el = etree.SubElement(asset, "mesh", name=mesh_name, file=obj_mesh_path)
+
+    # ---- 添加 mocap body ----
+    body_el = etree.SubElement(worldbody, "body", name="object_body", mocap="true")
+
+    if geom_type == "mesh":
+        geom_el = etree.SubElement(
+            body_el, "geom",
+            name="object_geom", type="mesh", mesh=mesh_name,
+            rgba="0.2 0.8 0.2 0.6", contype="0", conaffinity="0"
+        )
+    else:
+        geom_el = etree.SubElement(
+            body_el, "geom",
+            name="object_geom", type="box", size="0.1 0.1 0.1",
+            rgba="0.2 0.8 0.2 0.6", contype="0", conaffinity="0"
+        )
+
+    # ---- 写入临时文件 ----
+    tmp_dir = tempfile.gettempdir()
+    tmp_path = os.path.join(tmp_dir, "humanoid_with_object.xml")
+    tree.write(tmp_path, pretty_print=True, encoding="utf-8", xml_declaration=True)
+    print(f"✅ 临时 XML 生成: {tmp_path}")
+    return tmp_path

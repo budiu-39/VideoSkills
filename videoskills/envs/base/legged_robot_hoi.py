@@ -26,7 +26,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         # TODO: Hacky code here for Behave dataset
         self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
-        self.reward_weights = self.cfg.rewards.scales
+        self.reward_weights = self.cfg.rewards.weight
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         env_obj_names = [self.object_name[i % len(self.object_name)] for i in range(self.num_envs)]
@@ -93,10 +93,10 @@ class LeggedRobotHoi(LeggedRobotImi):
 
             mesh_obj = trimesh.load(obj_file, force='mesh')
             obj_verts = mesh_obj.vertices
-            center = np.mean(obj_verts, 0)
+            # center = np.mean(obj_verts, 0)
             object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
 
-            object_points = to_torch(object_points  - center)
+            object_points = to_torch(object_points)
 
             while object_points.shape[0] < 1024:
                 object_points = torch.cat([object_points, object_points[:1024 - object_points.shape[0]]], dim=0)
@@ -107,13 +107,12 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _build_obj_tensors(self):
         num_actors = self.gym.get_actor_count(self.envs[0])
-        self._obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
+        self.obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
 
-        self.obj_pos = self._obj_states[..., 0:3]
-        self.obj_quat = self._obj_states[..., 3:7]
-        self.obj_vel = self._obj_states[..., 7:10]
-        self.obj_ang_vel = self._obj_states[..., 10:13]
-
+        self.obj_pos = self.obj_states[..., 0:3]
+        self.obj_quat = self.obj_states[..., 3:7]
+        self.obj_vel = self.obj_states[..., 7:10]
+        self.obj_ang_vel = self.obj_states[..., 10:13]
 
         self.tar_actor_ids = self.robot_actor_ids + 1
 
@@ -127,6 +126,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.contact_reset = torch.zeros((self.num_envs,2), device=self.device, dtype=torch.long)
         self.kinematic_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.ig_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
+        self.ig = torch.zeros((self.num_envs, self.num_bodies, 3), device=self.device, dtype=torch.float)
+        self.body_contact = torch.zeros((self.num_envs, self.num_bodies), device=self.device, dtype=torch.float)
 
         super()._init_buffers()
         self._build_obj_tensors()
@@ -192,9 +193,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.obj_quat[env_ids] = hoi_state["obj_rot"]  # xyzw
         self.obj_vel[env_ids] = hoi_state["obj_pos_vel"]
         self.obj_ang_vel[env_ids] = hoi_state["obj_rot_vel"]
-
-        self.ig = hoi_state['ig']
-        self.body_contact = hoi_state['human_contact']
+        self.ig[env_ids] = hoi_state['ig']
+        self.body_contact[env_ids] = hoi_state['contact_robot']
 
         return
 
@@ -206,7 +206,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
         hoi_state = self._motion_lib.get_hoi_state(self._sampled_motion_ids, motion_times)
 
-        self.ref_root_pos[:] = motion_state["root_pos"] + self.pos_offset['root']
+        self.ref_root_pos[:] =  motion_state["root_pos"] + self.pos_offset['root']
         self.ref_root_rot[:] = motion_state["root_rot"]
         self.ref_dof_pos[:] = motion_state["dof_pos"]
         self.ref_body_pos = motion_state["key_pos"] + self.pos_offset['body']
@@ -218,6 +218,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.ref_obj_pos_vel = hoi_state["obj_pos_vel"]
         self.ref_obj_rot_vel = hoi_state["obj_rot_vel"]
         self.ref_ig = hoi_state["ig"]
+        self.ref_contact= hoi_state["contact_robot"]
 
         # 要做的是 环境数 * 人体点数 * 3   对于物体做一个 view 先把变成 环境数 * 物体点数，3
         # ref_obj_rot_extend = hoi_state['obj_rot'].unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
@@ -226,13 +227,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         #               + self.ref_obj_pos.unsqueeze(1))
 
         # ref_ig = compute_sdf(self.ref_body_pos.view(-1, 52, 3), ref_obj_points).view(-1, 3)
+        # self.ref_ig = ref_ig.detach().view(self.num_envs, -1, 3)
 
         obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
         obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
         ig = compute_sdf(self.body_pos.view(-1, 52, 3), obj_points).view(-1, 3)
 
         self.ig = ig.detach().view(self.num_envs, -1, 3)
-        # self.ref_ig = ref_ig.detach().view(self.num_envs, -1, 3)
 
 
         humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
@@ -241,10 +242,11 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         mimic_obs = self.compute_mimic_observations()
 
-        obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self._obj_states,
+        obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self.obj_states,
                                                self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
 
-        hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig, ig)
+        hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig.view(-1, 3)
+                                              , ig)
 
         self.body_contact = torch.any(torch.abs(self.contact_forces[:, self.body_ids]) > 0.1, dim=-1).float()
 
@@ -327,12 +329,12 @@ class LeggedRobotHoi(LeggedRobotImi):
 
                 # self._reset_obj(env_ids)   # 直接写入物体状态
                 # d) 写物体状态（到缓存 _target_states）
-                self._obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
-                self._obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
-                self._obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
-                self._obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
-                self.ig = hoi['ig']
-                self.body_contact = hoi['contact_robot']
+                self.obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
+                self.obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
+                self.obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
+                self.obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
+                self.ig[env_ids] = hoi['ig']
+                self.body_contact[env_ids] = hoi['contact_robot']
 
                 # e) 把缓存写回 sim（注意 dof_pos contiguous）
                 self._reset_env_tensors(env_ids)   # LeggedRobotHoi 覆盖版会同时推 actor_root（人物+物体）
@@ -372,6 +374,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
                 num_lines = body_pos_env.shape[0]
                 verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+
                 verts[0::2] = body_pos_env
                 verts[1::2] = obj_near_env
 
@@ -382,9 +385,12 @@ class LeggedRobotHoi(LeggedRobotImi):
                 self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
                 for j in range(self.num_bodies):
-                    if self.body_contact[i, j]:
+                    if self.body_contact[i, j] > 0:
                         self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                                                       gymapi.Vec3(1., 0., 0.))
+                    elif self.body_contact[i, j] < 0:
+                        self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
+                                                      gymapi.Vec3(0., 0., 1.))
                     else:
                         self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                                                       gymapi.Vec3(1., 1., 1.))
@@ -401,7 +407,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | body_too_far
-        self.early_termination_buf = self.kinematic_reset |  torch.any(self.contact_reset > 10, dim=-1) * (self.episode_length_buf > 1)
+        self.early_termination_buf = self.kinematic_reset | torch.any(self.contact_reset > 10, dim=-1) * (self.episode_length_buf > 1)
         self.time_out_buf = time_out | ref_out
         self.reset_buf = self.time_out_buf | self.early_termination_buf
 
@@ -460,18 +466,18 @@ class LeggedRobotHoi(LeggedRobotImi):
         diff_quat_data = normalize(quat_mul(quat_conjugate(self.ref_body_rot[:, body_nohand].reshape(-1, 4)),
                                                    self.body_rot[:, body_nohand].reshape(-1, 4)))
         diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
-        diff = diff_angle.view(-1, 52)
+        diff = diff_angle.view(-1, 22)
         weight_hr = 1 - weight_h
 
-        er = torch.mean(diff[:, :] * weight_hr, dim=-1)
+        er = torch.mean(diff[:, :] * weight_hr[:, body_nohand], dim=-1)
         rr = torch.exp(-er * w.r)
 
         # body pos vel reward
-        epv = torch.mean((self.ref_body_vel[:, body_nohand] - self.body_vel[:, body_nohand]) ** 2, dim=-1)
+        epv = torch.mean((self.ref_body_vel[:, body_nohand] - self.body_vel[:, body_nohand]).view(self.num_envs, -1) ** 2, dim=-1)
         rpv = torch.exp(-epv * w.pv)
 
         # body rot vel reward
-        erv = torch.mean((self.body_ang_vel[:, body_nohand] - self.ref_body_ang_vel[:, body_nohand]) ** 2, dim=-1)
+        erv = torch.mean((self.body_ang_vel[:, body_nohand] - self.ref_body_ang_vel[:, body_nohand]).view(self.num_envs, -1) ** 2, dim=-1)
         rrv = torch.exp(-erv * w.rv)
 
         # energy penalty
@@ -497,7 +503,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         ref_local_obj_pos = self.ref_obj_pos - self.ref_root_pos  # preserves the body position
         ref_local_obj_pos = quat_rotate(ref_heading_rot, ref_local_obj_pos)
         eop = torch.mean(((ref_local_obj_pos - local_obj_pos) ** 2), dim=-1)  # * (1 - weight_h.max(dim=-1)[0])
-        rop = torch.exp(-eop * w['op'])
+        rop = torch.exp(-eop * w.op)
 
         # object rot reward
         local_obj_rot = quat_mul(heading_rot, self.obj_quat)
@@ -507,18 +513,18 @@ class LeggedRobotHoi(LeggedRobotImi):
         diff = diff_angle.view(-1, 1)
 
         eor = torch.mean(diff, dim=-1)
-        ror = torch.exp(-eor * w['obj_r'])
+        ror = torch.exp(-eor * w.obj_r)
 
         # object pos vel reward
         eopv = torch.mean((self.ref_obj_pos_vel - self.obj_vel) ** 2, dim=-1)
-        ropv = torch.exp(-eopv * w['opv'])
+        ropv = torch.exp(-eopv * w.opv)
 
         # object rot vel reward
         eorv = torch.mean((self.ref_obj_rot_vel - self.obj_ang_vel) ** 2, dim=-1)
-        rorv = torch.exp(-eorv * w['orv'])
+        rorv = torch.exp(-eorv * w.orv)
 
         obj_energy = torch.abs(torch.multiply(self.obj_vel, self.obj_ang_vel)).sum(dim=-1)
-        obj_energy = obj_energy.mul(-w['eg2']).exp()
+        obj_energy = obj_energy.mul(-w.eg2).exp()
         ro = rop * ror * ropv * rorv * obj_energy
 
         pos_thresh = 0.30  # 位置阈值（米），按需要调整
@@ -535,7 +541,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _reward_ig(self):
         w = self.reward_weights
-        body_nohand = self.body_no_hand_id
+        body_nohand = self.body_no_hand_ids
 
         ig = self.ig[:, body_nohand]
         ref_ig = self.ref_ig[:, body_nohand]
@@ -547,7 +553,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)
 
-        rig = torch.exp(-w['ig'] * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
+        rig = torch.exp(-w.ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
 
         reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ref_ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
         reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
@@ -558,8 +564,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         # TODO: 公式还不太能理解
         contact_thres = 0.1
         w = self.reward_weights
-        ref_human_contact = self.ref_contact_forces
-        human_contact = self.contact_forces[:, self.body_ids]
+        ref_human_contact = self.ref_contact  # 0, 1, -1
+        human_contact = self.body_contact[:, self.body_ids]
         left_contact_hand_ids = list(range(17, 33))
 
         ref_left_contact_hand = ref_human_contact[:, left_contact_hand_ids]
@@ -569,7 +575,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         ecg_left = (((ref_left_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
             left_hand_contact - ref_left_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
-        rcg_left = 0.5 * (1 + torch.exp(-ecg_left * w['cg_hand'])) * (ref_left_contact_hand_any) + (
+        rcg_left = 0.5 * (1 + torch.exp(-ecg_left * w.cg_hand)) * (ref_left_contact_hand_any) + (
                     1 - ref_left_contact_hand_any)
 
         right_contact_hand_ids = list(range(36, 52))
@@ -589,7 +595,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         ecg_right = (((ref_right_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
             right_hand_contact - ref_right_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
-        rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w['cg_hand'])) * (ref_right_contact_hand_any) + (
+        rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w.cg_hand)) * (ref_right_contact_hand_any) + (
                     1 - ref_right_contact_hand_any)
 
         rcg_hand = rcg_left * rcg_right
@@ -599,14 +605,14 @@ class LeggedRobotHoi(LeggedRobotImi):
         ref_other_contact = ref_human_contact[:, other_ids]
         other_contact = human_contact[:, other_ids]
         ecg_other = ((torch.abs(other_contact - ref_other_contact) * (ref_other_contact > contact_thres))).mean(dim=-1)
-        rcg_other = torch.exp(-ecg_other * w['cg_other'])
+        rcg_other = torch.exp(-ecg_other * w.cg_other)
 
         no_contact = torch.abs(human_contact) < contact_thres
         ecg_all = (torch.abs(no_contact + ref_human_contact) * (ref_human_contact < -contact_thres)).mean(dim=-1)
-        rcg_all = torch.exp(-ecg_all * w['cg_all'])
+        rcg_all = torch.exp(-ecg_all * w.cg_all)
 
         contact_all = self.contact_forces.clone().abs().sum(dim=-1).sum(dim=-1)
-        contact_energy = contact_all.pow(2).mul(-w['eg3']).exp()
+        contact_energy = contact_all.pow(2).mul(-w.eg3).exp()
 
         rcg = rcg_hand * rcg_other * rcg_all * contact_energy
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset

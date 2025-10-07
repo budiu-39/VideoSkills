@@ -34,7 +34,7 @@ robot_cfg = {
     "box_body": False,
     "gender": "male",
     "masterfoot": False,
-    "rel_joint_lm": True,
+    "rel_joint_lm": False,
     "body_params": {}, "joint_params": {}, "geom_params": {}, "actuator_params": {},
 }
 
@@ -59,5 +59,5 @@ per_joint.update({n: (30,  300)  for n in joint_names_300})
 set_joint_ds(smpl_robot, default_d=20.0, default_k=200.0, per_joint=per_joint)
 
 # 3) 写 XML
-smpl_robot.write_xml("/home/miku/Documents/VideoSkills/data/robots/smpl/smplx_humanoid_v1.xml")
+smpl_robot.write_xml("/home/miku/Documents/VideoSkills/data/robots/smpl/smplx_humanoid_v2.xml")
 
