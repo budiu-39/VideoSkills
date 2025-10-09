@@ -140,6 +140,21 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 self.ETbuffer.append(float(ET_rate))
                 self.alg.compute_returns(critic_obs)
 
+                # === 打印 Early Termination 占比并清零 ===
+                et = self.env.et_counter
+                total = et["total"]
+                if total > 0:
+                    print(f"[Iter {it}] Early Termination breakdown: "
+                          f"robot={et['robot'] / total:.2%}, "
+                          f"object={et['object'] / total:.2%}, "
+                          f"ig={et['ig'] / total:.2%}, "
+                          f"contact={et['contact'] / total:.2%}, total={total:.0f}")
+                else:
+                    print(f"[Iter {it}] No early termination this iteration.")
+                # 清零计数器
+                for k in et:
+                    et[k] = 0
+
             start = stop
             mean_value_loss, mean_surrogate_loss = self.alg.update()
             stop = time.time()
@@ -586,9 +601,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             })
 
         # imitation rewards
-        for key in ['reward_pos', 'reward_rot', 'reward_vel', 'reward_ang_vel']:
-            if key in locs['infos']:
-                val = locs['infos'][key]
+        for key, val in locs['infos'].items():
+            if key.startswith("reward"):
                 wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
                     np.mean(val))
 

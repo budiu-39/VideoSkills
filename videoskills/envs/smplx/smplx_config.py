@@ -18,8 +18,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'phc_sota_reboot'
-        experiment_name = 'smpl_ppo'
+        run_name = 'intermimic'
+        experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
@@ -65,7 +65,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLXRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'random'
+        type = 'hybrid'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
@@ -77,11 +77,23 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
+    class asset(LeggedRobotCfg.asset):
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_v2.xml'
+        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
+        name = "smpl_humanoid"
+        foot_name = "Ankle"
+        penalize_contacts_on = ["Hip", "Knee"]
+        terminate_after_contacts_on = ["Pelvis"]
+        self_collisions = 1
+        default_dof_drive_mode = 1
+        asset_root = 'dataset/OMOMO_new/objects_centroid'
+
+
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_small')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
@@ -122,7 +134,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 4096
+        num_envs = 1024
         num_actions = 153
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
@@ -205,15 +217,6 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         # pd_scale = 0.333
         # pd_scale = 0.2
 
-    class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_v2.xml'
-        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
-        name = "smpl_humanoid"
-        foot_name = "Ankle"
-        penalize_contacts_on = ["Hip", "Knee"]
-        terminate_after_contacts_on = ["Pelvis"]
-        self_collisions = 1
-        default_dof_drive_mode = 1
 
 
     class normalization:
@@ -250,10 +253,10 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             eg2 = 0.00002
             eg3 = 0.00000000001
         class scales:
-            humanoid = 1.0
-            obj = 1.0
-            ig = 1.0
-            cg = 1.0
+            humanoid = 10.0
+            obj = 100.0
+            ig = 10.0
+            cg = 10.0
 
 
     class sim(LeggedRobotCfg.sim):

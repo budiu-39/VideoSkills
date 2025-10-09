@@ -10,7 +10,7 @@ from tqdm import tqdm
 import argparse
 import glob
 
-from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
@@ -21,8 +21,6 @@ import trimesh
 import joblib
 import torch
 import mujoco
-import os
-import os.path as osp
 import json
 import numpy as np
 
@@ -228,6 +226,15 @@ if __name__ == "__main__":
     all_sequences = glob.glob(f"{args.path}/**/", recursive=True)
     behave_full_motion_dict = {}
 
+    smplx_parser_n = SMPLX_Parser(
+        model_path='data/SMPL/smplx',
+        gender='neutral',
+        use_pca=False,  # 关键：不用 PCA，接受 45D/手
+        create_transl=False,
+        flat_hand_mean=True,
+        num_betas=20  # SMPL-X 20 维 beta
+    )
+
     for sequence_dir in tqdm(all_sequences):
         if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")):
             continue
@@ -304,14 +311,7 @@ if __name__ == "__main__":
 
         # 轴角 -> 四元数（注意 scipy 返回 [x,y,z,w]）
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 52, 4)
-        smplx_parser_n = SMPLX_Parser(
-            model_path='data/SMPL/smplx',
-            gender='neutral',
-            use_pca=False,  # 关键：不用 PCA，接受 45D/手
-            create_transl=False,
-            flat_hand_mean=True,
-            num_betas=20  # SMPL-X 20 维 beta
-        )
+
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
             torch.from_numpy(pose_quat),

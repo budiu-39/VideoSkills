@@ -24,9 +24,18 @@ class LeggedRobotHoi(LeggedRobotImi):
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
-        self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        # self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in
+                            self.motion_file]
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
+        self.et_counter = {
+            "robot": 0,
+            "object": 0,
+            "ig": 0,
+            "contact": 0,
+            "total": 0,
+        }
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
 
         env_obj_names = [self.object_name[i % len(self.object_name)] for i in range(self.num_envs)]
@@ -67,7 +76,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _load_obj_asset(self):  # smplx
-        asset_root = "dataset/behave/objects_centered"
+        asset_root = self.cfg.asset.asset_root
         self._obj_asset = []
         points_num = []
         self.object_points = []
@@ -92,7 +101,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             self._obj_asset.append(self.gym.load_asset(self.sim, asset_root, asset_file, asset_options))
 
             mesh_obj = trimesh.load(obj_file, force='mesh')
-            obj_verts = mesh_obj.vertices
+            # obj_verts = mesh_obj.vertices
             # center = np.mean(obj_verts, 0)
             object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
 
@@ -169,6 +178,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         self.contact_reset[env_ids] = 0
         self.kinematic_reset[env_ids] = 0
+        self.early_termination_buf[env_ids] = 0
 
     def _reset_env_tensors(self, env_ids):
         super()._reset_env_tensors(env_ids)
@@ -421,6 +431,14 @@ class LeggedRobotHoi(LeggedRobotImi):
                 self.reset_buf = ref_out
             self.time_out_buf = time_out | ref_out
 
+        if torch.any(self.early_termination_buf):
+            total_et = torch.sum(self.early_termination_buf).item()
+            self.et_counter["total"] += total_et
+            self.et_counter["robot"] += torch.sum(self.robot_reset).item()
+            self.et_counter["object"] += torch.sum(self.object_reset).item()
+            self.et_counter["ig"] += torch.sum(self.ig_reset).item()
+            self.et_counter["contact"] += torch.sum(torch.any(self.contact_reset > 10, dim=-1)).item()
+
     def compute_reward(self):
         # TODO: just for develop now
         self.rew_buf[:] = 1.0
@@ -429,6 +447,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             rew = self.reward_functions[i]() * self.reward_scales[name]
             self.rew_buf[:] *= rew
             self.episode_sums[name] += rew
+            self.extras[f'reward_{name}'] = rew
         kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
         self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
         # index = torch.arange(self._curr_reward.shape[0])
@@ -487,7 +506,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         rb = rp * rr * rpv * rrv * energy
         self.robot_reset = (self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]).norm(dim=-1).mean(dim=-1) > 0.5
-
+        self.robot_reset *= (self.episode_length_buf > 1)
         return rb
 
     def _reward_obj(self):
@@ -500,7 +519,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         local_obj_pos = quat_rotate(heading_rot, local_obj_pos)
 
 
-        ref_local_obj_pos = self.ref_obj_pos - self.ref_root_pos  # preserves the body position
+        ref_local_obj_pos = self.ref_obj_pos - self.ref_root_pos
+        ref_local_obj_pos[..., -1] =  self.ref_obj_pos[..., -1]
         ref_local_obj_pos = quat_rotate(ref_heading_rot, ref_local_obj_pos)
         eop = torch.mean(((ref_local_obj_pos - local_obj_pos) ** 2), dim=-1)  # * (1 - weight_h.max(dim=-1)[0])
         rop = torch.exp(-eop * w.op)
@@ -536,7 +556,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         angle_err = torch.norm(angle_err, dim=-1)  # 角度幅值（弧度）
 
         self.object_reset = torch.logical_or(pos_err > pos_thresh, angle_err > rot_thresh)
-
+        self.object_reset *= (self.episode_length_buf > 1)
         return ro
 
     def _reward_ig(self):
@@ -557,7 +577,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ref_ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
         reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
-        self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2)
+        self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2) * (self.episode_length_buf > 1)
         return rig
 
     def _reward_cg(self):
