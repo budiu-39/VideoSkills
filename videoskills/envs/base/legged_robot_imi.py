@@ -306,18 +306,18 @@ class LeggedRobotImi(LeggedRobot):
         self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
 
 
-        for k, buf in self.reward_subterm_sums.items():
-            # 仅对这批完成 episode 的 env_ids 做平均
-            if buf is None or buf.numel() == 0:
-                continue
-            mean_val = buf[env_ids].mean()
-            # 用“完整英文路径名”，不缩写：
-            # 约定所有子项都以 "rew_sub/" 前缀进入 infos['episode']
-            self.extras["episode"][f"rew_sub/{k}"] = mean_val.detach()
-
-        # 清零这些 env 的累计，避免跨 episode 污染
-        for k in self.reward_subterm_sums:
-            self.reward_subterm_sums[k][env_ids] = 0.0
+        # for k, buf in self.reward_subterm_sums.items():
+        #     # 仅对这批完成 episode 的 env_ids 做平均
+        #     if buf is None or buf.numel() == 0:
+        #         continue
+        #     mean_val = buf[env_ids].mean()
+        #     # 用“完整英文路径名”，不缩写：
+        #     # 约定所有子项都以 "rew_sub/" 前缀进入 infos['episode']
+        #     self.extras["episode"][f"rew_sub/{k}"] = mean_val.detach()
+        #
+        # # 清零这些 env 的累计，避免跨 episode 污染
+        # for k in self.reward_subterm_sums:
+        #     self.reward_subterm_sums[k][env_ids] = 0.0
         for key in self.episode_sums.keys():
             self.extras["episode"]['rew_' + key] = torch.mean(
                 self.episode_sums[key][env_ids])
