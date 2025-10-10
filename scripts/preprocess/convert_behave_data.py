@@ -326,9 +326,9 @@ if __name__ == "__main__":
 
         skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v1.xml")
         # 世界坐标系旋转
-        # R_cam2world = [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]]
+        R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
         # R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., 1., 0.]]
-        R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
+        # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
         world_shift = np.zeros(3, dtype=np.float32)
         root_trans = root_trans + skeleton_tree_smpl.local_translation[0].numpy()
         pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa[:, :3], root_trans, R_cam2world)

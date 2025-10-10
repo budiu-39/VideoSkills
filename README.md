@@ -81,7 +81,6 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
 ## 训练 PHC 模型（通用模型）
 
 
-
 ```bash
 # G1 robot
 python videoskills/train.py --task=g1
@@ -90,6 +89,20 @@ python videoskills/train.py --task=g1
 # SMPL robot
 python videoskills/train.py --task=smpl
 ```
+
+## 测试通用模型 
+下载测试用数据集 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下
+
+
+```bash
+# G1 robot
+python videoskills/train.py --task=g1 --resume --dev --load_config --load_run=g1_universal --motion_file=AMASS_test
+
+# SMPL robot
+python videoskills/train.py --task=smpl --resume --dev --load_config --load_run=phc_universal --motion_file=AMASS_test
+``` 
+
+
 
 
 ## 项目目录结构
