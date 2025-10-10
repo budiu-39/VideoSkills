@@ -53,7 +53,7 @@ pip install -r requirement.txt
 
 
 
-## 使用说明
+## 端到端使用说明（Video to Robot Control)
 运行以下代码，通过 `--task` 指定机器人平台（smpl/g1）,  `--folder` 指定视频所在的文件夹。
 
 ```bash
@@ -78,17 +78,7 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
   渲染好的对比视频
 ---
 
-## 训练 PHC 模型（通用模型）
 
-
-```bash
-# G1 robot
-python videoskills/train.py --task=g1
-
-
-# SMPL robot
-python videoskills/train.py --task=smpl
-```
 
 ## 测试通用模型 
 下载测试用数据集 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下
@@ -103,7 +93,21 @@ python videoskills/train.py --task=smpl --resume --dev --load_config --load_run=
 ``` 
 
 
+## 重定向
 
+
+
+## 训练 PHC 模型（通用模型）
+需要已经重定向/预处理好的运动数据
+
+```bash
+# G1 robot
+python videoskills/train.py --task=g1
+
+
+# SMPL robot
+python videoskills/train.py --task=smpl
+```
 
 ## 项目目录结构
 
