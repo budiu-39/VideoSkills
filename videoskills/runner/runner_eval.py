@@ -576,7 +576,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']
 
-        # ========== 构建 wandb metrics ==========
+        # ------ 取出 step/episode 信息（安全）------
+        infos = locs.get('infos', {})  # 最后一个step的infos
+        ep_infos = locs.get('ep_infos', [])  # 本迭代收集到的所有episode汇总
+        rb = locs.get('rewbuffer', getattr(self, 'rewbuffer', None))
+        lb = locs.get('lenbuffer', getattr(self, 'lenbuffer', None))
+
+        # ------ 构建 wandb metrics ------
         wandb_metrics = {
             "Loss/value_function": locs['mean_value_loss'],
             "Loss/surrogate": locs['mean_surrogate_loss'],
@@ -589,54 +595,162 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             "Imitation/ET_rate": locs['ET_rate']
         }
 
-        rb = locs.get('rewbuffer', getattr(self, 'rewbuffer', None))
-        lb = locs.get('lenbuffer', getattr(self, 'lenbuffer', None))
         # 训练指标
-        if len(rb) > 0:
+        if rb is not None and len(rb) > 0:
             mean_rew = statistics.mean(rb)
             mean_len = statistics.mean(lb)
             wandb_metrics.update({
                 "Train/mean_reward": mean_rew,
                 "Train/mean_episode_length": mean_len,
             })
+        else:
+            mean_rew, mean_len = None, None
 
-        # imitation rewards
-        for key, val in locs['infos'].items():
-            if key.startswith("reward"):
-                wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-                    np.mean(val))
+        # imitation rewards（来自最后一个step的infos）
+        if isinstance(infos, dict):
+            for key, val in infos.items():
+                if key.startswith("reward"):
+                    wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+                        np.mean(val))
 
-        # imitation errors
-        for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
-            if key in locs['infos']:
-                val = locs['infos'][key]
-                wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-                    np.mean(val))
+            # imitation errors 可选
+            for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
+                if key in infos:
+                    val = infos[key]
+                    wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+                        np.mean(val))
 
+        # ====== 关键：按迭代聚合并记录 episode 级指标（包含你的小项）======
+        # 需要你的 env 在 reset_idx() 时把小项放入 extras["episode"]，键以 "rew_sub/..." 开头
+        if self.log_dir is not None and isinstance(ep_infos, list) and len(ep_infos) > 0:
+            merged = {}
+            for ep in ep_infos:
+                if not isinstance(ep, dict):
+                    continue
+                for k, v in ep.items():
+                    if k.startswith("rew_") or k.startswith("rew_sub/"):
+                        merged.setdefault(k, []).append(v.item() if torch.is_tensor(v) else float(v))
 
-        # ========== wandb 记录 ==========
+            for k, vals in merged.items():
+                # 用完整英文路径名
+                if k.startswith("rew_sub/"):
+                    wandb_key = f"Rewards/{k[len('rew_sub/'):]}"  # e.g. Rewards/Humanoid/PositionTerm
+                elif k.startswith("rew_"):
+                    wandb_key = f"Rewards/{k[len('rew_'):]}"  # e.g. Rewards/reward_humanoid
+                else:
+                    wandb_key = f"Rewards/{k}"
+                wandb.log({wandb_key: float(np.mean(vals))}, step=it)
+
+        # ====== 统一推送 wandb_metrics ======
         if wandb.run is not None:
             wandb.log(wandb_metrics, step=it)
 
+        # 控制台摘要
         ep_info_str = ""
-        if locs['ep_infos']:
-            for key in locs['ep_infos'][0]:
-                vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
+        if isinstance(ep_infos, list) and len(ep_infos) > 0:
+            first = ep_infos[0]
+            for key in first:
+                vals = [ep[key].item() if isinstance(ep.get(key), torch.Tensor) else ep.get(key) for ep in ep_infos if
+                        key in ep]
+                if len(vals) == 0:
+                    continue
                 ep_mean = sum(vals) / len(vals)
                 wandb_metrics[f"Episode/{key}"] = ep_mean
                 if key in ["rew_imitation", "rew_dof_force", "rew_torques"]:
                     ep_info_str += f"  {key}: {ep_mean:.4f}"
 
         summary = f"[{self.cfg['run_name']} it {it:05d}]"
-        if len(rb) > 0:
-            if mean_rew is not None and mean_len is not None:
-                summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+        if mean_rew is not None and mean_len is not None:
+            summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
         else:
             summary += " Reward: ---- | EpLen: ----"
-        # summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
         summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
         summary += ep_info_str
         print(summary)
+
+    # def log(self, locs, width=80, pad=35):
+    #     it = locs['it']
+    #     self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
+    #     self.tot_time += locs['collection_time'] + locs['learn_time']
+    #
+    #     # ========== 构建 wandb metrics ==========
+    #     wandb_metrics = {
+    #         "Loss/value_function": locs['mean_value_loss'],
+    #         "Loss/surrogate": locs['mean_surrogate_loss'],
+    #         "Loss/learning_rate": self.alg.learning_rate,
+    #         "Perf/collection_time": locs['collection_time'],
+    #         "Perf/learning_time": locs['learn_time'],
+    #         "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
+    #                     locs['collection_time'] + locs['learn_time']),
+    #         "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
+    #         "Imitation/ET_rate": locs['ET_rate']
+    #     }
+    #
+    #     rb = locs.get('rewbuffer', getattr(self, 'rewbuffer', None))
+    #     lb = locs.get('lenbuffer', getattr(self, 'lenbuffer', None))
+    #     # 训练指标
+    #     if len(rb) > 0:
+    #         mean_rew = statistics.mean(rb)
+    #         mean_len = statistics.mean(lb)
+    #         wandb_metrics.update({
+    #             "Train/mean_reward": mean_rew,
+    #             "Train/mean_episode_length": mean_len,
+    #         })
+    #
+    #     # imitation rewards
+    #     for key, val in locs['infos'].items():
+    #         if key.startswith("reward"):
+    #             wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+    #                 np.mean(val))
+    #
+    #     # imitation errors
+    #     for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
+    #         if key in locs['infos']:
+    #             val = locs['infos'][key]
+    #             wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
+    #                 np.mean(val))
+    #
+    #     if self.log_dir is not None:
+    #         if len(ep_infos) > 0:
+    #             merged = {}
+    #             for ep in ep_infos:
+    #                 for k, v in ep.items():
+    #                     if k.startswith("rew_") or k.startswith("rew_sub/"):
+    #                         merged.setdefault(k, []).append(v.item() if torch.is_tensor(v) else float(v))
+    #
+    #             for k, vals in merged.items():
+    #                 # 用完整英文路径名；把 'rew_sub/' 或 'rew_' 映射到更清晰的 WandB 路径
+    #                 if k.startswith("rew_sub/"):
+    #                     wandb_key = f"Rewards/{k[len('rew_sub/'):]}"  # e.g. Rewards/Humanoid/PositionTerm
+    #                 elif k.startswith("rew_"):
+    #                     wandb_key = f"Rewards/{k[len('rew_'):]}"  # e.g. Rewards/reward_humanoid
+    #                 else:
+    #                     wandb_key = f"Rewards/{k}"
+    #
+    #                 wandb.log({wandb_key: float(np.mean(vals))}, step=it)
+    #     # ========== wandb 记录 ==========
+    #     if wandb.run is not None:
+    #         wandb.log(wandb_metrics, step=it)
+    #
+    #     ep_info_str = ""
+    #     if locs['ep_infos']:
+    #         for key in locs['ep_infos'][0]:
+    #             vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
+    #             ep_mean = sum(vals) / len(vals)
+    #             wandb_metrics[f"Episode/{key}"] = ep_mean
+    #             if key in ["rew_imitation", "rew_dof_force", "rew_torques"]:
+    #                 ep_info_str += f"  {key}: {ep_mean:.4f}"
+    #
+    #     summary = f"[{self.cfg['run_name']} it {it:05d}]"
+    #     if len(rb) > 0:
+    #         if mean_rew is not None and mean_len is not None:
+    #             summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+    #     else:
+    #         summary += " Reward: ---- | EpLen: ----"
+    #     # summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
+    #     summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
+    #     summary += ep_info_str
+    #     print(summary)
 
     def save(self, path=None, infos=None):
         if path is None:

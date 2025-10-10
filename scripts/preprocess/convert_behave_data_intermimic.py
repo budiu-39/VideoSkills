@@ -17,7 +17,6 @@ from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
 from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
 from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
-import smplx
 import trimesh
 import joblib
 import torch
@@ -40,7 +39,52 @@ FIXED_SIGMA_NO_INTERACT = 0.02  # 若不满足三条交互条件时的保底阈�
 
 
 
+FRAME_DIM = 591
+SLICE_SPEC = {
+"root_pos": (0, 3),
+"root_rot": (3, 7),
+"unused0": (7, 9),
+"dof_pos": (9, 162),
+"body_pos": (162, 318),
+"obj_pos": (318, 321),
+"obj_rot": (321, 325),
+"unused1": (325, 330),
+"contact_obj": (330, 331),
+"contact_human": (331, 383),
+"body_rot": (383, 591),
+}
 
+def pack_inter_mimic_tensor(root_pos: torch.Tensor,
+    root_rot: torch.Tensor,
+    dof_pos: torch.Tensor,
+    body_pos: torch.Tensor,
+    obj_pos: torch.Tensor,
+    obj_rot: torch.Tensor,
+    contact_human: torch.Tensor,
+    body_rot: torch.Tensor,
+    contact_obj: torch.Tensor = None) -> torch.Tensor:
+    """Pack per-frame fields into (T, 591) according to SLICE_SPEC."""
+    T = root_pos.size(0)
+    out = torch.zeros((T, FRAME_DIM), dtype=torch.float32)
+    def put(name, val):
+        a, b = SLICE_SPEC[name]
+        out[:, a:b] = val.reshape(T, b - a)
+    put('root_pos', root_pos)
+    put('root_rot', root_rot)
+    # unused paddings
+    put('unused0', torch.zeros((T, 2), dtype=torch.float32))
+    put('dof_pos', dof_pos)
+    put('body_pos', body_pos.reshape(T, 52*3))
+    put('obj_pos', obj_pos)
+    put('obj_rot', obj_rot)
+    put('unused1', torch.zeros((T, 5), dtype=torch.float32))
+    if contact_obj is None:
+    # default: any body contacting → 1.0 else 0.0
+        contact_obj = (contact_human > 0.5).any(dim=1, keepdim=True).to(torch.float32)
+    put('contact_obj', contact_obj)
+    put('contact_human', contact_human)
+    put('body_rot', body_rot.reshape(T, 52*4))
+    return out
 
 
 def _quat_rotate_xyzw(q, v):
@@ -219,7 +263,7 @@ if __name__ == "__main__":
         "actuator_params": {},
         "model": "smplx",
     }
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v2.xml")
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/omomo.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
 
@@ -227,7 +271,7 @@ if __name__ == "__main__":
     # We look for sequences with SMPL fits
     all_sequences = glob.glob(f"{args.src}/**/", recursive=True)
     behave_full_motion_dict = {}
-
+    obj_counter = {}
     smplx_parser_n = SMPLX_Parser(
         model_path='data/SMPL/smplx',
         gender='neutral',
@@ -297,39 +341,13 @@ if __name__ == "__main__":
         else:
             raise ValueError(f"Unexpected SMPL pose dim {D}. Expect 69/72/156.")
 
-        # 基于 SMPL 的修正,
-        model = smplx.create(
-            model_path='data/SMPL',  # 包含 SMPL/SMPLX 模型文件的目录
-            model_type='smpl',  # 或 'smplx' / 'smplh'，取决于你的模型
-            gender='neutral',  # male/female/neutral
-            use_pca=False
-        )
-
-        # 2. 创建全 0 参数
-        betas = torch.zeros([1, 10])  # 形状参数（shape）
-        body_pose = torch.zeros([1, 69])  # 姿态参数（23*3）
-        global_orient = torch.zeros([1, 3])  # 全局旋转
-        transl = torch.zeros([1, 3])  # 平移
-
-        output = model(
-            betas=betas,
-            body_pose=body_pose,
-            global_orient=global_orient,
-            transl=transl
-        )
-
-        # 4. 导出关节或顶点位置
-        joints = output.joints.detach().cpu().numpy()  # (1, N_joints, 3)
-        vertices = output.vertices.detach().cpu().numpy()  # (1, 6890, 3)
-
-        ##
-
         skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v1.xml")
         # 世界坐标系旋转
-        # R_cam2world = [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]]
-        # R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., 1., 0.]]
-        R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
+        R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
+        # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
         world_shift = np.zeros(3, dtype=np.float32)
+
+        # root_trans_offset = root_tran
         root_trans = root_trans + skeleton_tree_smpl.local_translation[0].numpy()
         pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa[:, :3], root_trans, R_cam2world)
         root_trans_offset = torch.from_numpy(root_trans_offset).float()
@@ -340,7 +358,7 @@ if __name__ == "__main__":
 
         # 轴角 -> 四元数（注意 scipy 返回 [x,y,z,w]）
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 52, 4)
-        # root_trans_offset = torch.zeros(N, 3) + root_trans
+
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
             torch.from_numpy(pose_quat),
@@ -349,7 +367,7 @@ if __name__ == "__main__":
 
         frame_check = 100
         height_tolorance = 0
-        fix_height = False  # 开启更稳妥
+        fix_height = True  # 开启更稳妥
         if fix_height:
             with torch.no_grad():
                 frame_check = min(frame_check, N)
@@ -428,7 +446,7 @@ if __name__ == "__main__":
             ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
             ref_ig = ig_torch.cpu().numpy().astype(np.float32)
 
-        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid_v2.xml",
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/omomo.xml",
                                                                 samples_per_geom=500)
 
         qpos_seq_np = build_qpos_seq_from_state(mj_model, new_sk_state)
@@ -459,21 +477,25 @@ if __name__ == "__main__":
             ground_mask_sk=ground_mask_sk,
         )
 
-        bundle = {
-            "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
-            "object": {
-                "name": object_name_str,
-                "obj_pos": obj_pos,
-                "obj_rot": obj_quat_xyzw,  # xyzw —— Isaac Gym 对齐
-                "obj_pos_vel": obj_pos_vel,
-                "obj_rot_vel": obj_rot_vel,
-            },
-            "interaction": {
-                "ig": ref_ig,  # (T,52,3) float32（世界系）
-                "contact_robot": contact_robot,  # (T,52)   0/1 float32
-            }
-        }
+        body_local_quat = new_sk_state.local_rotation.to(torch.float32)  # (T,52,4)
+        body_local_aa = torch.from_numpy(
+            sRot.from_quat(body_local_quat.reshape(-1, 4).cpu().numpy()).as_rotvec().astype(np.float32)
+        ).reshape(-1, 52, 3)
+        dof_pos = body_local_aa[:, 1:, :].reshape(-1, 51 * 3)  # (T,153)
+        contact_human = torch.from_numpy(contact_robot.astype(np.float32))  # (T, 52)
+        contact_obj = (contact_human > 0.5).any(dim=1, keepdim=True).to(torch.float32)  # (T, 1)
 
+        hoi_tensor = pack_inter_mimic_tensor(
+            root_pos=root_trans_offset.to(torch.float32),  # (T,3)
+            root_rot=new_sk_state.global_root_rotation.to(torch.float32),  # (T,4)
+            dof_pos=dof_pos.to(torch.float32),  # (T,153)
+            body_pos=body_pos_t.to(torch.float32),  # (T,52,3)
+            obj_pos=torch.from_numpy(obj_pos).to(torch.float32),  # (T,3)
+            obj_rot=torch.from_numpy(obj_quat_xyzw).to(torch.float32),  # (T,4)
+            contact_human=contact_human,  # (T,52)
+            body_rot=new_sk_state.global_rotation.to(torch.float32),  # (T,52,4)
+            contact_obj=contact_obj,  # (T,1)
+        )
         # === 可视化
         t = min(100, obj_pts_world_np.shape[0] - 1)
         mj_data = mujoco.MjData(mj_model)
@@ -482,8 +504,7 @@ if __name__ == "__main__":
 
         body_pos_frame = body_pos_t[t].cpu().numpy().astype(np.float64)
         body_rot_frame = new_sk_state.global_rotation[t].cpu().numpy().astype(np.float64)
-        # body_pos_frame = mj_data.xpos[sk2mj].copy()  # 严格用 MJCF body 原点
-        quick_viz = True
+        quick_viz = False
 
         if quick_viz:
             quick_viz_frame(
@@ -500,7 +521,7 @@ if __name__ == "__main__":
 
         if args.render:
             temp_xml = create_temp_xml_with_object(
-                "data/robots/smpl/smplx_humanoid_v2.xml",
+                "data/robots/smpl/omomo.xml",
                 obj_mesh_path
             )
             motion_traj = {}
@@ -513,12 +534,17 @@ if __name__ == "__main__":
                 obj_quat_xyzw=obj_quat_xyzw,
                 xml_path=temp_xml
             )
-
         # Construct save path
-        rel_path = osp.relpath(sequence_dir, args.src)
-        save_path = osp.join(output_dir, rel_path, f"{key_str}.npy")
-        os.makedirs(osp.dirname(save_path), exist_ok=True)
-        np.save(save_path, bundle, allow_pickle=True)
+        parts = key_str.split('_')  # 最多切成 3 段：前两段 + 其余
+        # new = [parts[0]+parts[1], parts[2:]]  # 前两段不变
+        # out_path = osp.join(args.dst, f"{'_'.join(new)}.pt")
+        if parts[2] not in obj_counter:
+            obj_counter[parts[2]] = 1
+        else:
+            obj_counter[parts[2]] += 1
+        out_path = osp.join(args.dst, f"{'sub3' + '_' + parts[2] + '_' + str(obj_counter[parts[2]])}.pt")
+        torch.save(hoi_tensor, out_path)
+        print(f"[OK] {out_path} (T={hoi_tensor.size(0)})")
 
 
     print("Done")

@@ -122,8 +122,9 @@ class LeggedRobot(BaseTask):
         self.body_ang_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]
 
         # compute observations, rewards, resets, ...
-        self.check_termination()
+
         self.compute_reward()  # both reward and terminationare done with the last reference motion
+        self.check_termination()
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
 
         if self.is_recording_data:

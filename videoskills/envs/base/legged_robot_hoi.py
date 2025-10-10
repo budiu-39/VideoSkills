@@ -10,7 +10,7 @@ import trimesh
 from videoskills.utils.motion_lib_hoi import MotionLibHoi
 import time
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_to_tan_norm, quat_rotate
-from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, normalize, quat_to_angle_axis
+from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.envs.base.legged_robot_imi import (
     compute_humanoid_observations_jit,
     compute_mimic_observations_jit,
@@ -24,9 +24,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
-        # self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
-        self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in
-                            self.motion_file]
+        self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
         self.et_counter = {
@@ -36,8 +35,8 @@ class LeggedRobotHoi(LeggedRobotImi):
             "contact": 0,
             "total": 0,
         }
+        self.reward_subterm_sums = {}
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
-
         env_obj_names = [self.object_name[i % len(self.object_name)] for i in range(self.num_envs)]
         # 将名字映射到 MotionLibHoi 的词表索引
         self.env_object_ids = torch.empty(self.num_envs, dtype=torch.long, device=self.device)
@@ -390,11 +389,25 @@ class LeggedRobotHoi(LeggedRobotImi):
 
                 # 颜色（蓝色）
                 colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-
-                # 画线
                 self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
+                self.ref_ig[i].cpu().numpy()  # (52, 3)
+                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() - self.ref_ig[i].cpu().numpy()
+
+                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                verts_ref[0::2] = self.ref_body_pos[i].detach().cpu().numpy()
+                verts_ref[1::2] = obj_near_ref
+                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
+
+
+                # 画线
+
+
                 for j in range(self.num_bodies):
+                    # if j in self.body_no_hand_ids:
+                    #     self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
+                    #                                   gymapi.Vec3(1., 0., 0.))
                     if self.body_contact[i, j] > 0:
                         self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                                                       gymapi.Vec3(1., 0., 0.))
@@ -417,7 +430,10 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | body_too_far
-        self.early_termination_buf = self.kinematic_reset | torch.any(self.contact_reset > 10, dim=-1) * (self.episode_length_buf > 1)
+        kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
+        self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
+        contact_fail = torch.any(self.contact_reset > 10, dim=-1) & (self.episode_length_buf > 1)
+        self.early_termination_buf = self.kinematic_reset | contact_fail
         self.time_out_buf = time_out | ref_out
         self.reset_buf = self.time_out_buf | self.early_termination_buf
 
@@ -437,7 +453,8 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.et_counter["robot"] += torch.sum(self.robot_reset).item()
             self.et_counter["object"] += torch.sum(self.object_reset).item()
             self.et_counter["ig"] += torch.sum(self.ig_reset).item()
-            self.et_counter["contact"] += torch.sum(torch.any(self.contact_reset > 10, dim=-1)).item()
+            self.et_counter["contact"] += torch.sum(contact_fail).item()
+
 
     def compute_reward(self):
         # TODO: just for develop now
@@ -448,8 +465,6 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.rew_buf[:] *= rew
             self.episode_sums[name] += rew
             self.extras[f'reward_{name}'] = rew
-        kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
-        self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
         # index = torch.arange(self._curr_reward.shape[0])
         # # # print(self._humanoid_root_states.dtype)
         # self._curr_reward[index, self.progress_buf - self.start_times] = self.rew_buf
@@ -475,8 +490,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         weight_h = (-5 * ref_ig_norm).exp()
         weight_hp = weight_h.clone().detach()
         # 这里好像有问题!
-        ancle_toe_ids = [i for i in range(self.num_bodies) if 'Ankle' in self.body_names[i] or 'Toe' in self.body_names[i]]
-        weight_hp[:, ancle_toe_ids] = 1
+        ankle_toe_ids = [i for i in range(self.num_bodies) if 'Ankle' in self.body_names[i] or 'Toe' in self.body_names[i]]
+        weight_hp[:, ankle_toe_ids] = 1
 
         ep = torch.mean(((self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]) ** 2).sum(dim=-1)
                         * weight_hp[:, body_nohand], dim=-1)
@@ -485,7 +500,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         diff_quat_data = normalize(quat_mul(quat_conjugate(self.ref_body_rot[:, body_nohand].reshape(-1, 4)),
                                                    self.body_rot[:, body_nohand].reshape(-1, 4)))
         diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
-        diff = diff_angle.view(-1, 22)
+        diff = diff_angle.view(-1, len(body_nohand))
         weight_hr = 1 - weight_h
 
         er = torch.mean(diff[:, :] * weight_hr[:, body_nohand], dim=-1)
@@ -500,13 +515,19 @@ class LeggedRobotHoi(LeggedRobotImi):
         rrv = torch.exp(-erv * w.rv)
 
         # energy penalty
-        # TODO: 这里要修正,不要 hand !
-        enerpy = torch.abs(torch.multiply(self.dof_force_tensor[:, dof_nohand], self.dof_vel[:, dof_nohand])).sum(dim=-1)
-        energy = enerpy.mul(-w.eg1).exp()
+        energy = torch.abs(torch.multiply(self.dof_force_tensor[:, dof_nohand], self.dof_vel[:, dof_nohand])).sum(dim=-1)
+        energy = energy.mul(-w.eg1).exp()
 
         rb = rp * rr * rpv * rrv * energy
         self.robot_reset = (self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]).norm(dim=-1).mean(dim=-1) > 0.5
         self.robot_reset *= (self.episode_length_buf > 1)
+
+        self._accum_subterm("Humanoid/PositionTerm", rp)
+        self._accum_subterm("Humanoid/RotationTerm", rr)
+        self._accum_subterm("Humanoid/LinearVelocityTerm", rpv)
+        self._accum_subterm("Humanoid/AngularVelocityTerm", rrv)
+        self._accum_subterm("Humanoid/EnergyTerm", energy)
+
         return rb
 
     def _reward_obj(self):
@@ -530,33 +551,47 @@ class LeggedRobotHoi(LeggedRobotImi):
         ref_local_obj_rot = quat_mul(ref_heading_rot, self.ref_obj_rot)
         diff_quat_data = normalize(quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot))
         diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
-        diff = diff_angle.view(-1, 1)
+        diff = diff_angle
 
         eor = torch.mean(diff, dim=-1)
         ror = torch.exp(-eor * w.obj_r)
+        # 可能的改进 用二次/余弦形式更平滑
+        # eor = torch.mean(diff_angle ** 2, dim=-1)  # 或 1 - cos(diff_angle)
+        # ror = torch.exp(-w.obj_r * eor)
 
         # object pos vel reward
-        eopv = torch.mean((self.ref_obj_pos_vel - self.obj_vel) ** 2, dim=-1)
+        local_obj_vel = quat_rotate(heading_rot, self.obj_vel)
+        ref_local_obj_vel = quat_rotate(ref_heading_rot, self.ref_obj_pos_vel)
+        eopv = torch.mean((ref_local_obj_vel - local_obj_vel) ** 2, dim=-1)
         ropv = torch.exp(-eopv * w.opv)
 
-        # object rot vel reward
-        eorv = torch.mean((self.ref_obj_rot_vel - self.obj_ang_vel) ** 2, dim=-1)
+        local_obj_angvel = quat_rotate(heading_rot, self.obj_ang_vel)
+        ref_local_obj_angvel = quat_rotate(ref_heading_rot, self.ref_obj_rot_vel)
+        eorv = torch.mean((ref_local_obj_angvel - local_obj_angvel) ** 2, dim=-1)
         rorv = torch.exp(-eorv * w.orv)
 
-        obj_energy = torch.abs(torch.multiply(self.obj_vel, self.obj_ang_vel)).sum(dim=-1)
-        obj_energy = obj_energy.mul(-w.eg2).exp()
-        ro = rop * ror * ropv * rorv * obj_energy
+        v2 = (self.obj_vel ** 2).sum(dim=-1)  # ||v||^2
+        w2 = (self.obj_ang_vel ** 2).sum(dim=-1)  # ||ω||^2
+        # obj_energy = torch.exp(- (w.eg2_lin * v2 + w.eg2_ang * w2))
+        # obj_energy = obj_energy.mul(-w.eg2).exp()
+        ro = rop * ror * ropv * rorv
 
-        pos_thresh = 0.30  # 位置阈值（米），按需要调整
+        pos_thresh = 0.50  # 位置阈值（米），按需要调整
         rot_thresh = 0.50  # 朝向阈值（弧度），~28.6°，按需要调整
 
         pos_err = torch.norm(ref_local_obj_pos - local_obj_pos, dim=-1)  # [N]
         dq = quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot)  # 相对四元数
-        angle_err = quat_to_angle_axis(dq)[0]  # [N,3] 的角轴角度向量
-        angle_err = torch.norm(angle_err, dim=-1)  # 角度幅值（弧度）
+        angle_err = quat_to_angle_axis(dq)[0] # [N,3] 的角轴角度向量 # 角度幅值（弧度）
 
-        self.object_reset = torch.logical_or(pos_err > pos_thresh, angle_err > rot_thresh)
+        self.object_reset = torch.logical_or(pos_err > pos_thresh, abs(angle_err) > rot_thresh)
         self.object_reset *= (self.episode_length_buf > 1)
+
+        self._accum_subterm("Object/PositionTerm", rop)
+        self._accum_subterm("Object/RotationTerm", ror)
+        self._accum_subterm("Object/LinearVelocityTerm", ropv)
+        self._accum_subterm("Object/AngularVelocityTerm", rorv)
+        # self._accum_subterm("Object/EnergyTerm", obj_energy)
+
         return ro
 
     def _reward_ig(self):
@@ -566,18 +601,31 @@ class LeggedRobotHoi(LeggedRobotImi):
         ig = self.ig[:, body_nohand]
         ref_ig = self.ref_ig[:, body_nohand]
         ### interaction graph reward ###
-        weight_1 = (1 / torch.clamp((ig**2).sum(dim=-1), min=0.01))
-        weight_1 = weight_1 / weight_1.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
-        weight_2 = (1 / torch.clamp((ref_ig**2).sum(dim=-1), min=0.01))
-        weight_2 = weight_2 / weight_2.sum(dim=-1, keepdim=True).sum(dim=-2, keepdim=True)
+        with torch.no_grad():
+            weight_1 = (1 / torch.clamp((ig**2).sum(dim=-1), min=0.01))
+            weight_1 = weight_1 / (weight_1.sum(dim=-1, keepdim=True) + 1e-8)
+            weight_2 = (1 / torch.clamp((ref_ig**2).sum(dim=-1), min=0.01))
+            weight_2 = weight_2 / (weight_2.sum(dim=-1, keepdim=True) + 1e-8)
 
-        eig = ((ig - ref_ig)**2).sum(dim=-1) * (weight_1 + weight_2)
+        sq_err = ((ig - ref_ig) ** 2).sum(dim=-1)  # (N, B)
+        eig = sq_err * (weight_1 + weight_2)  # (N, B)
+        eig_env = eig.mean(dim=-1)  # (N,)  用 mean 使尺度与 B 无关
 
-        rig = torch.exp(-w.ig * (eig.sum(dim=-1).sum(dim=-1) * 0.5))
+        # --- reward ---
+        rig = torch.exp(-0.5 * w.ig * eig_env)  # (N,)
 
-        reset_ig_1 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ref_ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
-        reset_ig_2 = (((ig - ref_ig)**2).sum(dim=-1).sqrt() / torch.clamp((ig**2).sum(dim=-1).sqrt(), min=0.5)).max(dim=-1)[0].max(dim=-1)[0] > 2
-        self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2) * (self.episode_length_buf > 1)
+        # --- reset（每个 env 独立；避免双 max 变成全局）---
+        rel_err_ref = sq_err.sqrt() / torch.clamp((ref_ig ** 2).sum(dim=-1).sqrt(), min=0.5)  # (N, B)
+        rel_err_cur = sq_err.sqrt() / torch.clamp((ig ** 2).sum(dim=-1).sqrt(), min=0.5)  # (N, B)
+
+        th = 4.0
+        reset_ig_1 = rel_err_ref.mean(dim=-1) > th  # (N,)
+        reset_ig_2 = rel_err_cur.mean(dim=-1) > th  # (N,)
+        self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2) & (self.episode_length_buf > 1)
+
+        # --- 日志：分开记录距离与奖励 ---
+        self._accum_subterm("InteractionGraph/WeightedSquaredErrorMean", eig_env)  # 距离
+
         return rig
 
     def _reward_cg(self):
@@ -605,6 +653,11 @@ class LeggedRobotHoi(LeggedRobotImi):
         right_hand_contact = human_contact[:, right_contact_hand_ids].clone()
         right_hand_contact_any = torch.any(right_hand_contact > contact_thres, dim=-1, keepdim=True).float()
 
+        ecg_right = (((ref_right_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
+            right_hand_contact - ref_right_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
+        rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w.cg_hand)) * (ref_right_contact_hand_any) + (
+                    1 - ref_right_contact_hand_any)
+
         contact_reset = torch.cat([
             torch.abs(
                 ref_left_contact_hand_any.unsqueeze(-1) - left_hand_contact_any) * ref_left_contact_hand_any.unsqueeze(
@@ -612,11 +665,6 @@ class LeggedRobotHoi(LeggedRobotImi):
             torch.abs(ref_right_contact_hand_any.unsqueeze(
                 -1) - right_hand_contact_any) * ref_right_contact_hand_any.unsqueeze(-1),
         ], dim=-1)
-
-        ecg_right = (((ref_right_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
-            right_hand_contact - ref_right_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
-        rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w.cg_hand)) * (ref_right_contact_hand_any) + (
-                    1 - ref_right_contact_hand_any)
 
         rcg_hand = rcg_left * rcg_right
 
@@ -636,7 +684,21 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         rcg = rcg_hand * rcg_other * rcg_all * contact_energy
         self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
+
+        self._accum_subterm("ContactGraph/LeftHandTerm", rcg_left)
+        self._accum_subterm("ContactGraph/RightHandTerm", rcg_right)
+        self._accum_subterm("ContactGraph/HandsCombinedTerm", rcg_hand)
+        self._accum_subterm("ContactGraph/OtherBodiesTerm", rcg_other)
+        self._accum_subterm("ContactGraph/NoContactConsistencyTerm", rcg_all)
+        self._accum_subterm("ContactGraph/ContactEnergyTerm", contact_energy)
+
         return rcg
+
+    def _accum_subterm(self, key: str, val: torch.Tensor):
+        # val: (num_envs,) 或可 broadcast 到 (num_envs,)
+        if key not in self.reward_subterm_sums:
+            self.reward_subterm_sums[key] = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
+        self.reward_subterm_sums[key] += val.float()
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):
@@ -680,6 +742,13 @@ def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, re
     obs = torch.cat([local_tar_vel, local_tar_ang_vel, diff_local_obj_pos_flat, diff_local_obj_rot_obs, diff_local_vel, diff_local_ang_vel], dim=-1)
     return obs
 
+
+
+@torch.jit.script
+def normalize(x, eps: float = 1e-9):
+    mask = x[..., -1] < 0  # 实部（w分量）为负
+    x[mask] = -x[mask]
+    return x / x.norm(p=2, dim=-1).clamp(min=eps, max=None).unsqueeze(-1)
 
 @torch.jit.script
 def compute_sdf(points1, points2):

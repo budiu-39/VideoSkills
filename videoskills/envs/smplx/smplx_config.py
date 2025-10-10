@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'intermimic'
+        run_name = 'intermimic_sit'
         experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -69,7 +69,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
-        enabled = True
+        enabled = False
         # distance = [0.25] * 24
         distance = [0.5] * 52
 
@@ -86,14 +86,15 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
         default_dof_drive_mode = 1
-        asset_root = 'dataset/OMOMO_new/objects_centroid'
-
+        asset_root = 'dataset/behave/objects_centered'
+        # asset_root = 'dataset/omomo/objects_centered'
 
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
