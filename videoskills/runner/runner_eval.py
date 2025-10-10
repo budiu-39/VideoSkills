@@ -631,15 +631,15 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     if k.startswith("rew_") or k.startswith("rew_sub/"):
                         merged.setdefault(k, []).append(v.item() if torch.is_tensor(v) else float(v))
 
-            for k, vals in merged.items():
-                # 用完整英文路径名
-                if k.startswith("rew_sub/"):
-                    wandb_key = f"Rewards/{k[len('rew_sub/'):]}"  # e.g. Rewards/Humanoid/PositionTerm
-                elif k.startswith("rew_"):
-                    wandb_key = f"Rewards/{k[len('rew_'):]}"  # e.g. Rewards/reward_humanoid
-                else:
-                    wandb_key = f"Rewards/{k}"
-                wandb.log({wandb_key: float(np.mean(vals))}, step=it)
+            if wandb.run is not None:  # ← 加保护
+                for k, vals in merged.items():
+                    if k.startswith("rew_sub/"):
+                        wandb_key = f"Rewards/{k[len('rew_sub/'):]}"
+                    elif k.startswith("rew_"):
+                        wandb_key = f"Rewards/{k[len('rew_'):]}"
+                    else:
+                        wandb_key = f"Rewards/{k}"
+                    wandb.log({wandb_key: float(np.mean(vals))}, step=it)
 
         # ====== 统一推送 wandb_metrics ======
         if wandb.run is not None:

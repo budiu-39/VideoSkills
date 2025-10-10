@@ -583,7 +583,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         dq = quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot)  # 相对四元数
         angle_err = quat_to_angle_axis(dq)[0] # [N,3] 的角轴角度向量 # 角度幅值（弧度）
 
-        self.object_reset = torch.logical_or(pos_err > pos_thresh, abs(angle_err) > rot_thresh)
+        self.object_reset = torch.logical_or(pos_err > pos_thresh, angle_err > rot_thresh)
         self.object_reset *= (self.episode_length_buf > 1)
 
         self._accum_subterm("Object/PositionTerm", rop)
