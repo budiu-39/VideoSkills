@@ -141,19 +141,20 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 self.alg.compute_returns(critic_obs)
 
                 # === 打印 Early Termination 占比并清零 ===
-                et = self.env.et_counter
-                total = et["total"]
-                if total > 0:
-                    print(f"[Iter {it}] Early Termination breakdown: "
-                          f"robot={et['robot'] / total:.2%}, "
-                          f"object={et['object'] / total:.2%}, "
-                          f"ig={et['ig'] / total:.2%}, "
-                          f"contact={et['contact'] / total:.2%}, total={total:.0f}")
-                else:
-                    print(f"[Iter {it}] No early termination this iteration.")
-                # 清零计数器
-                for k in et:
-                    et[k] = 0
+                if getattr(self.env, "et_counter", None) is not None:
+                    et = self.env.et_counter
+                    total = et["total"]
+                    if total > 0:
+                        print(f"[Iter {it}] Early Termination breakdown: "
+                              f"robot={et['robot'] / total:.2%}, "
+                              f"object={et['object'] / total:.2%}, "
+                              f"ig={et['ig'] / total:.2%}, "
+                              f"contact={et['contact'] / total:.2%}, total={total:.0f}")
+                    else:
+                        print(f"[Iter {it}] No early termination this iteration.")
+                    # 清零计数器
+                    for k in et:
+                        et[k] = 0
 
             start = stop
             mean_value_loss, mean_surrogate_loss = self.alg.update()

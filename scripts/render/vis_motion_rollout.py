@@ -27,7 +27,7 @@ def vis_mujoco(motion_traj, humanoid_type = 'g1'):
     print("MuJoCo version:", mujoco.__version__)
     print("mujoco has viewer:", hasattr(mujoco, "viewer"))
     print("mujoco loaded from:", mujoco.__file__)
-    xml_path = f"phc/data/assets/robot/unitree_{humanoid_type}/{humanoid_type}.xml"
+    xml_path = f"data//robots/{humanoid_type}/{humanoid_type}.xml"
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
     mj_data = mujoco.MjData(mj_model)
     num_frames = len(motion_traj['root_states_seg'])

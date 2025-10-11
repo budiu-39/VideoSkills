@@ -80,8 +80,12 @@ python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headl
 
 
 
-## 测试通用模型 
-下载测试用数据集 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下
+## 重定向（smpl to g1)
+参考 `scripts\retarget\fit_smpl_motion.py` ，支持输入 SMPL 参数。  
+
+
+## 使用通用模型进行 tracking 
+使用前面重定向得到的参考运动，把 `--motion_file=`设为其所在的文件夹名（会自动检索该文件夹内所有的 npy 文件）。
 
 
 ```bash
@@ -92,10 +96,7 @@ python videoskills/train.py --task=g1 --resume --dev --load_config --load_run=g1
 python videoskills/train.py --task=smpl --resume --dev --load_config --load_run=phc_universal --motion_file=AMASS_test
 ``` 
 
-
-## 重定向
-
-
+测试性能：下载测试用数据集 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下。
 
 ## 训练 PHC 模型（通用模型）
 需要已经重定向/预处理好的运动数据
