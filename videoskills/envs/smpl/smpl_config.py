@@ -79,15 +79,10 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_136')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_8')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -156,7 +151,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             5, 5, 5,
         ]
 
-        # 太大 的 damping 会
         damping = [
             15, 12, 3, 12, 12, 3,
             1.5, 1.5, 1.5, 1, 1, 1,
@@ -171,39 +165,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             3, 3, 3, 1, 1, 1,
             1, 1, 1,
         ]
-
-        # ver 6
-        # stiffness = [
-        #     170, 150, 30, 30, 30, 10,     # 'L_Hip', 'L_Knee',
-        #     10, 10, 10, 5, 5, 5,  # 'L_Ankle', 'L_Toe'
-        #     170, 150, 30, 30, 30, 10,
-        #     10, 10, 10,  5, 5, 5,
-        #     60, 60, 60, 110, 40, 70,   # 'Torso', 'Spine',
-        #     80, 30, 50, 5, 5, 5,  # 'Chest', 'Neck'
-        #     5, 5, 5, 130, 20, 75,  # Head, 'L_Thorax',
-        #     85, 20, 50, 15, 5, 12,   # 'L_Shoulder', 'L_Elbow'
-        #     5, 5, 5, 5, 5, 5,  # 'L_Wrist', 'L_Hand'
-        #     130, 20, 75, 85, 20, 50,
-        #     15, 5, 12, 5, 5, 5,
-        #     5, 5, 5,
-        # ]
-        # # 太大 的 damping 会
-        # damping = [
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     6, 6, 6, 9, 4, 7,
-        #     8, 3, 5, 1, 1, 1,
-        #     1, 1, 1, 13, 2, 7,
-        #     8, 2, 5, 2, 1, 2,
-        #     1, 1, 1, 1, 1, 1,
-        #     13, 2, 7, 8, 2, 5,
-        #     2, 1, 2, 1, 1, 1,
-        #     1, 1, 1,
-        # ]
-        # pd_scale = 0.333
-        # pd_scale = 0.2
 
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
@@ -238,14 +199,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_pos = 0.3
             w_rot = 0.5
             w_vel = 0.1
-            # k_ang_vel = 0.1
-            # k_pos = 100
-            # k_rot = 10
-            # k_vel = 0.1
-            # w_ang_vel = 0.5
-            # w_pos = 0.5
-            # w_rot = 0.5
-            # w_vel = 0.5
         class scales:
             imitation = 1.0
             # torques = -0.000001

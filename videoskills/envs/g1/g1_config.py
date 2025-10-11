@@ -23,7 +23,7 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
     class runner( LeggedRobotCfgPPO.runner ):
         policy_class_name = 'ActorCritic'
         max_iterations = 30000
-        run_name = 'g1_refine_test'  # 默认带 tiffness   ver 是 pd 的版本号
+        run_name = 'g1_refine_test'
         use_amp_runner = False
         load_run = 'g1_universal'
         # load_run = 'g1_universal'

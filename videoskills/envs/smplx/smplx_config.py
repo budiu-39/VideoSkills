@@ -69,7 +69,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
-        enabled = False
+        enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 52
 

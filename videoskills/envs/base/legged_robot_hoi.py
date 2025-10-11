@@ -377,28 +377,28 @@ class LeggedRobotHoi(LeggedRobotImi):
             for i in range(max_vis_envs):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
-                body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                obj_near_env = body_pos_env - ig_env
-
-                num_lines = body_pos_env.shape[0]
-                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
-
-                verts[0::2] = body_pos_env
-                verts[1::2] = obj_near_env
-
-                # 颜色（蓝色）
-                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
-
-                self.ref_ig[i].cpu().numpy()  # (52, 3)
-                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() - self.ref_ig[i].cpu().numpy()
-
-                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
-                verts_ref[0::2] = self.ref_body_pos[i].detach().cpu().numpy()
-                verts_ref[1::2] = obj_near_ref
-                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
+                # body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
+                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_env = body_pos_env - ig_env
+                #
+                # num_lines = body_pos_env.shape[0]
+                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                #
+                # verts[0::2] = body_pos_env
+                # verts[1::2] = obj_near_env
+                #
+                # # 颜色（蓝色）
+                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+                #
+                # self.ref_ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() - self.ref_ig[i].cpu().numpy()
+                #
+                # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # verts_ref[0::2] = self.ref_body_pos[i].detach().cpu().numpy()
+                # verts_ref[1::2] = obj_near_ref
+                # colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
 
 
                 # 画线

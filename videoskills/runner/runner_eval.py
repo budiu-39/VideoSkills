@@ -16,7 +16,7 @@ import copy
 
 from rsl_rl.algorithms import PPO
 from videoskills.learning.ppo_norm import PPONorm
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent
+from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, ActorCritic_Attention
 from rsl_rl.env import VecEnv
 
 class OnPolicyRunnerEval(OnPolicyRunner):
@@ -29,8 +29,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.policy_cfg = train_cfg["policy"]
         self.device = device
         self.env = env
-        # self.rollout = False # train_cfg.get("refine", False)
-        # best_by = 'mpjpe_g'
 
         if self.env.num_privileged_obs is not None:
             num_critic_obs = self.env.num_privileged_obs
@@ -41,8 +39,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                                                num_critic_obs,
                                                self.env.num_actions,
                                                **self.policy_cfg).to(self.device)
-        if self.policy_cfg['fixed_std']:
-            actor_critic.std.requires_grad_(False)
+
         self.alg_cfg['num_obs'] = self.env.num_obs
         self.alg_cfg['num_critic_obs'] = num_critic_obs
         # alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
@@ -65,10 +62,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         self.normalize_obs = train_cfg["runner"].get("normalize_obs", True)
 
-        # if self.normalize_obs:
-        #     obs_shape = (self.env.num_obs,)  # assuming 1D vector input
-        #     self.running_mean_std = RunningMeanStd(obs_shape).to(self.device)
-        #     self.running_mean_std_temp = None
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
         self.rollouts_path = os.path.join(log_dir, "refine_results")

@@ -4,12 +4,10 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
         init_noise_std = 0.055
         fixed_std = True
-        # init_noise_std = 0.15
-        # actor_hidden_dims = [1024, 512, 256]
-        # critic_hidden_dims =[1024, 512, 256]
-        actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        activation = 'elu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        d_model = 256
+        n_heads = 4
+        depth = 4
+        num_bodies = 24
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -18,14 +16,15 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'PHC_03angvel'
+        policy_class_name = 'ActorCritic_Attention'
+        run_name = 'transformer_test'
         experiment_name = 'smpl_ppo'
-        use_amp_runner = True # 可以联动！和 amp
+        use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
-        load_run = 'SOTA_smpl_universal'
+        # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
-        # load_run = 'SOTA_obs_num_fixed_Jul04_15-29-48'
+        load_run = 'phc_universal'
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
@@ -39,6 +38,13 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # num_steps_per_env = 24 # per iteration
         # num_learning_epochs = 4
         # num_mini_batches = 5
+
+    class refine:
+        success_rate = 0.98
+        convergence_threshold = 0.03
+        convergence_criteria = 'reward'  # 'reward' or 'mpjpe'
+
+
 
     class amp_config:
         disc_batch = 512
@@ -58,26 +64,33 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'random'  # 'hybrid' or 'default'
-        pos = [0.0, 0.0, 0.89]  # x,y,z [m]
+        type = 'hybrid'
+        pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
         distance = [0.25] * 24
 
+        reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
+                     'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+                     'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
+
     class motion:
-        rotate_motion = True
+        rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
         #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
         key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist",  "L_Wrist"]
+
+    class object:
+        object_density = 1000
 
     class domain_rand:
         randomize_friction = False
@@ -100,7 +113,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             height_measurements = 0.1
 
     class env(LeggedRobotCfg.env):
-        episode_length_s = 5  # 5 秒应该有 1000 步
+        episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
         num_envs = 4096
@@ -137,7 +150,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             5, 5, 5,
         ]
 
-        # 太大 的 damping 会
         damping = [
             15, 12, 3, 12, 12, 3,
             1.5, 1.5, 1.5, 1, 1, 1,
@@ -153,47 +165,26 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             1, 1, 1,
         ]
 
-        # ver 6
-        # stiffness = [
-        #     170, 150, 30, 30, 30, 10,     # 'L_Hip', 'L_Knee',
-        #     10, 10, 10, 5, 5, 5,  # 'L_Ankle', 'L_Toe'
-        #     170, 150, 30, 30, 30, 10,
-        #     10, 10, 10,  5, 5, 5,
-        #     60, 60, 60, 110, 40, 70,   # 'Torso', 'Spine',
-        #     80, 30, 50, 5, 5, 5,  # 'Chest', 'Neck'
-        #     5, 5, 5, 130, 20, 75,  # Head, 'L_Thorax',
-        #     85, 20, 50, 15, 5, 12,   # 'L_Shoulder', 'L_Elbow'
-        #     5, 5, 5, 5, 5, 5,  # 'L_Wrist', 'L_Hand'
-        #     130, 20, 75, 85, 20, 50,
-        #     15, 5, 12, 5, 5, 5,
-        #     5, 5, 5,
-        # ]
-        # # 太大 的 damping 会
-        # damping = [
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     6, 6, 6, 9, 4, 7,
-        #     8, 3, 5, 1, 1, 1,
-        #     1, 1, 1, 13, 2, 7,
-        #     8, 2, 5, 2, 1, 2,
-        #     1, 1, 1, 1, 1, 1,
-        #     13, 2, 7, 8, 2, 5,
-        #     2, 1, 2, 1, 1, 1,
-        #     1, 1, 1,
-        # ]
-        # pd_scale = 0.333
-        # pd_scale = 0.2
-
     class asset(LeggedRobotCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
+        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
         default_dof_drive_mode = 1
+
+
+    class normalization:
+        class obs_scales:
+            lin_vel = 2.0
+            ang_vel = 0.25
+            dof_pos = 1.0
+            dof_vel = 0.05
+            height_measurements = 5.0
+        clip_observations = 100.
+        clip_actions = 10.
 
     class rewards:
         # soft_dof_pos_limit = 0.9
@@ -207,14 +198,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_pos = 0.3
             w_rot = 0.5
             w_vel = 0.1
-            # k_ang_vel = 0.1
-            # k_pos = 100
-            # k_rot = 10
-            # k_vel = 0.1
-            # w_ang_vel = 0.5
-            # w_pos = 0.5
-            # w_rot = 0.5
-            # w_vel = 0.5
         class scales:
             imitation = 1.0
             # torques = -0.000001
@@ -226,6 +209,6 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # dt = 0.005
 
     class amp:
-        activate = True
+        activate = False
         num_amp_obs_steps = 10
         num_amp_obs = 232

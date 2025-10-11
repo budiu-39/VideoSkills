@@ -33,6 +33,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCritic_Attention
 from rsl_rl.storage import RolloutStorage
 
 class PPO:
