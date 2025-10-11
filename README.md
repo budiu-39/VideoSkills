@@ -95,7 +95,7 @@ python videoskills/eval.py --task=g1 --resume --dev --load_config --load_run=g1_
 python videoskills/eval.py --task=smpl --resume --dev --load_config --load_run=phc_universal --motion_file=AMASS_test
 ``` 
 
-测试性能：下载 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下。
+测试性能：下载 [AMASS测试集（G1适用）](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集（SMPL适用）](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下。
 
 ## 从头训练 PHC 模型
 需要已经重定向/预处理好的运动数据
