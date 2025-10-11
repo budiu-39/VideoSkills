@@ -110,13 +110,14 @@ python videoskills/train.py --task=smpl
 ```
 
 ## 在新数据集上微调 PHC 模型
+把 `--motion_file=`设为新数据集的名字，如果要启用wandb，加上 `use_wandb`。
 ```bash
 # G1 robot
-python videoskills/train.py --task=g1
+python videoskills/train.py --task=g1 --resume --load_config --load_run=g1_universal --motion_file=AMASS_test --headless
 
 
 # SMPL robot
-python videoskills/train.py --task=smpl
+python videoskills/train.py --task=smpl --resume --load_config --load_run=phc_universal --motion_file=AMASS_test --headless
 ```
 
 
