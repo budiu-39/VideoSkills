@@ -97,7 +97,7 @@ python videoskills/eval.py --task=smpl --resume --dev --load_config --load_run=p
 
 测试性能：下载 [AMASS测试集，G1适用](https://drive.google.com/file/d/1it_7QvfysrSs89h73G2GjYCyVy3-X8Eh/view?usp=sharing) 或 [AMASS测试集，SMPL适用](https://drive.google.com/file/d/14w_c9ezN3IhkKQT_69GLdsD3FCVJfCPK/view?usp=sharing) 放在 dataset 文件夹下。
 
-## 从头训练 PHC 模型（通用模型）
+## 从头训练 PHC 模型
 需要已经重定向/预处理好的运动数据
 
 ```bash
@@ -109,7 +109,7 @@ python videoskills/train.py --task=g1
 python videoskills/train.py --task=smpl
 ```
 
-## 在新数据集上微调模型
+## 在新数据集上微调 PHC 模型
 ```bash
 # G1 robot
 python videoskills/train.py --task=g1
