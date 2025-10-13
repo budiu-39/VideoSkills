@@ -94,7 +94,7 @@ def main():
                         "cfg": cfg.__dict__}, path)
             print(f"[DAgger] saved => {path}")
 
-        if it % 50 == 0:
+        if it % 200 == 0:
             print(f"\n[DAgger] Eval at iteration {it} ...")
 
             if eval_runner is None:

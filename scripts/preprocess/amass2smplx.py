@@ -9,11 +9,11 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import glob
-from utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-from smpl_sim.smpllib.smpl_parser import SMPL_Parser
+from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 import joblib
 import torch
 import mujoco
@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "SMPLX_AMASS"
+    output_dir = "dataset/smplx_motion/AMASS_train"
 
     process_split = args.process_split
     upright_start = True
@@ -152,6 +152,7 @@ if __name__ == "__main__":
         skip = int(framerate / 30)
         root_trans = entry_data['trans'][::skip, :]
         pose_aa = np.concatenate([entry_data['poses'][::skip, :66], np.zeros((root_trans.shape[0], 6))], axis=-1)
+        pose_aa = pose_aa.reshape(-1, 24, 3)
         N = pose_aa.shape[0]
 
         smpl_name_to_idx = {n: i for i, n in enumerate(SMPL_BONE_ORDER_NAMES)}
@@ -166,29 +167,35 @@ if __name__ == "__main__":
 
         betas = entry_data['betas']
         gender = entry_data['gender']
-        N = pose_aa.shape[0]
 
-        if bound == 0:
-            bound = N
+        bound = N
 
         root_trans = root_trans[:bound]
-        pose_aa = pose_aa[:bound]
+        pose_aa_x = pose_aa_x[:bound]
 
         if N < 10:
             continue
 
         smplx_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
-        pose_aa_mj = pose_aa.reshape(N, 52, 3)[:, smplx_2_mujoco]
+        pose_aa_mj = pose_aa_x[:, smplx_2_mujoco]
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 52, 4)
 
-        beta = np.zeros(16)
+        beta = np.zeros(20)
         gender_number, beta[:], gender = [0], 0, "neutral"
 
         skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v2.xml")
+        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v2.xml")
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
         # 也就是说，机器人和 smpl 的root 几乎一致。
-        root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
-        smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
+        root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree_smpl.local_translation[0]
+        smplx_parser_n = SMPLX_Parser(
+            model_path='data/SMPL/smplx',
+            gender='neutral',
+            use_pca=False,  # 关键：不用 PCA，接受 45D/手
+            create_transl=False,
+            flat_hand_mean=True,
+            num_betas=20  # SMPL-X 20 维 beta
+        )
 
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
@@ -203,11 +210,11 @@ if __name__ == "__main__":
         if fix_height:
             with torch.no_grad():
                 frame_check = min(frame_check, N)
-                pose_t = torch.from_numpy(pose_aa[:frame_check])
+                pose_t = torch.from_numpy(pose_aa_x[:frame_check])
                 beta_t = torch.from_numpy(beta[None,])
                 trans_t = root_trans_offset[:frame_check]
 
-                verts, joints = smpl_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
+                verts, joints = smplx_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
                 offset = joints[:, 0] - trans_t # offset is the difference between the smpl root joint and the mujoco root joint
                 feet_z = (verts - offset[:, None])[..., -1]  # Z 轴  # feet_z is the mujoco lower point of each frame
                 diff_fix = feet_z.min().item() # diff_fix is the lowest frame of lowest point in each frame
@@ -247,7 +254,7 @@ if __name__ == "__main__":
         motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
         motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
         motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
-        vis_mujoco(motion_traj, f"data/robots/smpl/smplx_humanoid_v2.xml", humanoid_type=robot_cfg['model'])
+        # vis_mujoco(motion_traj, f"data/robots/smpl/smplx_humanoid_v2.xml", humanoid_type=robot_cfg['model'])
 
     print("Done")
 

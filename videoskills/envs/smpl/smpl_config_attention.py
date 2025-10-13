@@ -22,7 +22,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         policy_class_name = 'ActorCritic_Attention'
-        run_name = 'transformer_Dagger2'
+        run_name = 'Dagger_AMASS_train'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False
         max_iterations = 38000  # number of policy updates
@@ -83,8 +83,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 
