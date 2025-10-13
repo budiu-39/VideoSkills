@@ -8,7 +8,7 @@ import glob
 from smplx import SMPL
 from tqdm import tqdm
 import subprocess
-from scripts.preprocess.convert_gvhmr_isaac import process_folder
+from scripts.preprocess.gvhmr2smpl import process_folder
 from pathlib import Path
 import os, shutil, tempfile
 from typing import List, Iterable, Tuple
