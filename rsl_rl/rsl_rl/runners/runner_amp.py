@@ -1,13 +1,13 @@
-from videoskills.runner.runner_eval import OnPolicyRunnerEval
-from videoskills.learning.amp_discriminator import AMPDiscriminator
-from videoskills.learning.replay_buffer import ReplayBuffer
+from rsl_rl.runners.runner_eval import OnPolicyRunnerEval
+from rsl_rl.utils.amp_discriminator import AMPDiscriminator
+from rsl_rl.utils.replay_buffer import ReplayBuffer
 from collections import deque
 import torch
 import os
 import time
 import wandb
 import statistics
-from videoskills.utils.running_mean_std import RunningMeanStd
+from rsl_rl.utils.running_mean_std import RunningMeanStd
 
 class OnPolicyRunnerAMP(OnPolicyRunnerEval):
     def __init__(self, env, train_cfg, log_dir, device):

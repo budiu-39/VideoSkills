@@ -28,12 +28,11 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from torch.nn.modules import rnn
+from rsl_rl.utils.running_mean_std import RunningMeanStd
+
 
 class ActorCritic(nn.Module):
     is_recurrent = False
@@ -53,6 +52,10 @@ class ActorCritic(nn.Module):
 
         mlp_input_dim_a = num_actor_obs
         mlp_input_dim_c = num_critic_obs
+
+        self.actor_obs_rms  = RunningMeanStd((num_actor_obs,))
+        self.critic_obs_rms = RunningMeanStd((num_critic_obs,))
+        self._update_rms = True  # 控制是否更新统计
 
         # Policy
         actor_layers = []
@@ -98,6 +101,10 @@ class ActorCritic(nn.Module):
         [torch.nn.init.orthogonal_(module.weight, gain=scales[idx]) for idx, module in
          enumerate(mod for mod in sequential if isinstance(mod, nn.Linear))]
 
+    def set_update_rms(self, flag: bool):
+        self._update_rms = flag
+        self.actor_obs_rms.train(flag)
+        self.critic_obs_rms.train(flag)
 
     def reset(self, dones=None):
         pass
@@ -118,6 +125,7 @@ class ActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def update_distribution(self, observations):
+        observations = self._norm_actor_obs(observations)
         mean = self.actor(observations)
         self.distribution = Normal(mean, mean*0. + self.std)
 
@@ -129,12 +137,23 @@ class ActorCritic(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def act_inference(self, observations):
+        observations = self._norm_actor_obs(observations)
         actions_mean = self.actor(observations)
         return actions_mean
 
     def evaluate(self, critic_observations, **kwargs):
         value = self.critic(critic_observations)
         return value
+
+    def _norm_actor_obs(self, obs):
+        if self._update_rms:
+            _ = self.actor_obs_rms(obs)
+        return self.actor_obs_rms(obs)
+
+    def _norm_critic_obs(self, obs):
+        if self._update_rms:
+            _ = self.critic_obs_rms(obs)
+        return self.critic_obs_rms(obs)
 
 def get_activation(act_name):
     if act_name == "elu":

@@ -3,8 +3,8 @@ from typing import Tuple
 from datetime import datetime
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
-from videoskills.runner.runner_eval import OnPolicyRunnerEval
-from videoskills.runner.runner_amp import OnPolicyRunnerAMP
+from rsl_rl.runners.runner_eval import OnPolicyRunnerEval
+from rsl_rl.runners.runner_amp import OnPolicyRunnerAMP
 from videoskills import LEGGED_GYM_ROOT_DIR
 from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params, \
     dict_to_class

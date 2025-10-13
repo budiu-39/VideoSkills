@@ -17,7 +17,6 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
         learning_rate =  0.00002 #5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
         entropy_coef = 0.01
         normalize_value = False
-        normalize_obs = True
         schedule = 'fixed'
 
     class runner( LeggedRobotCfgPPO.runner ):

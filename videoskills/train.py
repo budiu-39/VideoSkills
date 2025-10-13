@@ -16,6 +16,14 @@ import sys, os, inspect
 print("argv[0] :", sys.argv[0])
 print("sys.path[0] :", sys.path[0])
 
+import torch
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+try:
+    torch.set_float32_matmul_precision('high')
+except Exception:
+    pass
+
 def train(args):
     env_cfg, train_cfg = task_registry.get_cfgs(args)
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)

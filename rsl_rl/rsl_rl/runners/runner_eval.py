@@ -6,16 +6,13 @@ import wandb
 import os
 import joblib
 import time
-from rsl_rl.env import VecEnv
 import statistics
 from collections import defaultdict
 from videoskills.utils.metrics import compute_metrics
 from collections import deque
 # from torch.utils.tensorboard import SummaryWriter
-import copy
 
-from rsl_rl.algorithms import PPO
-from videoskills.learning.ppo_norm import PPONorm
+from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, ActorCritic_Attention
 from rsl_rl.env import VecEnv
 
@@ -43,13 +40,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.alg_cfg['num_obs'] = self.env.num_obs
         self.alg_cfg['num_critic_obs'] = num_critic_obs
         # alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
-        self.alg = PPONorm(actor_critic, device=self.device, **self.alg_cfg)
+        self.alg = PPO(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
         self.save_interval = self.cfg["save_interval"]
 
         # init storage and model
-        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env, [self.env.num_obs],
-                              [self.env.num_privileged_obs], [self.env.num_actions])
+        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+                              [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
 
         # Log
         self.log_dir = log_dir
@@ -59,9 +56,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.current_learning_iteration = 0
 
         _, _ = self.env.reset()
-
-        self.normalize_obs = train_cfg["runner"].get("normalize_obs", True)
-
 
         self.eval_output_path = os.path.join(log_dir,"eval_outputs")
         self.rollouts_path = os.path.join(log_dir, "refine_results")
@@ -99,33 +93,32 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             start = time.time()
             early_termination_sum = 0
             dones_sum = 0
-            self.alg._refresh_temp_rms()  # refresh temp running mean std
-            with torch.inference_mode():
-                for i in range(self.num_steps_per_env):
+            for i in range(self.num_steps_per_env):
+                with torch.no_grad():
                     actions = self.alg.act(obs, critic_obs)
-                    obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
-                    obs = obs.to(self.device)
-                    rewards = rewards.to(self.device)
-                    dones = dones.to(self.device)
-                    critic_obs = privileged_obs.to(self.device) if privileged_obs is not None else obs
-                    self.alg.process_env_step(rewards, dones, infos)
-                    early_termination_sum += sum(dones.cpu().numpy()) - sum(infos['time_outs'].cpu().numpy())
-                    dones_sum += sum(dones.cpu().numpy())
+                obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
+                obs = obs.to(self.device)
+                rewards = rewards.to(self.device)
+                dones = dones.to(self.device)
+                critic_obs = privileged_obs.to(self.device) if privileged_obs is not None else obs
+                self.alg.process_env_step(rewards, dones, infos)
+                early_termination_sum += sum(dones.cpu().numpy()) - sum(infos['time_outs'].cpu().numpy())
+                dones_sum += sum(dones.cpu().numpy())
 
-                    if self.log_dir is not None:
-                        # Book keeping
-                        if 'episode' in infos:
-                            ep_infos.append(infos['episode'])
-                        self.cur_reward_sum += rewards
-                        self.cur_episode_length += 1
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        ended_rews = self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()
-                        self.rewbuffer.extend(ended_rews)
-                        self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
+                if self.log_dir is not None:
+                    # Book keeping
+                    if 'episode' in infos:
+                        ep_infos.append(infos['episode'])
+                    self.cur_reward_sum += rewards
+                    self.cur_episode_length += 1
+                    new_ids = (dones > 0).nonzero(as_tuple=False)
+                    ended_rews = self.cur_reward_sum[new_ids][:, 0].cpu().numpy().tolist()
+                    self.rewbuffer.extend(ended_rews)
+                    self.lenbuffer.extend(self.cur_episode_length[new_ids][:, 0].cpu().numpy().tolist())
 
-                        # TODO: Here should implement a counter logic counting the sum of dones - ET and ET
-                        self.cur_reward_sum[new_ids] = 0
-                        self.cur_episode_length[new_ids] = 0
+                    # TODO: Here should implement a counter logic counting the sum of dones - ET and ET
+                    self.cur_reward_sum[new_ids] = 0
+                    self.cur_episode_length[new_ids] = 0
 
                 stop = time.time()
                 collection_time = stop - start
@@ -167,6 +160,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
     def eval(self, motion_ids=None):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
+        if hasattr(self.alg.actor_critic, "set_update_rms"):
+            self.alg.actor_critic.set_update_rms(False)
         self.env.eval_mode = True
         self.env.early_termination_distance = torch.tensor([0.5] * len(self.env.early_termination_distance)
                                                            , device=self.device) ** 2
@@ -195,11 +190,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             random_pad = np.random.choice(motion_ids, size=num_pad, replace=True).tolist()
             padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
-            with torch.inference_mode():
-                self.env.reset_with_motion_ids(padded_ids)
+
+            self.env.reset_with_motion_ids(padded_ids)
             self.env.gym.simulate(self.env.sim)
-            with torch.inference_mode():# safe reset
-                obs = self.env.reset_with_motion_ids(padded_ids)
+            obs = self.env.reset_with_motion_ids(padded_ids)
             torch.cuda.empty_cache()
 
             cum_rewards = torch.zeros(num_envs, device=device)
@@ -214,31 +208,29 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             done_flags[batch_size:] = True
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
-                with torch.inference_mode():
-                    if self.alg.normalize_obs:
-                        obs = self.alg.obs_mean_std(obs)
+                with torch.no_grad():
                     action = self.alg.actor_critic.act_inference(obs)
-                    obs, _, rewards, dones, extras = self.env.step(action)
-                    rewards = rewards.squeeze()
-                    rewards[done_flags] = 0.0
-                    cum_rewards += rewards
+                obs, _, rewards, dones, extras = self.env.step(action)
+                rewards = rewards.squeeze()
+                rewards[done_flags] = 0.0
+                cum_rewards += rewards
 
-                    episode_lengths += (~done_flags).int()
+                episode_lengths += (~done_flags).int()
 
-                    newly_done = dones.squeeze() & (~done_flags)
-                    done_flags |= dones.squeeze()
+                newly_done = dones.squeeze() & (~done_flags)
+                done_flags |= dones.squeeze()
 
-                    for env_id in newly_done.nonzero(as_tuple=False).squeeze(-1).tolist():
-                        if env_id >= batch_size:
-                            continue
-                        ep_len = episode_lengths[env_id].item()
-                        expected_len = motion_lengths[env_id].item()
-                        if ep_len < expected_len and not first_fail_recorded[env_id]:
-                            reward_until_fail[env_id] = cum_rewards[env_id]
-                            first_fail_recorded[env_id] = True
+                for env_id in newly_done.nonzero(as_tuple=False).squeeze(-1).tolist():
+                    if env_id >= batch_size:
+                        continue
+                    ep_len = episode_lengths[env_id].item()
+                    expected_len = motion_lengths[env_id].item()
+                    if ep_len < expected_len and not first_fail_recorded[env_id]:
+                        reward_until_fail[env_id] = cum_rewards[env_id]
+                        first_fail_recorded[env_id] = True
 
-                    if done_flags[:batch_size].all():
-                        break
+                if done_flags[:batch_size].all():
+                    break
 
                 alive = ~done_flags[:batch_size]
 
@@ -325,8 +317,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.disable_data_recording()
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
-        with torch.inference_mode():
-            self.env.reset()
+        self.env.reset()
 
         if wandb.run is not None:
             wandb.log({
@@ -412,11 +403,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             # —— 重置并开启记录 —— #
         self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
         self.env.enable_data_recording()
-        with torch.inference_mode():
-            self.env.reset_with_motion_ids(env_motion_ids_tensor)
+        self.env.reset_with_motion_ids(env_motion_ids_tensor)
         self.env.gym.simulate(self.env.sim)
-        with torch.inference_mode():
-            obs = self.env.reset_with_motion_ids(env_motion_ids_tensor)
+        obs = self.env.reset_with_motion_ids(env_motion_ids_tensor)
         torch.cuda.empty_cache()
 
         # 每 env 统计
@@ -430,16 +419,14 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         # —— rollout —— #
         for _ in range(max_steps):
-            with torch.inference_mode():
-                if self.alg.normalize_obs:
-                    obs = self.alg.obs_mean_std(obs)
+            with torch.no_grad():
                 action = self.alg.actor_critic.act_inference(obs)
-                obs, _, rewards, dones, extras = self.env.step(action)
-                rewards = rewards.squeeze()
-                rewards[done_flags] = 0.0
-                cum_rewards += rewards
-                episode_lengths += (~done_flags).int()
-                done_flags |= dones.squeeze()
+            obs, _, rewards, dones, extras = self.env.step(action)
+            rewards = rewards.squeeze()
+            rewards[done_flags] = 0.0
+            cum_rewards += rewards
+            episode_lengths += (~done_flags).int()
+            done_flags |= dones.squeeze()
             if done_flags.all():
                 break
 
@@ -545,8 +532,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance,
                                                            device=self.device) ** 2
         self.env.eval_mode = False
-        with torch.inference_mode():
-            self.env.reset()
+        self.env.reset()
 
         # —— wandb 记录（可选） —— #
         if wandb.run is not None:
@@ -752,8 +738,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         torch.save({
             'model_state_dict': self.alg.actor_critic.state_dict(),
             'optimizer_state_dict': self.alg.optimizer.state_dict(),
-            'obs_rms_state_dict': self.alg.obs_mean_std.state_dict() if self.alg.normalize_obs else None,
-            'value_rms_state_dict': self.alg.value_mean_std.state_dict() if self.alg.normalize_value else None,
             'iter': self.current_learning_iteration,
             'infos': infos,
             }, path)
@@ -765,17 +749,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         else:
             loaded_dict = torch.load(path)
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+
         if load_optimizer:
             self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
         if load_iteration:
             self.current_learning_iteration = loaded_dict['iter']
-
-        if self.alg.normalize_obs:
-            with torch.inference_mode():
-                self.alg.obs_mean_std.load_state_dict(loaded_dict["obs_rms_state_dict"])
-        if self.alg.normalize_value:
-            with torch.inference_mode():
-                self.alg.value_mean_std.load_state_dict(loaded_dict["value_rms_state_dict"])
 
         return loaded_dict['infos']
 
@@ -800,7 +778,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env._load_motion(motion_file)
         num_envs = self.env.num_envs
         init_ids = torch.zeros(num_envs, dtype=torch.long, device=self.device)
-        with torch.inference_mode():
-            self.env.reset_with_motion_ids(init_ids)
+        self.env.reset_with_motion_ids(init_ids)
 
 

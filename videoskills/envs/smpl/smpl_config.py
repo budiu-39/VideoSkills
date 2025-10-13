@@ -15,7 +15,6 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
         entropy_coef = 0.01
         normalize_value = False
-        normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
         run_name = 'phc_sota_reboot'
@@ -65,7 +64,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'hybrid'
+        type = 'random'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
@@ -80,7 +79,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 

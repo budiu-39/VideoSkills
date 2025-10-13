@@ -8,18 +8,23 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         n_heads = 4
         depth = 4
         num_bodies = 24
+        use_obs_rms = True
+
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
-        learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
-        entropy_coef = 0.01
-        normalize_value = False
-        normalize_obs = True
+        learning_rate = 2e-4   # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
+        entropy_coef = 0.001
+        normalize_value = True
+
+        use_mixed_precision = True
+        schedule = "adaptive"
+        desired_kl = 0.01
 
     class runner(LeggedRobotCfgPPO.runner):
         policy_class_name = 'ActorCritic_Attention'
-        run_name = 'transformer_test'
+        run_name = 'transformer_unbiased_rms_re'
         experiment_name = 'smpl_ppo'
-        use_amp_runner = False # 可以联动！和 amp
+        use_amp_runner = False
         max_iterations = 38000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
@@ -32,7 +37,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         eval_interval = 2000
 
         num_steps_per_env = 32  # per iteration
-        num_learning_epochs = 6
+        num_learning_epochs = 4
         num_mini_batches = 8
 
         # num_steps_per_env = 24 # per iteration
@@ -64,7 +69,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'hybrid'
+        type = 'random'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
@@ -116,7 +121,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 4096
+        num_envs = 1024
         num_actions = 69
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =

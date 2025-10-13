@@ -35,9 +35,11 @@ import torch.optim as optim
 from rsl_rl.modules import ActorCritic
 from rsl_rl.modules import ActorCritic_Attention
 from rsl_rl.storage import RolloutStorage
+from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import autocast as cuda_autocast
+from contextlib import nullcontext
 
 class PPO:
-    actor_critic: ActorCritic
     def __init__(self,
                  actor_critic,
                  num_learning_epochs=1,
@@ -53,8 +55,11 @@ class PPO:
                  schedule="fixed",
                  desired_kl=0.01,
                  device='cpu',
+                 use_mixed_precision=False,
+                 **kwargs
                  ):
-
+        self.use_mixed_precision = use_mixed_precision
+        self.scaler = GradScaler(enabled=use_mixed_precision)
         self.device = device
 
         self.desired_kl = desired_kl
@@ -82,10 +87,10 @@ class PPO:
     def init_storage(self, num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, actor_obs_shape, critic_obs_shape, action_shape, self.device)
 
-    def test_mode(self):
-        self.actor_critic.test()
+    def set_eval(self):
+        self.actor_critic.eval()
     
-    def train_mode(self):
+    def set_train(self):
         self.actor_critic.train()
 
     def act(self, obs, critic_obs):
@@ -128,41 +133,39 @@ class PPO:
         for obs_batch, critic_obs_batch, actions_batch, target_values_batch, advantages_batch, returns_batch, old_actions_log_prob_batch, \
             old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch in generator:
 
+            ctx = cuda_autocast(enabled=self.use_mixed_precision) if self.use_mixed_precision else nullcontext()
 
+            with ctx:
                 self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
                 actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch, hidden_states=hid_states_batch[1])
+                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch,
+                                                         hidden_states=hid_states_batch[1])
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy
 
-                # KL
-                if self.desired_kl != None and self.schedule == 'adaptive':
+                if self.desired_kl is not None and self.schedule == 'adaptive':
                     with torch.inference_mode():
-                        kl = torch.sum(
-                            torch.log(sigma_batch / old_sigma_batch + 1.e-5) + (torch.square(old_sigma_batch) + torch.square(old_mu_batch - mu_batch)) / (2.0 * torch.square(sigma_batch)) - 0.5, axis=-1)
+                        kl = torch.sum(torch.log(sigma_batch / (old_sigma_batch + 1e-8) + 1.e-5) +
+                                       (old_sigma_batch ** 2 + (old_mu_batch - mu_batch) ** 2) /
+                                       (2.0 * (sigma_batch ** 2 + 1e-8)) - 0.5, dim=-1)
                         kl_mean = torch.mean(kl)
-
                         if kl_mean > self.desired_kl * 2.0:
                             self.learning_rate = max(1e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
                             self.learning_rate = min(1e-2, self.learning_rate * 1.5)
-                        
-                        for param_group in self.optimizer.param_groups:
-                            param_group['lr'] = self.learning_rate
+                        for g in self.optimizer.param_groups:
+                            g['lr'] = self.learning_rate
 
-
-                # Surrogate loss
                 ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
                 surrogate = -torch.squeeze(advantages_batch) * ratio
-                surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(ratio, 1.0 - self.clip_param,
-                                                                                1.0 + self.clip_param)
+                surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
+                    ratio, 1.0 - self.clip_param, 1.0 + self.clip_param)
                 surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
 
-                # Value function loss
                 if self.use_clipped_value_loss:
-                    value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(-self.clip_param,
-                                                                                                    self.clip_param)
+                    value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
+                        -self.clip_param, self.clip_param)
                     value_losses = (value_batch - returns_batch).pow(2)
                     value_losses_clipped = (value_clipped - returns_batch).pow(2)
                     value_loss = torch.max(value_losses, value_losses_clipped).mean()
@@ -171,11 +174,17 @@ class PPO:
 
                 loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
 
-                # Gradient step
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
-                self.optimizer.step()
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.use_mixed_precision:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
+                    self.optimizer.step()
 
                 mean_value_loss += value_loss.item()
                 mean_surrogate_loss += surrogate_loss.item()

@@ -198,6 +198,11 @@ def get_args():
         # Refinepipeline
         {"name": "--accelerate", "action": "store_true", "default": False, "help": "Use batched accelerated refining for easy motions (default: True)."},
         {"name": "--render_run", "type": str, "default": None, "help": "Only render the motion from certain run without refining (default: False)."},
+
+        # Distill/DAgger
+        {"name": "--teacher_ckpt", "type": str, "default": None,
+         "help": "Path to teacher ActorCritic checkpoint for distillation/DAgger."},
+        {"name": "--distill_value", "action": "store_true", "default": False}
     ]
     # parse arguments
     args = gymutil.parse_arguments(
