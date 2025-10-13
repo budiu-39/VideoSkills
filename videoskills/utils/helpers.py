@@ -201,7 +201,9 @@ def get_args():
 
         # Distill/DAgger
         {"name": "--teacher_ckpt", "type": str, "default": None,
-         "help": "Path to teacher ActorCritic checkpoint for distillation/DAgger."},
+         "help": "Path to teacher checkpoint for distillation/DAgger."},
+        {"name": "--teacher_config", "type": str, "default": None,
+         "help": "Path to teacher config for distillation/DAgger."},
         {"name": "--distill_value", "action": "store_true", "default": False}
     ]
     # parse arguments

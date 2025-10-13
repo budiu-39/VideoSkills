@@ -6,10 +6,10 @@ from collections import deque
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.spatial.distance import num_obs_dm
 
 from videoskills.utils import task_registry, get_args as get_train_args
-from videoskills.utils.helpers import print_and_save_cfg, class_to_dict, parse_motion_file_path
-from rsl_rl.utils.teacher_wrapper import TeacherWrapper
+from videoskills.utils.helpers import print_and_save_cfg, class_to_dict, parse_motion_file_path, dict_to_class
 
 # A100 友好设置
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -39,7 +39,7 @@ class DAggerCfg:
 
     # 数据集与优化
     replay_capacity: int = 2_000_000      # 样本上限（T*B 级别）
-    batch_size: int = 4096
+    batch_size: int = 16384               # 每次优化的样本数（越大越稳定，但显存占用高）
     epochs_per_iter: int = 1
     lr: float = 3e-4
     weight_decay: float = 0.01
@@ -67,23 +67,31 @@ def build_env_and_cfg(args):
     return env, env_cfg, train_cfg, log_dir
 
 
-def load_teacher(ckpt_path, env, device):
-    teacher_ac = ActorCritic(
-        num_actor_obs=env.num_obs,
-        num_critic_obs=env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs,
-        num_actions=env.num_actions,
-        actor_hidden_dims=[2048, 1536, 1024, 1024, 512, 512],
-        critic_hidden_dims=[2048, 1536, 1024, 1024, 512, 512],
-        activation='silu',
-        fixed_std=False,
-        init_noise_std=0.055,
+def load_teacher(train_cfg, ckpt_path, env, device):
+
+    policy_cfg = class_to_dict(train_cfg['policy'])
+
+    num_actor_obs  = env.num_obs
+    num_critic_obs = env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs
+    num_actions    = env.num_actions
+
+    teacher = ActorCritic(
+        num_actor_obs=num_actor_obs,
+        num_critic_obs=num_critic_obs,
+        num_actions=num_actions,
+        **policy_cfg
     ).to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
     state = ckpt.get('model_state_dict', ckpt)
-    teacher_ac.load_state_dict(state, strict=False)
-    teacher_ac.eval()
-    return TeacherWrapper(teacher_ac, ckpt, env.num_obs, device)
+    teacher.load_state_dict(state, strict=False)
+    teacher.eval()
 
+    if hasattr(teacher, "set_update_rms"):
+        teacher.set_update_rms(False)
+    for p in teacher.parameters():
+        p.requires_grad = False
+
+    return teacher
 
 def build_student(env, train_cfg, device):
     policy_cfg = class_to_dict(train_cfg.policy)
@@ -219,11 +227,18 @@ def rollout_dagger(env, teacher, student, steps_per_env, beta, device):
         # 学生分布
         with torch.no_grad():
             student.update_distribution(obs)
-            mu_s = student.action_mean
+            # mu_s = student.action_mean
 
-        # β-混合动作（可选：也可以按概率选老师/学生）
+
+        # β-混合动作 方案 1 按概率选老师/学生
+        a_teacher = teacher.act_inference(obs)
+        a_student = student.act_inference(obs)
+        mask = (torch.rand(obs.shape[0], 1, device=device) < beta)
+        act = torch.where(mask, a_teacher, a_student)
+
+        # β-混合动作 方案 2
         # act = beta * mu_t + (1.0 - beta) * mu_s
-        act = mu_t
+
 
         # 记录（obs+老师标签）
         obs_list.append(obs)

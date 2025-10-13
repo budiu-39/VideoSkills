@@ -22,7 +22,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         policy_class_name = 'ActorCritic_Attention'
-        run_name = 'transformer_unbiased_rms_re'
+        run_name = 'transformer_Dagger2'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False
         max_iterations = 38000  # number of policy updates

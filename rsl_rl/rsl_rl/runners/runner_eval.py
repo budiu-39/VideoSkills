@@ -45,8 +45,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.save_interval = self.cfg["save_interval"]
 
         # init storage and model
-        self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
-                              [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
+        init_storage = self.cfg.get("init_storage", True)  # 新增：默认不为 eval 分配storage
+        if init_storage:
+            self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+                                  [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
 
         # Log
         self.log_dir = log_dir
@@ -318,6 +320,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
         self.env.reset()
+
+        #
+        # del pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all
+        # del cum_rewards, episode_lengths, done_flags
+        # torch.cuda.empty_cache()  # 释放可回收显存缓存
 
         if wandb.run is not None:
             wandb.log({
