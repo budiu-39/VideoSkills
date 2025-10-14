@@ -548,14 +548,9 @@ class LeggedRobotImi(LeggedRobot):
         self.ref_body_vel = motion_state["key_vel"]
         self.ref_body_ang_vel = motion_state["key_ang_vel"]
 
-        humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
-                                self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-                                activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
+        humanoid_obs = self.compute_humanoid_observations()
 
-        task_obs = compute_mimic_observations_jit(self.base_pos, self.base_quat,
-                               self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-                               self.ref_body_pos, self.ref_body_rot, self.ref_body_vel, self.ref_body_ang_vel,
-                               activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
+        task_obs = self.compute_mimic_observations()
 
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
         # self.obs_buf = torch.cat((humanoid_obs, task_obs), dim=-1)
@@ -567,6 +562,9 @@ class LeggedRobotImi(LeggedRobot):
         #     self.extras["amp_state"] = self._amp_obs_buf.clone().reshape(self.num_envs, -1)
         #
         #     self._update_hist_amp_obs()
+    def compute_humanoid_observations(self):
+        return compute_humanoid_observations_jit(self.base_pos, self.base_quat,
+                                self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel)
 
 
     def _update_hist_amp_obs(self, env_ids=None):
@@ -623,8 +621,7 @@ class LeggedRobotImi(LeggedRobot):
     def compute_mimic_observations(self):
         task_obs = compute_mimic_observations_jit(self.base_pos, self.base_quat,
                                self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel,
-                               self.ref_body_pos, self.ref_body_rot, self.ref_body_vel, self.ref_body_ang_vel,
-                               activate_quat_to_tan_norm=self.activate_quat_to_tan_norm)
+                               self.ref_body_pos, self.ref_body_rot, self.ref_body_vel, self.ref_body_ang_vel)
 
         return task_obs
 
@@ -784,7 +781,7 @@ def compute_humanoid_observations_jit(
     body_rot: Tensor,
     body_vel: Tensor,
     body_ang_vel: Tensor,
-    activate_quat_to_tan_norm: bool = False
+    activate_quat_to_tan_norm: bool = True
 ) -> Tensor:
     root_h = base_pos[:, 2:3]
     heading_rot_inv = calc_heading_quat_inv(base_quat)
@@ -844,7 +841,7 @@ def compute_mimic_observations_jit(
     ref_body_rot: Tensor,          # [N, K, 4]
     ref_body_vel: Tensor,          # [N, K, 3]
     ref_body_ang_vel: Tensor,      # [N, K, 3]
-    activate_quat_to_tan_norm: bool = False
+    activate_quat_to_tan_norm: bool = True
 ) -> Tensor:
     # 引用 jit-safe 工具函数
     heading_rot_inv = calc_heading_quat_inv(base_quat)         # [N, 4]

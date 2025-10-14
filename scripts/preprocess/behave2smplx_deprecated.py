@@ -17,6 +17,7 @@ from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
 from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
 from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
+from scripts.generate_smplx_humanoid_xml import build_and_write_smplx_humanoid_xml
 import smplx
 import trimesh
 import joblib
@@ -24,8 +25,7 @@ import torch
 import mujoco
 import json
 import numpy as np
-from scipy.spatial import cKDTree
-from scripts.libsmpl.smplpytorch.pytorch.smpl_layer import SMPL_Layer
+
 
 Q_UPRIGHT_XYZW = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
 Rupright = sRot.from_quat(Q_UPRIGHT_XYZW)
@@ -39,137 +39,7 @@ CLOSE_MIN_THR = 0.1     # 最近距离判定交互阈值（m）
 ADAPTIVE_PAD = 0.005     # sigma_t = min_dist + 0.005（m）
 FIXED_SIGMA_NO_INTERACT = 0.02  # 若不满足三条交互条件时的保底阈值（可选）
 
-def _set_axes_equal(ax):
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim3d()
-    x_range = abs(x_limits[1] - x_limits[0])
-    y_range = abs(y_limits[1] - y_limits[0])
-    z_range = abs(z_limits[1] - z_limits[0])
-    max_range = max([x_range, y_range, z_range])
-    x_middle = np.mean(x_limits); y_middle = np.mean(y_limits); z_middle = np.mean(z_limits)
-    ax.set_xlim3d([x_middle - max_range/2, x_middle + max_range/2])
-    ax.set_ylim3d([y_middle - max_range/2, y_middle + max_range/2])
-    ax.set_zlim3d([z_middle - max_range/2, z_middle + max_range/2])
 
-@torch.no_grad()
-def compute_cg_ig_via_smplh_contacts(
-    smplh_layer,                 # torch nn.Module，前向返回 (verts, joints)
-    pose_aa: np.ndarray,         # (T, D)
-    betas: torch.Tensor,         # (10,) 或 (T,10)
-    trans: np.ndarray,           # (T, 3)
-    obj_mesh_path: str,
-    obj_pos_world: np.ndarray,   # (T, 3)
-    obj_quat_xyzw: np.ndarray,   # (T, 4) xyzw
-    smplh_vert_part: np.ndarray, # (V,) in [0, body_cnt-1]
-    contact_threshold: float = 0.01,
-    samples_per_object: int = 1024,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    # -------- 新增：可视化参数 --------
-    viz_t: int = 1,           # 指定要可视化的帧索引；None 则不画
-    viz_max_arrows: int = 120,   # 控制箭头数量，避免太密
-    viz_show: bool = False,       # 是否 plt.show()
-):
-    """
-    返回:
-      cg: (T, body_cnt) float32   # 每帧部位接触(0/1)
-      ig: (T, body_cnt, 3) float32 # 部位关节 -> 物体最近点 的向量(世界系)
-    """
-    T = pose_aa.shape[0]
-    smplh_vert_part = np.asarray(smplh_vert_part, dtype=np.int64)
-    body_cnt = int(smplh_vert_part.max()) + 1
-
-    smplh_layer = smplh_layer.to(device)
-
-    mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-    obj_pts_local = trimesh.sample.sample_surface_even(mesh_obj, count=samples_per_object, seed=2025)[0].astype(np.float32)
-
-    betas = betas[None, :] if betas.ndim == 1 else betas   # (1,10) 或 (T,10)
-    betas_th = betas.to(device)
-
-    cg = np.zeros((T, body_cnt), dtype=np.float32)
-    ig = np.zeros((T, body_cnt, 3), dtype=np.float32)
-
-    # 为可视化的那一帧缓存物体点与最近点（只在命中 viz_t 时赋值）
-    _viz_cache = {}
-
-    for t in range(T):
-        pose_th  = torch.from_numpy(pose_aa[t:t+1].astype(np.float32)).to(device)
-        trans_th = torch.from_numpy(trans[t:t+1].astype(np.float32)).to(device)
-
-        out = smplh_layer(pose_th, th_betas=betas_th, th_trans=trans_th)
-        verts  = out[0][0].detach().cpu().numpy().astype(np.float32)   # (V,3)
-        joints = out[1][0].detach().cpu().numpy().astype(np.float32)   # (J,3)
-
-        rot = sRot.from_quat(obj_quat_xyzw[t])                         # xyzw
-        obj_pts_w = rot.apply(obj_pts_local) + obj_pos_world[t]        # (P,3)
-
-        tree = cKDTree(obj_pts_w)
-        dist, _ = tree.query(verts, k=1, workers=-1)
-        contact_mask = dist < contact_threshold
-
-        if np.any(contact_mask):
-            hits = np.bincount(smplh_vert_part[contact_mask], minlength=body_cnt)
-            cg[t] = (hits > 0).astype(np.float32)
-
-        # 关节到最近点向量
-        _, qidx = tree.query(joints, k=1, workers=-1)
-        nearest = obj_pts_w[qidx]                                      # (J,3)
-        ig_vecs = (nearest - joints).astype(np.float32)                # (J,3)
-        ig[t] = ig_vecs
-
-        # 命中可视化帧：把需要的东西先存起来
-        if viz_t is not None and t == viz_t:
-            _viz_cache["joints"] = joints
-            _viz_cache["obj_pts_w"] = obj_pts_w
-            _viz_cache["nearest"] = nearest
-            _viz_cache["ig_vecs"] = ig_vecs
-            _viz_cache["contact_mask"] = contact_mask
-            _viz_cache["smplh_vert_part"] = smplh_vert_part
-            _viz_cache["cg_row"] = cg[t].copy()
-
-    # ---- 可视化：只画一帧（viz_t）----
-    if viz_t is not None and "joints" in _viz_cache:
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D  # noqa
-
-        joints  = _viz_cache["joints"]          # (J,3)
-        obj_w   = _viz_cache["obj_pts_w"]       # (P,3)
-        nearest = _viz_cache["nearest"]         # (J,3)
-        ig_vecs = _viz_cache["ig_vecs"]         # (J,3)
-        cg_row  = _viz_cache["cg_row"]          # (body_cnt,)
-
-        # 选一部分箭头避免太密
-        J = joints.shape[0]
-        step = max(1, int(np.ceil(J / max(1, viz_max_arrows))))
-        sel = np.arange(0, J, step, dtype=int)
-
-        fig = plt.figure(figsize=(7, 6))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # 物体点云（灰）/ 关节（蓝）
-        ax.scatter(obj_w[:, 0], obj_w[:, 1], obj_w[:, 2], s=1, alpha=0.35)
-        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], s=18)
-
-        # 箭头（从关节指向最近点）
-        U = nearest[sel, 0] - joints[sel, 0]
-        V = nearest[sel, 1] - joints[sel, 1]
-        W = nearest[sel, 2] - joints[sel, 2]
-        ax.quiver(joints[sel, 0], joints[sel, 1], joints[sel, 2], U, V, W, length=1.0, normalize=False)
-
-        # 画一部分最近点（红）
-        ax.scatter(nearest[sel, 0], nearest[sel, 1], nearest[sel, 2], s=10)
-
-        # 轴设置
-        ax.set_title(f"cg/ig preview @ t={viz_t}")
-        ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-        _set_axes_equal(ax)
-
-        if viz_show:
-            plt.tight_layout()
-            plt.show()
-
-    return cg, ig
 
 
 
@@ -319,43 +189,6 @@ def angular_velocity_world_from_quat_xyzw(q_xyzw: np.ndarray, dt: float) -> np.n
         omega_w[t] = (R_prev @ w_local).astype(np.float32)
     return omega_w
 
-def smplh_vert_part_from_custom_layer(smpl_layer) -> np.ndarray:
-    """
-    返回: smplh_vert_part 形状 (V,), 值域 [0..J-1]
-    读取 smpl_layer.smpl_data['weights'] (可能是 chumpy/sparse/numpy/torch)，
-    转成 torch.FloatTensor 后做 argmax。
-    """
-    W = smpl_layer.smpl_data.get("weights", None)
-    if W is None:
-        raise ValueError("smpl_layer.smpl_data['weights'] not found.")
-
-    # ---- 统一转 numpy ----
-    try:
-        import chumpy as ch
-        if isinstance(W, ch.Ch):
-            W = W.r  # chumpy -> numpy
-    except Exception:
-        pass
-
-    # scipy.sparse 支持
-    try:
-        from scipy.sparse import issparse
-        if issparse(W):
-            W = W.toarray()
-    except Exception:
-        pass
-
-    if isinstance(W, torch.Tensor):
-        W_t = W
-    else:
-        W_t = torch.from_numpy(np.asarray(W))  # numpy/list/other -> torch
-
-    if W_t.dtype != torch.float32:
-        W_t = W_t.to(torch.float32)
-
-    part = torch.argmax(W_t, dim=1).cpu().numpy().astype(np.int64)  # (V,)
-    return part
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", action="store_true", default=False)
@@ -387,6 +220,7 @@ if __name__ == "__main__":
         "actuator_params": {},
         "model": "smplx",
     }
+    build_and_write_smplx_humanoid_xml(betas=np.zeros(10))
     skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
@@ -412,20 +246,58 @@ if __name__ == "__main__":
         print("Processing", sequence_dir)
 
         # Load BEHAVE sequence data
-        sequence_data = load_behave_sequence(sequence_dir)
-        smpl_data = sequence_data['smpl']
-        pose_aa_smpl = smpl_data['poses']
-        trans = smpl_data['trans']
-        betas = smpl_data.get('betas', np.zeros(10))
-        gender = sequence_data['info']['gender']
+        try:
+            sequence_data = load_behave_sequence(sequence_dir)
+            if 'smpl' not in sequence_data:
+                print(f"No SMPL data found in {sequence_dir}")
+                continue
 
-        N = pose_aa_smpl.shape[0]
+            smpl_data = sequence_data['smpl']
+
+            # Extract SMPL parameters - BEHAVE provides fitted parameters
+            if 'poses' in smpl_data and 'trans' in smpl_data:
+                pose_aa = smpl_data['poses']  # Should be in axis-angle format
+                root_trans = smpl_data['trans']
+                betas = smpl_data.get('betas', np.zeros(10))
+
+                # Ensure pose_aa has correct shape (N, 72) for SMPL
+                if pose_aa.shape[1] == 69:  # Body poses only (23 joints * 3)
+                    # Add global rotation (root) as zeros - will be handled by root_trans
+                    pose_aa = np.concatenate([np.zeros((pose_aa.shape[0], 3)), pose_aa], axis=-1)
+
+                if pose_aa.shape[1] < 72:
+                    # Pad with zeros for hand poses if missing
+                    padding = np.zeros((pose_aa.shape[0], 72 - pose_aa.shape[1]))
+                    pose_aa = np.concatenate([pose_aa, padding], axis=-1)
+
+            else:
+                print(f"Missing pose or trans data in {sequence_dir}")
+                continue
+
+        except Exception as e:
+            print(f"Error loading sequence {sequence_dir}: {e}")
+            continue
+
+        N = pose_aa.shape[0]
         if N < 10:
             print(f"Sequence too short ({N} frames), skipping")
             continue
 
         # 模型
-        D = pose_aa_smpl.shape[1]
+        D = pose_aa.shape[1]
+        # TODO: 这里对于 非 156 的缺少 padding
+        if D == 156:
+            # SMPL-X 全身
+            pose_aa = pose_aa
+        elif D == 72:
+            # 已是 SMPL body
+            pose_aa = pose_aa
+        elif D == 69:
+            # 缺少 global；补 3 维零作为 global
+            pose_aa_body72 = np.concatenate([np.zeros((pose_aa.shape[0], 3), dtype=pose_aa.dtype),
+                                             pose_aa], axis=-1)
+        else:
+            raise ValueError(f"Unexpected SMPL pose dim {D}. Expect 69/72/156.")
 
         # 基于 SMPL 的修正,
         model = smplx.create(
@@ -452,15 +324,16 @@ if __name__ == "__main__":
         joints = output.joints.detach().cpu().numpy()  # (1, N_joints, 3)
         vertices = output.vertices.detach().cpu().numpy()  # (1, 6890, 3)
 
-        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
+        ##
+
+        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v1.xml")
         # 世界坐标系旋转
         R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
         # R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., 1., 0.]]
         # R_cam2world = [[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]]
         world_shift = np.zeros(3, dtype=np.float32)
-        root_trans = trans + skeleton_tree_smpl.local_translation[0].numpy()
-        pose_aa = pose_aa_smpl.copy()
-        pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_smpl[:, :3], root_trans, R_cam2world)
+        root_trans = root_trans + skeleton_tree_smpl.local_translation[0].numpy()
+        pose_aa[:, :3], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa[:, :3], root_trans, R_cam2world)
         root_trans_offset = torch.from_numpy(root_trans_offset).float()
         # 关节重排
         pose_aa_mj = pose_aa.reshape(N, 52, 3)
@@ -478,7 +351,7 @@ if __name__ == "__main__":
 
         frame_check = 100
         height_tolorance = 0
-        fix_height = True  # 开启更稳妥
+        fix_height = False  # 开启更稳妥
         if fix_height:
             with torch.no_grad():
                 frame_check = min(frame_check, N)
@@ -511,39 +384,8 @@ if __name__ == "__main__":
         key_str = os.path.basename(os.path.normpath(sequence_dir))
         object_name_str = key_str.split('_')[2]
 
-        model_root = 'data/smplh'
-        smplh_layer = SMPL_Layer(center_idx=0, gender=gender, num_betas=10,
-                               model_root=str(model_root), hands=True).to('cuda')
-
-        obj_root = "dataset/behave/objects_centered"  # 根据你的资源路径调整
-        obj_name = object_name_str
-        obj_mesh_path = osp.join(obj_root, "objects", obj_name, f"{obj_name}.obj")
-        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-        obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
-
-
-
-        cg_np, ig_np = compute_cg_ig_via_smplh_contacts(
-            smplh_layer=smplh_layer,
-            pose_aa=pose_aa_smpl,  # (T,D)
-            betas=betas,  # (10,) 或 (1,10)
-            trans=trans,  # (T,3)
-            obj_mesh_path=obj_mesh_path,  # 物体mesh（局部坐标）
-            obj_pos_world=obj_trans,  # (T,3)
-            obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),  # (T,4) xyzw
-            smplh_vert_part=smplh_vert_part_from_custom_layer(smplh_layer),
-            contact_threshold=0.01,
-            samples_per_object=1024,
-        )
-
-        ig_mj = ig_np[:, smpl_2_mujoco, :]  # (T,52,3)
-        ig_mj = ig_mj @ np.array(R_cam2world).T
-        cg_mj = cg_np[:, smpl_2_mujoco]  # (T,52)
-
-
         obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
         obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
-
 
         # 位置
         obj_pos = obj_trans_w.astype(np.float32)
@@ -566,6 +408,13 @@ if __name__ == "__main__":
         if not isinstance(body_pos_t, torch.Tensor):
             body_pos_t = torch.from_numpy(body_pos_t)
         body_pos_t = body_pos_t.to(torch.float32)  # [T,52,3]
+
+        # 2) 准备物体表面点（以物体中心为原点）
+        obj_root = "dataset/behave/objects_centered"  # 根据你的资源路径调整
+        obj_name = object_name_str
+        obj_mesh_path = osp.join(obj_root, "objects", obj_name, f"{obj_name}.obj")
+        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
+        obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
 
         q_xyzw = torch.from_numpy(obj_quat_xyzw.astype(np.float32))  # [T,4]
         p_w = torch.from_numpy(obj_pos.astype(np.float32))  # [T,3]
@@ -611,8 +460,6 @@ if __name__ == "__main__":
             ground_mask_sk=ground_mask_sk,
         )
 
-
-
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
             "object": {
@@ -623,8 +470,8 @@ if __name__ == "__main__":
                 "obj_rot_vel": obj_rot_vel,
             },
             "interaction": {
-                "ig": ig_mj,  # (T,52,3) float32（世界系）
-                "contact_robot": cg_mj,  # (T,52)   0/1 float32
+                "ig": ref_ig,  # (T,52,3) float32（世界系）
+                "contact_robot": contact_robot,  # (T,52)   0/1 float32
             }
         }
 
@@ -637,19 +484,19 @@ if __name__ == "__main__":
         body_pos_frame = body_pos_t[t].cpu().numpy().astype(np.float64)
         body_rot_frame = new_sk_state.global_rotation[t].cpu().numpy().astype(np.float64)
         # body_pos_frame = mj_data.xpos[sk2mj].copy()  # 严格用 MJCF body 原点
-        quick_viz = False
+        quick_viz = True
 
         if quick_viz:
             quick_viz_frame(
                 mj_model, mj_data,
                 body_local_clouds=body_clouds,
                 obj_pts=obj_pts_world_np[t],
-                contact_row=cg_mj[t],
+                contact_row=contact_robot[t],
                 body_rot_frame=body_rot_frame,
                 mj2sk=mj2sk,
                 title=f"seq:{key_str} t={t}",
                 body_pos_frame=body_pos_frame,
-                ig_frame=ig_mj[t],
+                ig_frame=ig_np[t],
             )
 
         if args.render:

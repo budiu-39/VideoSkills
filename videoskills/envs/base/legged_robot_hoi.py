@@ -240,7 +240,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
         obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
-        ig = compute_sdf(self.body_pos.view(-1, 52, 3), obj_points).view(-1, 3)
+        ig = -compute_sdf(self.body_pos.view(-1, 52, 3), obj_points ).view(-1, 3)  # 人到物体
 
         self.ig = ig.detach().view(self.num_envs, -1, 3)
 
@@ -377,22 +377,22 @@ class LeggedRobotHoi(LeggedRobotImi):
             for i in range(max_vis_envs):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
-                # body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_env = body_pos_env - ig_env
+                body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
+                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                obj_near_env = body_pos_env + ig_env
                 #
-                # num_lines = body_pos_env.shape[0]
-                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                num_lines = body_pos_env.shape[0]
+                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
                 #
-                # verts[0::2] = body_pos_env
-                # verts[1::2] = obj_near_env
-                #
-                # # 颜色（蓝色）
-                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+                verts[0::2] = body_pos_env
+                verts[1::2] = obj_near_env
+
+                # 颜色（蓝色）
+                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
                 #
                 # self.ref_ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() - self.ref_ig[i].cpu().numpy()
+                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
                 #
                 # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
                 # verts_ref[0::2] = self.ref_body_pos[i].detach().cpu().numpy()
@@ -483,8 +483,8 @@ class LeggedRobotHoi(LeggedRobotImi):
     def _reward_humanoid(self):
         # body pos reward
         w = self.reward_weights
-        body_nohand = self.body_no_hand_ids
-        dof_nohand = self.dof_no_hand_ids
+        body_nohand = self.no_hand_body_mask
+        dof_nohand = self.no_hand_dof_mask
 
         ref_ig_norm = self.ref_ig.norm(dim=-1)
         weight_h = (-5 * ref_ig_norm).exp()
@@ -500,7 +500,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         diff_quat_data = normalize(quat_mul(quat_conjugate(self.ref_body_rot[:, body_nohand].reshape(-1, 4)),
                                                    self.body_rot[:, body_nohand].reshape(-1, 4)))
         diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
-        diff = diff_angle.view(-1, len(body_nohand))
+        diff = diff_angle.view(-1, sum(body_nohand))
         weight_hr = 1 - weight_h
 
         er = torch.mean(diff[:, :] * weight_hr[:, body_nohand], dim=-1)
@@ -596,7 +596,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _reward_ig(self):
         w = self.reward_weights
-        body_nohand = self.body_no_hand_ids
+        body_nohand = self.no_hand_body_mask
 
         ig = self.ig[:, body_nohand]
         ref_ig = self.ref_ig[:, body_nohand]

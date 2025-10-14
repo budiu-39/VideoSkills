@@ -162,6 +162,7 @@ logs
 
 data/SMPL/
 data/smpl/
+data/smplh/
 dataset/
 !GVHMR/hmr4d/dataset
 .git/
@@ -171,7 +172,7 @@ GVHMR/inputs
 #GVHMR/inputs/checkpoints
 GVHMR/outputs
 
-*.sh
+
 
 demo/results
 demo/gym_11

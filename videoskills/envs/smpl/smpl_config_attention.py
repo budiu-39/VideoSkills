@@ -171,8 +171,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         ]
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
-        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
+        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]

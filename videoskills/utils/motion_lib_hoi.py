@@ -67,6 +67,8 @@ class MotionLibHoi(MotionLib):
         self.length_starts = lengths_shifted.cumsum(0)
         self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device)
 
+        self._precompute_non_contact_frames()
+
     # === HOI 读入：兼容 bundle(dict) 与旧的 motion.npy ===
     def _load_motions_hoi(self, motion_file):
         motion_files = self._fetch_motion_files(motion_file)
@@ -307,3 +309,60 @@ class MotionLibHoi(MotionLib):
                 out[b] = subset[idx_in_subset]
         return out
 
+    def sample_time(self, motion_ids, truncate_time=None):
+        """
+        在“非接触帧集合”中等概率采样时间：
+          - 不采样 any(contact_robot[t]) == True 的帧
+          - 若开启 truncate_time，则不采样尾部时长对应的若干帧
+          - 退化保护：若处理后集合为空，回退为全帧均匀随机
+        """
+        B = motion_ids.shape[0]
+        out_t = torch.empty(B, dtype=torch.float32, device=self._device)
+
+        for b in range(B):
+            i = int(motion_ids[b].item())
+            dt_i = float(self._motion_dt[i].item())
+            T_i = int(self._motion_num_frames[i].item())
+            # 该 motion 的“无接触帧”索引（局部帧号）
+            valid = self._valid_frames_no_cg[i]
+
+            # 处理 truncate_time：裁掉末尾若干帧
+            if truncate_time is not None and truncate_time > 0.0:
+                trunc_frames = int(max(round(truncate_time / dt_i), 0))
+                max_idx = max(T_i - 1 - trunc_frames, 0)
+                valid = valid[valid <= max_idx]
+                if valid.numel() == 0:
+                    # 若被裁空，回退到 [0 .. max_idx]
+                    valid = torch.arange(max_idx + 1, device=self._device, dtype=torch.long)
+
+            # 等概率在 valid 中抽一个帧，再转时间
+            pick = valid[torch.randint(low=0, high=valid.numel(), size=(1,), device=self._device)]
+            out_t[b] = pick.float() * dt_i
+
+        return out_t
+
+    def _precompute_non_contact_frames(self):
+        """
+        为每个 motion 预计算“非接触帧”（any(contact_robot[t]) == False）的索引列表：
+          - self._valid_frames_no_cg: 长度 = #motions，元素是 1D LongTensor（该 motion 内部的帧索引）
+          - 若库内没对象数据（_has_object=False）或某段全是接触帧，则回退到全帧可采样
+        """
+        self._valid_frames_no_cg = []
+        for i in range(self._num_motions):
+            T_i = int(self._motion_num_frames[i].item())
+            if not getattr(self, "_has_object", False) or not hasattr(self, "contact_robot"):
+                # 没有对象/接触轨迹：全帧可采样
+                idxs = torch.arange(T_i, device=self._device, dtype=torch.long)
+                self._valid_frames_no_cg.append(idxs)
+                continue
+
+            start = int(self.length_starts[i].item())
+            end   = start + T_i
+            cr = self.contact_robot[start:end]  # (T_i, 52)
+            # “非接触帧”：所有 52 部位都为 0
+            non_contact = (cr.abs().sum(dim=1) == 0)  # (T_i,)
+            idxs = torch.nonzero(non_contact, as_tuple=False).squeeze(1)
+            if idxs.numel() == 0:  #TODO： 这是潜在的 bug,这种片段应该直接删除并警告
+                # 该段全是接触帧 → 回退：全帧可采样
+                idxs = torch.arange(T_i, device=self._device, dtype=torch.long)
+            self._valid_frames_no_cg.append(idxs)

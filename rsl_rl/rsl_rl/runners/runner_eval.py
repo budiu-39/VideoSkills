@@ -122,27 +122,27 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     self.cur_reward_sum[new_ids] = 0
                     self.cur_episode_length[new_ids] = 0
 
-                stop = time.time()
-                collection_time = stop - start
-                ET_rate = early_termination_sum/(dones_sum + 1e-8)
-                self.ETbuffer.append(float(ET_rate))
-                self.alg.compute_returns(critic_obs)
+            stop = time.time()
+            collection_time = stop - start
+            ET_rate = early_termination_sum/(dones_sum + 1e-8)
+            self.ETbuffer.append(float(ET_rate))
+            self.alg.compute_returns(critic_obs)
 
-                # === 打印 Early Termination 占比并清零 ===
-                if getattr(self.env, "et_counter", None) is not None:
-                    et = self.env.et_counter
-                    total = et["total"]
-                    if total > 0:
-                        print(f"[Iter {it}] Early Termination breakdown: "
-                              f"robot={et['robot'] / total:.2%}, "
-                              f"object={et['object'] / total:.2%}, "
-                              f"ig={et['ig'] / total:.2%}, "
-                              f"contact={et['contact'] / total:.2%}, total={total:.0f}")
-                    else:
-                        print(f"[Iter {it}] No early termination this iteration.")
-                    # 清零计数器
-                    for k in et:
-                        et[k] = 0
+            # === 打印 Early Termination 占比并清零 ===
+            if getattr(self.env, "et_counter", None) is not None:
+                et = self.env.et_counter
+                total = et["total"]
+                if total > 0:
+                    print(f"[Iter {it}] Early Termination breakdown: "
+                          f"robot={et['robot'] / total:.2%}, "
+                          f"object={et['object'] / total:.2%}, "
+                          f"ig={et['ig'] / total:.2%}, "
+                          f"contact={et['contact'] / total:.2%}, total={total:.0f}")
+                else:
+                    print(f"[Iter {it}] No early termination this iteration.")
+                # 清零计数器
+                for k in et:
+                    et[k] = 0
 
             start = stop
             mean_value_loss, mean_surrogate_loss = self.alg.update()
@@ -212,6 +212,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.no_grad():
                     action = self.alg.actor_critic.act_inference(obs)
+                    # if getattr(self.cfg.env, "fixed_hand", False):
+                    #     actions = torch.zeros(B, self.env.num_dofs, device=self.device, dtype=actions.dtype)
+                    #     actions[:, self.env.hand_dof_mask] = 0.0
                 obs, _, rewards, dones, extras = self.env.step(action)
                 rewards = rewards.squeeze()
                 rewards[done_flags] = 0.0

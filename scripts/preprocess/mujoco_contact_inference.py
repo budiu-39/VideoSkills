@@ -344,7 +344,7 @@ def quick_viz_frame(
     # —— ig 线段（橙色） ——
     if (body_pos_frame is not None) and (ig_frame is not None):
         starts = np.asarray(body_pos_frame, dtype=np.float32)
-        ends   = starts - np.asarray(ig_frame, dtype=np.float32)
+        ends   = starts + np.asarray(ig_frame, dtype=np.float32)
         segs   = np.stack([starts, ends], axis=1)  # (B,2,3)
         path_orange = trimesh.load_path(segs)
         color_orange = np.tile(np.array([[255, 140, 0, 255]], dtype=np.uint8), (len(segs), 1))

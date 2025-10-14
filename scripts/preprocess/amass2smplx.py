@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "dataset/smplx_motion/AMASS_train"
+    output_dir = f"dataset/smplx_motion/AMASS_{args.process_split}"
 
     process_split = args.process_split
     upright_start = True
@@ -254,7 +254,7 @@ if __name__ == "__main__":
         motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
         motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
         motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
-        # vis_mujoco(motion_traj, f"data/robots/smpl/smplx_humanoid_v2.xml", humanoid_type=robot_cfg['model'])
+        # vis_mujoco(motion_traj, f"data/robots/smpl/smplx_humanoid.xml", humanoid_type=robot_cfg['model'])
 
     print("Done")
 

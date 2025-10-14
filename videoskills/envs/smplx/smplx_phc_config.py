@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'intermimic_sit'
+        run_name = 'smplx_train'
         experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -47,22 +47,6 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 
 
-    class amp_config:
-        disc_batch = 512
-        disc_updates = 1
-        reward_coef = 1
-        state_dim = 2320
-        hidden_dims = [1024, 512]
-        normalize_input = True
-        lr = 3e-4
-        grad_penalty_coef = 1.0
-        logit_l2_coef = 1e-5
-        weight_decay = 0.0001
-
-        class dataset_cfg:
-            replay_buffer_size = 200000
-            demo_buffer_size = 200000
-
 class SMPLXRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
         type = 'hybrid'
@@ -71,36 +55,31 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
-        distance = [0.5] * 52
+        distance = [0.25] * 52
 
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_v2.xml'
-        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid_v1.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid.xml'
+        # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
         default_dof_drive_mode = 1
+        load_obj = False
         asset_root = 'dataset/behave/objects_centered'
         # asset_root = 'dataset/omomo/objects_centered'
 
     class motion:
         rotate_motion = False
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Crawling_push_ups_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Bent_opening_and_closing_leg_lifts_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/In_situ_jump_rope_1_clip1')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_136')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/test_data_8')
+
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
         #                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -135,16 +114,17 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 1024
-        num_actions = 153
+        num_envs = 4096
+        num_actions = 63
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
         activate_quat_to_tan_norm = True
-        norm_num_observations = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        norm_num_observations = 328 + 528 + 63
 
     class control:
         # PD Drive parameters:
+        fixed_hand = True
         control_type = 'P'# [N*m*s/rad]
         # action scale: target angle = actionScale * action + defaultAngle
         action_scale = 3.14
@@ -233,31 +213,20 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
-        class weight:
-            p = 30.
-            r = 1.5
-            pv = 0.
-            rv = 0.
-
-            op = 5.0
-            obj_r = 0.1
-            opv = 0.1
-            orv = 0.
-
-            ig = 5.
-
-            cg_hand = 5.
-            cg_other = 5.
-            cg_all = 3.
-
-            eg1 = 0.00002
-            eg2 = 0.00002
-            eg3 = 0.00000000001
+        class task_w:
+            k_ang_vel = 0.1
+            k_pos = 100
+            k_rot = 10
+            k_vel = 0.1
+            w_ang_vel = 0.1
+            w_pos = 0.3
+            w_rot = 0.5
+            w_vel = 0.1
         class scales:
-            humanoid = 10.0
-            obj = 100.0
-            ig = 10.0
-            cg = 10.0
+            imitation = 1.0
+            # torques = -0.000001
+            dof_force = -0.0005
+            # action_rate = - 0.02
 
 
     class sim(LeggedRobotCfg.sim):

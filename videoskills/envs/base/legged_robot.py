@@ -64,8 +64,8 @@ class LeggedRobot(BaseTask):
             self.gym.clear_lines(self.viewer)
         self.render()
         for _ in range(self.cfg.control.decimation):
-            self.torques = self._compute_torques(self.actions).view(self.torques.shape)
             if self.drive_mode == gymapi.DOF_MODE_EFFORT:
+                self.torques = self._compute_torques(self.actions).view(self.torques.shape)
                 self.gym.set_dof_actuation_force_tensor(self.sim, gymtorch.unwrap_tensor(self.torques))
             else:
                 pd_tar = self.pd_action_offset + self.pd_action_scale * self.actions

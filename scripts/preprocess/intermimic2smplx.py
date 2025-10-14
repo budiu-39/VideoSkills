@@ -3,7 +3,7 @@ script_path = "/mnt/data/convert_from_hoi_data_to_bundle.py"
 # -*- coding: utf-8 -*-
 """
 Convert HOI tensors (as in the user's `_load_motion` output) into the
-'bundle' format used by behave2smplx.py.
+'bundle' format used by behave2smplx_deprecated.py.
 
 Example:
     python convert_from_hoi_data_to_bundle.py \
