@@ -166,12 +166,14 @@ data/smplh/
 dataset/
 !GVHMR/hmr4d/dataset
 .git/
+.gitignore_server
 
 output/
 GVHMR/inputs
 #GVHMR/inputs/checkpoints
 GVHMR/outputs
 
+.sh
 
 
 demo/results

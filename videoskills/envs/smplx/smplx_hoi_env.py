@@ -18,8 +18,8 @@ SMPL24_BODIES = [
     'R_Thorax','R_Shoulder','R_Elbow','R_Wrist','R_Hand',
 ]
 
-# TODO：No hand 部分其实应该合并到 LeggedRobotImi 里去的，但现在改动太大，先放这里
-class SMPLXRobot(LeggedRobotImi):
+
+class SMPLXRobotHoi(LeggedRobotHoi):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
     # filter 默认全为 1
@@ -155,27 +155,6 @@ class SMPLXRobot(LeggedRobotImi):
         return self.obs_buf, self.privileged_obs_buf, self.rew_buf, self.reset_buf, self.extras
 
 
-
-    # TODO: 测试一下关节对不对！  这里的代码是错误的因为会改变 self.dof_pos的内存
-    # def _set_env_state(self, env_ids, root_pos, root_rot, dof_pos, root_vel, root_ang_vel, dof_vel,
-    #                    key_pos, key_rot, key_vel, key_ang_vel):
-    #     self.robot_states[env_ids, 0:3] = root_pos
-    #     self.robot_states[env_ids, 3:7] = root_rot
-    #     self.robot_states[env_ids, 7:10] = root_vel
-    #     self.robot_states[env_ids, 10:13] = root_ang_vel
-    #
-    #     row = self.dof_pos[env_ids].clone()
-    #     row[:, self.dof_no_hand_ids_sim] = dof_pos[:, self.dof_no_hand_ids_sim]
-    #     self.dof_pos[env_ids] = row
-    #
-    #     rowv = self.dof_vel[env_ids].clone()
-    #     rowv[:, self.dof_no_hand_ids_sim] = dof_vel[:, self.dof_no_hand_ids_sim]
-    #     self.dof_vel[env_ids] = rowv
-
-        # self.dof_pos[env_ids][:, self.dof_no_hand_ids_sim] = dof_pos[:, self.dof_no_hand_ids_sim]
-        # self.dof_vel[env_ids][:, self.dof_no_hand_ids_sim] = dof_vel[:, self.dof_no_hand_ids_sim]
-
-        return
 
 
 

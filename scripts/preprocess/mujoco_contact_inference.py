@@ -423,3 +423,105 @@ def build_sk2mj_index(mj_model, skeleton_tree, drop_world=True):
 
     mj2sk = {mj_id: i for i, mj_id in enumerate(sk2mj)}
     return sk2mj, mj2sk
+# ---------- 原语 SDF（几何局部坐标系） ----------
+def sdf_sphere(p, r):                     return np.linalg.norm(p, axis=-1) - r
+def sdf_box(p, half):
+    q = np.abs(p) - half
+    outside = np.maximum(q, 0.0)
+    inside  = np.minimum(np.maximum(q[...,0], np.maximum(q[...,1], q[...,2])), 0.0)
+    return np.linalg.norm(outside, axis=-1) + inside
+def sdf_capsule_z(p, r, half):
+    h = np.clip(p[...,2], -half, half)
+    return np.sqrt(p[...,0]**2 + p[...,1]**2 + (p[...,2]-h)**2) - r
+def sdf_cylinder_z(p, r, half):
+    dx = np.linalg.norm(p[...,:2], axis=-1) - r
+    dz = np.abs(p[...,2]) - half
+    q = np.stack([dx, dz], axis=-1)
+    outside = np.maximum(q, 0.0)
+    return np.minimum(np.maximum(q[...,0], q[...,1]), 0.0) + np.linalg.norm(outside, axis=-1)
+
+
+# ---------- world -> geomLocal（用 IG 的 body 位姿） ----------
+def world_to_geom_local_ig(points_world, Rbw, pbw, geom_pos_body, geom_quat_wxyz):
+    # geom 局部 -> body 局部
+    q_wxyz = geom_quat_wxyz
+    q_xyzw = np.array([q_wxyz[1], q_wxyz[2], q_wxyz[3], q_wxyz[0]], dtype=np.float32)
+    Rgb = sRot.from_quat(q_xyzw).as_matrix()  # (3,3)
+    pgb = geom_pos_body                        # (3,)
+
+    # geom 世界位姿
+    Rgw = Rbw @ Rgb
+    pgw = Rbw @ pgb + pbw
+
+    # world -> geomLocal
+    return (points_world - pgw) @ Rgw
+
+# ---------- 整段运动：返回 (T, B) 的穿入深度 ----------
+def penetration_depth_sequence_ig(
+    mj_model,
+    body_geoms,                 # dict{ mj_body_id -> [geom_id, ...] } （只含原语）
+    mj2sk: dict,                # mj body id -> skeleton index
+    obj_pts_world_seq,          # list 长度 T；每项为 (P_t, 3) 世界系物体点云
+    ig_body_pos_world_seq,      # (T, B, 3) Skeleton 顺序 body 世界位置
+    ig_body_rot_world_seq,      # (T, B, 4) Skeleton 顺序 body 世界四元数（xyzw）
+):
+    T, B = ig_body_pos_world_seq.shape[:2]
+
+    # 预取不变的 MuJoCo 几何参数
+    geom_type = mj_model.geom_type
+    geom_size = mj_model.geom_size
+    geom_pos  = mj_model.geom_pos
+    geom_quat = mj_model.geom_quat
+
+    # 预计算每帧、每个 body 的 Rbw（提升速度）
+    Rbw_all = sRot.from_quat(ig_body_rot_world_seq.reshape(-1, 4)).as_matrix().reshape(T, B, 3, 3)
+    pbw_all = ig_body_pos_world_seq  # (T, B, 3)
+
+    # 输出 (T, B)
+    pen_seq = np.zeros((T, B), dtype=np.float32)
+
+    for t in range(T):
+        pts_w = obj_pts_world_seq[t]  # (P_t, 3)
+        # 遍历 MuJoCo 的 body（只处理在 body_geoms 中登记的）
+        for mj_bid, geom_list in body_geoms.items():
+            sk_idx = mj2sk[mj_bid]
+            Rbw = Rbw_all[t, sk_idx]
+            pbw = pbw_all[t, sk_idx]
+
+            min_signed = np.inf
+            for g in geom_list:
+                gtype = geom_type[g]
+                size  = geom_size[g]
+                pgb   = geom_pos[g]
+                q_wxyz= geom_quat[g]
+
+                if gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
+                    r = float(size[0])
+                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
+                    sd = sdf_sphere(pl, r)
+                elif gtype == mujoco.mjtGeom.mjGEOM_BOX:
+                    half = size[:3].astype(np.float32)
+                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
+                    sd = sdf_box(pl, half)
+                elif gtype == mujoco.mjtGeom.mjGEOM_CAPSULE:
+                    r, half = float(size[0]), float(size[1])
+                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
+                    sd = sdf_capsule_z(pl, r, half)
+                elif gtype == mujoco.mjtGeom.mjGEOM_CYLINDER:
+                    r, half = float(size[0]), float(size[1])
+                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
+                    sd = sdf_cylinder_z(pl, r, half)
+                else:
+                    continue  # 只按“人是原语”的前提处理
+
+                ms = float(sd.min())
+                if ms < min_signed:
+                    min_signed = ms
+
+            # 穿入深度 = max(0, -min_signed)
+            if min_signed < 0.0:
+                pen_seq[t, sk_idx] = -min_signed
+            else:
+                pen_seq[t, sk_idx] = 0.0
+
+    return pen_seq  # (T, B)

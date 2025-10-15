@@ -289,7 +289,7 @@ class LeggedRobotImi(LeggedRobot):
             return
 
         self.gym.clear_lines(self.viewer)
-        self._reset_robot(env_ids)
+        self._resample_motion(env_ids)
         self._reset_env_tensors(env_ids)
 
         # reset buffers
@@ -298,8 +298,9 @@ class LeggedRobotImi(LeggedRobot):
         self.last_dof_vel[env_ids] = 0.
         # self.feet_air_time[env_ids] = 0.  # good idea!
         self.episode_length_buf[env_ids] = 0
+        # TODO： 修改了這裡，从 1 改成了 0
         self.reset_buf[env_ids] = 1
-        self.early_termination_buf[env_ids] = 0
+        # self.early_termination_buf[env_ids] = 0
         # fill extras
         self.extras["episode"] = {}
         self.extras["early_termination_buf"] = self.early_termination_buf
@@ -357,7 +358,7 @@ class LeggedRobotImi(LeggedRobot):
         self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
 
 
-    def _reset_robot(self, env_ids):
+    def _resample_motion(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
         Positions are randomly selected within 0.5:1.5 x default positions.
         Velocities are set to zero.
@@ -690,29 +691,28 @@ class LeggedRobotImi(LeggedRobot):
         if len(env_ids) == 0:
             return
 
+        self.reset_idx(env_ids)
         self.gym.clear_lines(self.viewer)
         # reset robot states
-        motion_times = torch.zeros(self.num_envs, device=self.device)
-        if random:
-            motion_times = self._motion_lib.sample_time(motion_ids)
-        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
-
-        self._set_env_state(env_ids=env_ids,
-                            root_pos=motion_state["root_pos"] +  self.pos_offset['root'][env_ids],
-                            root_rot=motion_state["root_rot"],
-                            dof_pos=motion_state["dof_pos"],
-                            root_vel=motion_state["root_vel"],
-                            root_ang_vel=motion_state["root_ang_vel"],
-                            dof_vel=motion_state["dof_vel"],
-                            key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
-                            key_rot=motion_state["key_rot"],
-                            key_vel=motion_state["key_vel"],
-                            key_ang_vel=motion_state["key_ang_vel"]
-                            )
-
-
-        self._motion_start_times[env_ids] = motion_times
-        self._reset_env_tensors(env_ids)
+        # motion_times = torch.zeros(self.num_envs, device=self.device)
+        # motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
+        #
+        # self._set_env_state(env_ids=env_ids,
+        #                     root_pos=motion_state["root_pos"] +  self.pos_offset['root'][env_ids],
+        #                     root_rot=motion_state["root_rot"],
+        #                     dof_pos=motion_state["dof_pos"],
+        #                     root_vel=motion_state["root_vel"],
+        #                     root_ang_vel=motion_state["root_ang_vel"],
+        #                     dof_vel=motion_state["dof_vel"],
+        #                     key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
+        #                     key_rot=motion_state["key_rot"],
+        #                     key_vel=motion_state["key_vel"],
+        #                     key_ang_vel=motion_state["key_ang_vel"]
+        #                     )
+        #
+        #
+        # self._motion_start_times[env_ids] = motion_times
+        # self._reset_env_tensors(env_ids)
         # self._resample_commands(env_ids)
 
         # reset buffers
@@ -745,6 +745,31 @@ class LeggedRobotImi(LeggedRobot):
         # obs, _, _, _, _ = self.step(
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
+
+    def begin_eval(self, motion_ids):
+        """Initialize a simple linear iterator over motion_ids for eval."""
+        if motion_ids is None:
+            # 全量
+            motion_ids = list(range(self._motion_lib.num_motions()))
+        self._eval_motion_ids = torch.as_tensor(motion_ids, device=self.device, dtype=torch.long)
+        self._eval_cursor = 0
+
+    def next_eval_batch_ids(self):
+        """Return a tensor of shape [num_envs] for the next eval batch, with global padding."""
+        n = int(self.num_envs)
+        start = int(self._eval_cursor)
+        end = min(start + n, len(self._eval_motion_ids))
+        core = self._eval_motion_ids[start:end]
+        pad = []
+        if end - start < n:
+            num_pad = n - (end - start)
+            # 兼容原逻辑：全局随机补齐
+            idx = torch.randint(low=0, high=len(self._eval_motion_ids), size=(num_pad,), device=self.device)
+            pad = self._eval_motion_ids[idx]
+        self._eval_cursor = end
+        batch = core if len(pad) == 0 else torch.cat([core, pad], dim=0)
+        done = (self._eval_cursor >= len(self._eval_motion_ids))
+        return batch.to(self.device), done
 
     # def init_pd_from_mass_matrix(self, zeta: float = 0.8):
     #     def infer_wn(name: str) -> float:

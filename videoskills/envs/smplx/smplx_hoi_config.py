@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'intermimic_sit'
+        run_name = 'behave_sit_new'
         experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -93,7 +93,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall_1')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
 

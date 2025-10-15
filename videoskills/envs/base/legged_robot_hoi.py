@@ -171,13 +171,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
 
-    def _reset_robot(self, env_ids):
-        super()._reset_robot(env_ids)  # 内部调用 _reset_ref_state_init
+    def _resample_motion(self, env_ids):
+        super()._resample_motion(env_ids)  # 内部调用 _reset_ref_state_init
         self._reset_obj(env_ids)
 
-        self.contact_reset[env_ids] = 0
-        self.kinematic_reset[env_ids] = 0
-        self.early_termination_buf[env_ids] = 0
+        # self.contact_reset[env_ids] = 0
+        # self.kinematic_reset[env_ids] = 0
+        # self.early_termination_buf[env_ids] = 0
 
     def _reset_env_tensors(self, env_ids):
         super()._reset_env_tensors(env_ids)
@@ -194,7 +194,7 @@ class LeggedRobotHoi(LeggedRobotImi):
     def _reset_obj(self, env_ids):
         # 计算这些 env 对应的 motion_id 与 time
         motion_ids = self._sampled_motion_ids[env_ids]  # [B]
-        motion_times = self._motion_start_times[env_ids] + self.episode_length_buf[env_ids] * self.dt  # [B]
+        motion_times = self._motion_start_times[env_ids] # + self.episode_length_buf[env_ids] * self.dt  # [B]
 
         hoi_state = self._motion_lib.get_hoi_state(motion_ids, motion_times)
 
@@ -362,8 +362,7 @@ class LeggedRobotHoi(LeggedRobotImi):
                 # h) 实时节流
                 # if real_time and sleep_when_render and not self.headless:
                 #     target_elapsed = (loop * steps_per_loop + step_idx + 1) * self.dt
-                #     now = time.perf_counter() - t0
-                #     remain = target_elapsed - now
+                #     now = time.perf_counter() - t0                #     remain = target_elapsed - now
                 #     if remain > 0:
                 #         time.sleep(min(remain, self.dt))
 
@@ -551,9 +550,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         ref_local_obj_rot = quat_mul(ref_heading_rot, self.ref_obj_rot)
         diff_quat_data = normalize(quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot))
         diff_angle, diff_axis = quat_to_angle_axis(diff_quat_data)
-        diff = diff_angle
-
-        eor = torch.mean(diff, dim=-1)
+        eor = diff_angle
         ror = torch.exp(-eor * w.obj_r)
         # 可能的改进 用二次/余弦形式更平滑
         # eor = torch.mean(diff_angle ** 2, dim=-1)  # 或 1 - cos(diff_angle)
@@ -570,17 +567,17 @@ class LeggedRobotHoi(LeggedRobotImi):
         eorv = torch.mean((ref_local_obj_angvel - local_obj_angvel) ** 2, dim=-1)
         rorv = torch.exp(-eorv * w.orv)
 
-        v2 = (self.obj_vel ** 2).sum(dim=-1)  # ||v||^2
-        w2 = (self.obj_ang_vel ** 2).sum(dim=-1)  # ||ω||^2
+        # v2 = (self.obj_vel ** 2).sum(dim=-1)  # ||v||^2
+        # w2 = (self.obj_ang_vel ** 2).sum(dim=-1)  # ||ω||^2
         # obj_energy = torch.exp(- (w.eg2_lin * v2 + w.eg2_ang * w2))
         # obj_energy = obj_energy.mul(-w.eg2).exp()
         ro = rop * ror * ropv * rorv
 
         pos_thresh = 0.50  # 位置阈值（米），按需要调整
-        rot_thresh = 0.50  # 朝向阈值（弧度），~28.6°，按需要调整
+        rot_thresh = 1.0  # 朝向阈值（弧度），~57°，按需要调整
 
         pos_err = torch.norm(ref_local_obj_pos - local_obj_pos, dim=-1)  # [N]
-        dq = quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot)  # 相对四元数
+        dq = normalize(quat_mul(quat_conjugate(ref_local_obj_rot), local_obj_rot))  # 相对四元数
         angle_err = quat_to_angle_axis(dq)[0] # [N,3] 的角轴角度向量 # 角度幅值（弧度）
 
         self.object_reset = torch.logical_or(pos_err > pos_thresh, angle_err > rot_thresh)
@@ -699,6 +696,53 @@ class LeggedRobotHoi(LeggedRobotImi):
         if key not in self.reward_subterm_sums:
             self.reward_subterm_sums[key] = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reward_subterm_sums[key] += val.float()
+
+    def begin_eval(self, motion_ids=None):
+        """
+        一次性生成评估批次：
+        - 每个 object 的 motion 数 < 加载该 object 的 env 数
+        - 每个 object 的前 len(motions) 个 env 分配到各自 motion
+        - 剩余 env 用同对象 motion 随机补齐
+        """
+        ml = self._motion_lib  # MotionLibHoi
+        device = self.device
+
+        if motion_ids is None:
+            mids = ml.motion_ids
+        else:
+            mids = torch.as_tensor(motion_ids, device=device, dtype=torch.long)
+
+        mids_mask = torch.zeros(int(ml._num_motions), dtype=torch.bool, device=device)
+        mids_mask[mids] = True
+
+        # 对象 -> motion 列表
+        eval_buckets = {oid: bucket[mids_mask[bucket]]
+                        for oid, bucket in ml._motions_by_object.items()
+                        if mids_mask[bucket].any()}
+
+        env_obj_ids = self.env_object_ids.to(device)
+        single_batch = torch.empty(self.num_envs, dtype=torch.long, device=device)
+
+        for oid, motions in eval_buckets.items():
+            env_idx = torch.nonzero(env_obj_ids == oid, as_tuple=False).flatten()
+            n_motions = motions.numel()
+            # 前 n_motions 个 env 分配唯一 motion
+            single_batch[env_idx[:n_motions]] = motions
+            # 剩余 env 随机补齐
+            extra_env = env_idx[n_motions:]
+            ridx = torch.randint(0, n_motions, (extra_env.numel(),), device=device)
+            single_batch[extra_env] = motions[ridx]
+
+        self._eval_single_batch_ids = single_batch
+        self._eval_done_once = False
+
+    def next_eval_batch_ids(self):
+        """返回一次性批次，并标记完成。"""
+        if not getattr(self, "_eval_done_once", False):
+            self._eval_done_once = True
+            return self._eval_single_batch_ids, True
+        else:
+            return self._eval_single_batch_ids, True
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):

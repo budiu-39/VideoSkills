@@ -40,8 +40,8 @@ class MotionLibHoi(MotionLib):
         self._has_object = False
         self._motion_obj_names = []
         self.ig = []  # interaction guide
-        self.ig_sk = []
         self.contact_robot = []  # contact map on human (52 body SMPLH/X robot joints)
+        self.collision_tag = []
 
         # 实际加载
         self._load_motions_hoi(motion_file)
@@ -67,28 +67,18 @@ class MotionLibHoi(MotionLib):
         self.length_starts = lengths_shifted.cumsum(0)
         self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device)
 
-        self._precompute_non_contact_frames()
+        self._precompute_non_collision_frames()
 
     # === HOI 读入：兼容 bundle(dict) 与旧的 motion.npy ===
     def _load_motions_hoi(self, motion_file):
         motion_files = self._fetch_motion_files(motion_file)
+
         for curr_file in tqdm(motion_files, desc="[HOI] Loading", unit="file"):
-            payload = None; is_bundle = False
-            try:
-                payload = np.load(curr_file, allow_pickle=True)
-                if hasattr(payload, "item"):
-                    payload = payload.item()
-                if isinstance(payload, dict) and "motion" in payload:
-                    is_bundle = True
-            except Exception:
-                payload = None
+            # 读取 bundle（假定始终正确）
+            payload = np.load(curr_file, allow_pickle=True).item()
 
-            # 恢复 SkeletonMotion
-            if is_bundle:
-                curr_motion = SkeletonMotion.from_dict(payload["motion"])
-            else:
-                curr_motion = SkeletonMotion.from_file(curr_file)
-
+            # SkeletonMotion
+            curr_motion = SkeletonMotion.from_dict(payload["motion"])
             if self._rotate_motion:
                 curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
 
@@ -102,100 +92,69 @@ class MotionLibHoi(MotionLib):
             self._motion_dt.append(curr_dt)
             self._motion_num_frames.append(num_frames)
             self._motion_files.append(curr_file)
-
-
-            # dof_vels
             curr_motion.dof_vels = self._compute_motion_dof_vels(curr_motion)
-
-            # 可选缓存
-            if 'USE_CACHE' in globals() and USE_CACHE:
-                curr_motion = DeviceCache(curr_motion, self._device)
-
             self._motions.append(curr_motion)
             self._motion_lengths.append(curr_len)
 
-            # 采集 object 通道（若 bundle）
-            if is_bundle and ("object" in payload):
-                objd = payload["object"] or {}
-                hoi = payload['interaction']
+            # Object & Interaction（假定字段齐全且形状正确）
+            objd = payload["object"]
+            hoi = payload["interaction"]
 
-                def _to_torch_clip(arr, expected_shape=None, expected_last_dim=None):
-                    if arr is None:
-                        return None
-                    t = torch.as_tensor(arr, dtype=torch.float32)
-                    # 截到 motion 帧长
-                    if t.shape[0] != num_frames:
-                        t = t[:num_frames]
-                    if expected_shape is not None:
-                        # 严格匹配完整 shape（除 T 维）
-                        assert t.shape[
-                               1:] == expected_shape, f"expected shape (*,{expected_shape}), got {tuple(t.shape)}"
-                    elif expected_last_dim is not None:
-                        assert t.shape[
-                                   -1] == expected_last_dim, f"expected last_dim={expected_last_dim}, got {t.shape[-1]}"
-                    return t
-                o_pos = _to_torch_clip(objd.get("obj_pos"), expected_last_dim=3)
-                o_rot = _to_torch_clip(objd.get("obj_rot"), expected_last_dim=4)  # xyzw
-                o_pos_vel = _to_torch_clip(objd.get("obj_pos_vel"), expected_last_dim=3)
-                o_rot_vel = _to_torch_clip(objd.get("obj_rot_vel"), expected_last_dim=3)
-                ig = _to_torch_clip(hoi.get("ig"), expected_shape=(52, 3))
-                ig_sk = _to_torch_clip(hoi.get("ig_sk"), expected_shape=(52, 3))
-                contact_robot = _to_torch_clip(hoi.get("contact_robot"), expected_last_dim=52)
-                obj_name = (payload["object"] or {}).get("name", None)
+            to32 = lambda a: torch.as_tensor(a, dtype=torch.float32)
+            o_pos = to32(objd["obj_pos"])  # (T,3)
+            o_rot = to32(objd["obj_rot"])  # (T,4) xyzw
+            o_pos_vel = to32(objd["obj_pos_vel"])  # (T,3)
+            o_rot_vel = to32(objd["obj_rot_vel"])  # (T,3)
+            ig = to32(hoi["ig"])  # (T,52,3)
+            contact_rb = to32(hoi["contact_robot"])  # (T,52)
+            # collision_tag 允许 (T,) 或 (T,1)，统一为 (T,)
+            collision = torch.as_tensor(hoi["collision_tag"], dtype=torch.bool).view(-1)
 
-                if (o_pos is not None) and (o_rot is not None):
-                    self._obj_pos_list.append(o_pos)
-                    self._obj_rot_list.append(o_rot)
-                    self._obj_pos_vel_list.append(o_pos_vel if o_pos_vel is not None else torch.zeros((num_frames,3)))
-                    self._obj_rot_vel_list.append(o_rot_vel if o_rot_vel is not None else torch.zeros((num_frames,3)))
-                    self.ig.append(ig if ig is not None else torch.zeros((num_frames,3)))
-                    self.ig_sk.append(ig_sk if ig_sk is not None else torch.zeros((num_frames,3)))
-                    self.contact_robot.append(contact_robot if contact_robot is not None else torch.zeros((num_frames,52)))
-                    self._motion_obj_names.append(obj_name)
-                    self._has_object = True
-                else:
-                    # 没有 object 内容也保持占位，便于排序与拼接
-                    self._obj_pos_list.append(torch.zeros((num_frames,3)))
-                    self._obj_rot_list.append(torch.tensor([[0,0,0,1]]).repeat(num_frames,1))
-                    self._obj_pos_vel_list.append(torch.zeros((num_frames,3)))
-                    self._obj_rot_vel_list.append(torch.zeros((num_frames,3)))
-
+            self._obj_pos_list.append(o_pos)
+            self._obj_rot_list.append(o_rot)
+            self._obj_pos_vel_list.append(o_pos_vel)
+            self._obj_rot_vel_list.append(o_rot_vel)
+            self.ig.append(ig)
+            self.contact_robot.append(contact_rb)
+            self.collision_tag.append(collision)
+            self._motion_obj_names.append(objd.get("name", None))
+            self._has_object = True
 
         # 排序（含 HOI 列表）
         self._sort_motions_by_length_hoi()
 
-        # 张量化元信息
-        self._motion_lengths    = torch.tensor(self._motion_lengths,    device=self._device, dtype=torch.float32)
-        self._motion_fps        = torch.tensor(self._motion_fps,        device=self._device, dtype=torch.float32)
-        self._motion_dt         = torch.tensor(self._motion_dt,         device=self._device, dtype=torch.float32)
+        # 元信息张量化
+        self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
+        self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
+        self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
         self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device)
 
-        # 拼接 object 到库级（若存在）
-        if self._has_object:
-            self.obj_pos = torch.cat(self._obj_pos_list, dim=0).to(self._device)  # (ΣT,3)
-            self.obj_rot = torch.cat(self._obj_rot_list, dim=0).to(self._device)  # (ΣT,4)
-            self.obj_pos_vel = torch.cat(self._obj_pos_vel_list, dim=0).to(self._device)
-            self.obj_rot_vel = torch.cat(self._obj_rot_vel_list, dim=0).to(self._device)
-            # ✅ ig / contact：注意维度
-            self.ig = torch.cat(self.ig, dim=0).to(self._device)  # (ΣT, 52, 3)
-            self.ig_sk = torch.cat(self.ig_sk, dim=0).to(self._device)  # (ΣT, 52, 3)
-            self.contact_robot = torch.cat(self.contact_robot, dim=0).to(self._device)  # (ΣT, 52)
+        dev = self._device
+        self.obj_pos = torch.cat(self._obj_pos_list, dim=0).to(dev)  # (ΣT,3)
+        self.obj_rot = torch.cat(self._obj_rot_list, dim=0).to(dev)  # (ΣT,4)
+        self.obj_pos_vel = torch.cat(self._obj_pos_vel_list, dim=0).to(dev)  # (ΣT,3)
+        self.obj_rot_vel = torch.cat(self._obj_rot_vel_list, dim=0).to(dev)  # (ΣT,3)
+        self.ig = torch.cat(self.ig, dim=0).to(dev)  # (ΣT,52,3)
+        self.contact_robot = torch.cat(self.contact_robot, dim=0).to(dev)  # (ΣT,52)
+        # collision_tag：库级一维 bool（ΣT,)
+        self.collision_tag = torch.cat(self.collision_tag, dim=0).to(dev).view(-1).to(torch.bool)
 
-        # 唯一物体名 & 词表
+        # 物体词表
         uniq_names = sorted(set(self._motion_obj_names))
-        self.object_vocab = {name: i for i, name in enumerate(uniq_names)}  # name -> index
+        self.object_vocab = {name: i for i, name in enumerate(uniq_names)}
         self.object_vocab_inv = {i: name for name, i in self.object_vocab.items()}
 
-        # 每个物体对应的 motion 下标列表（tensor on device）
+        # 每个物体对应的 motion 下标列表
         self._motions_by_object = {}
         for name, idx in self.object_vocab.items():
             motion_idx = [i for i, n in enumerate(self._motion_obj_names) if n == name]
-            if len(motion_idx) == 0:
-                continue
-            self._motions_by_object[idx] = torch.tensor(motion_idx, dtype=torch.long, device=self._device)
+            if motion_idx:
+                self._motions_by_object[idx] = torch.tensor(motion_idx, dtype=torch.long, device=self._device)
 
         total_len = self.get_total_length()
-        print(f"[MotionLibHoi] Loaded {len(self._motions)} motions (total {total_len:.3f}s). has_object={self._has_object}")
+        print(
+            f"[MotionLibHoi] Loaded {len(self._motions)} motions (total {total_len:.3f}s). has_object={self._has_object}")
+
 
     def _sort_motions_by_length_hoi(self):
         idx = torch.argsort(torch.tensor(self._motion_lengths))
@@ -213,13 +172,14 @@ class MotionLibHoi(MotionLib):
             self._obj_pos_vel_list = [self._obj_pos_vel_list[i] for i in idx]
             self._obj_rot_vel_list = [self._obj_rot_vel_list[i] for i in idx]
             self._motion_obj_names = [self._motion_obj_names[i] for i in idx]
+            self.collision_tag = [self.collision_tag[i] for i in idx]
         # ✅ 新增：同步 ig / contact_robot
         if len(self.ig) > 0:
             self.ig = [self.ig[i] for i in idx]  # list of (T,52,3)
-        if len(self.ig_sk) > 0:
-            self.ig_sk = [self.ig_sk[i] for i in idx]
         if len(self.contact_robot) > 0:
             self.contact_robot = [self.contact_robot[i] for i in idx]  # list of (T,52)
+        if len(self.collision_tag) > 0:
+            self.collision_tag = [self.collision_tag[i] for i in idx]
 
     def has_object(self):
         return getattr(self, "_has_object", False)
@@ -260,7 +220,6 @@ class MotionLibHoi(MotionLib):
         o_rot_vel = self.obj_rot_vel[f0l]  # [B,3]
 
         ig = self.ig[f0l]  # [B,3]
-        ig_sk = self.ig_sk[f0l]
         contact_robot = self.contact_robot[f0l]
 
         return {
@@ -269,7 +228,6 @@ class MotionLibHoi(MotionLib):
             "obj_pos_vel": o_pos_vel,
             "obj_rot_vel": o_rot_vel,
             "ig": ig,
-            "ig_sk": ig_sk,
             "contact_robot": contact_robot,
         }
 
@@ -341,28 +299,13 @@ class MotionLibHoi(MotionLib):
 
         return out_t
 
-    def _precompute_non_contact_frames(self):
-        """
-        为每个 motion 预计算“非接触帧”（any(contact_robot[t]) == False）的索引列表：
-          - self._valid_frames_no_cg: 长度 = #motions，元素是 1D LongTensor（该 motion 内部的帧索引）
-          - 若库内没对象数据（_has_object=False）或某段全是接触帧，则回退到全帧可采样
-        """
+    def _precompute_non_collision_frames(self):
         self._valid_frames_no_cg = []
         for i in range(self._num_motions):
             T_i = int(self._motion_num_frames[i].item())
-            if not getattr(self, "_has_object", False) or not hasattr(self, "contact_robot"):
-                # 没有对象/接触轨迹：全帧可采样
-                idxs = torch.arange(T_i, device=self._device, dtype=torch.long)
-                self._valid_frames_no_cg.append(idxs)
-                continue
-
-            start = int(self.length_starts[i].item())
-            end   = start + T_i
-            cr = self.contact_robot[start:end]  # (T_i, 52)
-            # “非接触帧”：所有 52 部位都为 0
-            non_contact = (cr.abs().sum(dim=1) == 0)  # (T_i,)
-            idxs = torch.nonzero(non_contact, as_tuple=False).squeeze(1)
-            if idxs.numel() == 0:  #TODO： 这是潜在的 bug,这种片段应该直接删除并警告
-                # 该段全是接触帧 → 回退：全帧可采样
-                idxs = torch.arange(T_i, device=self._device, dtype=torch.long)
+            start = int(self.length_starts[i].item());
+            end = start + T_i
+            cr_t = self.collision_tag[start:end]  # (T_i,)  bool
+            non_contact = torch.logical_not(cr_t)  # (T_i,)
+            idxs = torch.nonzero(non_contact, as_tuple=False).squeeze(1).long()
             self._valid_frames_no_cg.append(idxs)

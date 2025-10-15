@@ -47,7 +47,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 
 
-class SMPLXRobotCfg( LeggedRobotCfg ):
+class SMPLXRobotCfg(LeggedRobotCfg):
     class init_state(LeggedRobotCfg.init_state):
         type = 'hybrid'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
@@ -76,7 +76,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 

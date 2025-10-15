@@ -15,6 +15,7 @@ from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORD
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
+from scripts.preprocess.mujoco_contact_inference import penetration_depth_sequence_ig
 from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
 from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
 import smplx
@@ -405,6 +406,8 @@ if __name__ == "__main__":
         num_betas=20  # SMPL-X 20 维 beta
     )
 
+    skipped_due_to_first_frame_collision = []
+
     for sequence_dir in tqdm(all_sequences):
         if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")):
             continue
@@ -521,26 +524,6 @@ if __name__ == "__main__":
         mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
         obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
 
-
-
-        cg_np, ig_np = compute_cg_ig_via_smplh_contacts(
-            smplh_layer=smplh_layer,
-            pose_aa=pose_aa_smpl,  # (T,D)
-            betas=betas,  # (10,) 或 (1,10)
-            trans=trans,  # (T,3)
-            obj_mesh_path=obj_mesh_path,  # 物体mesh（局部坐标）
-            obj_pos_world=obj_trans,  # (T,3)
-            obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),  # (T,4) xyzw
-            smplh_vert_part=smplh_vert_part_from_custom_layer(smplh_layer),
-            contact_threshold=0.01,
-            samples_per_object=1024,
-        )
-
-        ig_mj = ig_np[:, smpl_2_mujoco, :]  # (T,52,3)
-        ig_mj = ig_mj @ np.array(R_cam2world).T
-        cg_mj = cg_np[:, smpl_2_mujoco]  # (T,52)
-
-
         obj_angles_w, obj_trans_w = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world)
         obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
 
@@ -598,20 +581,55 @@ if __name__ == "__main__":
         # Skeleton 顺序的布尔掩码：True 表示该 body 属于“接地”集合
         ground_mask_sk = np.isin(names, list(mask_names))
         # 调 contacts + ig
-        contact_robot, ig_np = contacts_from_xml_pointcloud(
-            mj_model, body_clouds,
-            qpos_seq=qpos_seq_np.astype(np.float32),
-            obj_pts_world=obj_pts_world_np,
-            obj_pos=obj_pos_np, vel=obj_vel_np, acc=obj_acc_np,
-            sigma_pad=ADAPTIVE_PAD, sigma_no_interact=FIXED_SIGMA_NO_INTERACT,
-            ground_height=0.0,
-            sk2mj=sk2mj, mj2sk=mj2sk,
-            ig_body_pos_world = body_pos_t.numpy().astype(np.float32),
-            ig_body_rot_world = new_sk_state.global_rotation.numpy().astype(np.float32),
-            ground_mask_sk=ground_mask_sk,
+        # contact_robot, ig_np = contacts_from_xml_pointcloud(
+        #     mj_model, body_clouds,
+        #     qpos_seq=qpos_seq_np.astype(np.float32),
+        #     obj_pts_world=obj_pts_world_np,
+        #     obj_pos=obj_pos_np, vel=obj_vel_np, acc=obj_acc_np,
+        #     sigma_pad=ADAPTIVE_PAD, sigma_no_interact=FIXED_SIGMA_NO_INTERACT,
+        #     ground_height=0.0,
+        #     sk2mj=sk2mj, mj2sk=mj2sk,
+        #     ig_body_pos_world = body_pos_t.numpy().astype(np.float32),
+        #     ig_body_rot_world = new_sk_state.global_rotation.numpy().astype(np.float32),
+        #     ground_mask_sk=ground_mask_sk,
+        # )
+
+        pen_seq = penetration_depth_sequence_ig(
+            mj_model,
+            body_geoms,
+            mj2sk,
+            obj_pts_world_np,  # e.g. List[np.ndarray], len T, each (P_t,3)
+            body_pos_t.numpy().astype(np.float32),  # (T, B, 3)
+            new_sk_state.global_rotation.numpy().astype(np.float32),  # (T, B, 4) xyzw
         )
 
+        first_frame_collided = (pen_seq[0] > 0).any()
+        if first_frame_collided:
+            key_str = os.path.basename(os.path.normpath(sequence_dir))  # 样本名
+            print(f"[SKIP-FIRST-FRAME-COLLISION] {key_str}")
+            skipped_due_to_first_frame_collision.append(key_str)
+            continue  # 直接跳到下一个 sequence
 
+
+        cg_np, ig_np = compute_cg_ig_via_smplh_contacts(
+            smplh_layer=smplh_layer,
+            pose_aa=pose_aa_smpl,  # (T,D)
+            betas=betas,  # (10,) 或 (1,10)
+            trans=trans,  # (T,3)
+            obj_mesh_path=obj_mesh_path,  # 物体mesh（局部坐标）
+            obj_pos_world=obj_trans,  # (T,3)
+            obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),  # (T,4) xyzw
+            smplh_vert_part=smplh_vert_part_from_custom_layer(smplh_layer),
+            contact_threshold=0.01,
+            samples_per_object=1024,
+        )
+
+        ig_mj = ig_np[:, smpl_2_mujoco, :]  # (T,52,3)
+        ig_mj = ig_mj @ np.array(R_cam2world).T
+        cg_mj = cg_np[:, smpl_2_mujoco]  # (T,52)
+
+
+        # body_ids_wo_foot_ankel = np.where(~ground_mask_sk)[0]
 
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
@@ -625,6 +643,7 @@ if __name__ == "__main__":
             "interaction": {
                 "ig": ig_mj,  # (T,52,3) float32（世界系）
                 "contact_robot": cg_mj,  # (T,52)   0/1 float32
+                "collision_tag": (pen_seq > 0).any(axis=1)
             }
         }
 

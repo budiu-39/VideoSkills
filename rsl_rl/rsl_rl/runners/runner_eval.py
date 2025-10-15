@@ -162,6 +162,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
     def eval(self, motion_ids=None):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
+        state_init = self.env._state_init
+        self.env._state_init == 'start'
         if hasattr(self.alg.actor_critic, "set_update_rms"):
             self.alg.actor_critic.set_update_rms(False)
         self.env.eval_mode = True
@@ -175,6 +177,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         if motion_ids is None:
             motion_ids = list(range(motion_lib.num_motions()))
 
+        self.env.begin_eval(motion_ids)
+
         total_rewards = []
         success_flags = []
         reward_until_fail_list = []
@@ -182,21 +186,20 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         success_keys = []
         global_metrics = defaultdict(list)
         metrics_success = defaultdict(list)
-        pbar = tqdm(range(0, len(motion_ids), num_envs), desc="Evaluating motions", dynamic_ncols=True)
-        for i in pbar:
+        pbar = tqdm(total=len(motion_ids), desc="Evaluating motions", dynamic_ncols=True)
+        seen = 0
+        while True:
             self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
             self.env.enable_data_recording() # enable recording during evaluation
-            batch_ids = motion_ids[i: i + num_envs]
-            batch_size = len(batch_ids)
-            num_pad = num_envs - batch_size
-            random_pad = np.random.choice(motion_ids, size=num_pad, replace=True).tolist()
-            padded_ids = torch.tensor(batch_ids + random_pad, device=device)
 
+            padded_ids, done_all = self.env.next_eval_batch_ids()  # [num_envs]
+            batch_size = min(num_envs, len(motion_ids) - seen) if seen < len(motion_ids) else num_envs
+            batch_ids = padded_ids[:batch_size]
+            batch_size = len(batch_ids)
 
             self.env.reset_with_motion_ids(padded_ids)
             self.env.gym.simulate(self.env.sim)
             obs = self.env.reset_with_motion_ids(padded_ids)
-            torch.cuda.empty_cache()
 
             cum_rewards = torch.zeros(num_envs, device=device)
             reward_until_fail = torch.zeros(num_envs, device=device)
@@ -241,7 +244,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
                 max_alive_ref_len = motion_lengths[alive].max().item()
 
-                pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len)
+                seen = min(len(motion_ids), seen + batch_size)
+                failed_rate = ((reward_until_fail > 0).sum().float() / batch_size).item()
+                pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len, failed_rate = f"{failed_rate:.2%}")
 
                 if done_flags[:batch_size].all():
                     break
@@ -294,6 +299,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     if key not in failed_keys:
                         metrics_success[k].append(v.pop(0))
 
+            if done_all:
+                break
+
         print("\n[Eval] Overall Metrics:")
         for k, v in global_metrics.items():
             print(f"   {k}: {np.mean(v):.3f}")
@@ -322,6 +330,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.disable_data_recording()
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
         self.env.eval_mode = False
+        self.env._state_init = state_init
         self.env.reset()
 
         #
