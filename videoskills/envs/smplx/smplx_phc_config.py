@@ -76,7 +76,7 @@ class SMPLXRobotCfg(LeggedRobotCfg):
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 

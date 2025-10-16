@@ -18,8 +18,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'behave_sit_new'
-        experiment_name = 'smplx_ppo'
+        run_name = 'behave_sit_new_4096_test'
+        experiment_name = 'smplx_hoi_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
@@ -93,7 +93,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall_1')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_sit_new')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
 
@@ -130,7 +130,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 1024
+        num_envs = 4096
         num_actions = 153
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =

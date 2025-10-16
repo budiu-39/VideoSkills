@@ -171,8 +171,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
 
-    def _resample_motion(self, env_ids):
-        super()._resample_motion(env_ids)  # 内部调用 _reset_ref_state_init
+    def _reset_robot(self, env_ids):
+        super()._reset_robot(env_ids)  # 内部调用 _reset_ref_state_init
         self._reset_obj(env_ids)
 
         # self.contact_reset[env_ids] = 0

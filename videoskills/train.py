@@ -43,6 +43,8 @@ def train(args):
         wandb.init(project=args.wandb_project, name=run_name,
                    dir=log_dir,
                    config={**vars(args), **class_to_dict(train_cfg), ** class_to_dict(env_cfg)})
+    if args.dev:
+        train_cfg.runner.eval_interval = 10
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)

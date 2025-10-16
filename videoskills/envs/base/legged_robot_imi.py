@@ -289,7 +289,7 @@ class LeggedRobotImi(LeggedRobot):
             return
 
         self.gym.clear_lines(self.viewer)
-        self._resample_motion(env_ids)
+        self._reset_robot(env_ids)
         self._reset_env_tensors(env_ids)
 
         # reset buffers
@@ -358,7 +358,7 @@ class LeggedRobotImi(LeggedRobot):
         self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
 
 
-    def _resample_motion(self, env_ids):
+    def _reset_robot(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
         Positions are randomly selected within 0.5:1.5 x default positions.
         Velocities are set to zero.

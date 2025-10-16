@@ -9,7 +9,7 @@
 #SBATCH --partition=a100-galvani   # Which partition will run your job
 #SBATCH --time=2-23:55             # Allowed runtime in D-HH:MM
 #SBATCH --gres=gpu:1               # (optional) Requesting type and number of GPUs
-#SBATCH --mem=50G                  # Total memory pool for all cores (see also --mem-per-cpu); exceeding this number will cause your job to fail.
+#SBATCH --mem=90G                  # Total memory pool for all cores (see also --mem-per-cpu); exceeding this number will cause your job to fail.
 #SBATCH --exclude=galvani-cn221
 #SBATCH --output=/mnt/lustre/work/ponsmoll/pba936/result_sbatch/lr_%j.out       # File to which STDOUT will be written - make sure this is not on $HOME
 #SBATCH --error=/mnt/lustre/work/ponsmoll/pba936/result_sbatch/lr%j.err        # File to which STDERR will be written - make sure this is not on $HOME
