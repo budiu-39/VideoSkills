@@ -59,11 +59,11 @@ pip install -r requirement.txt
 ```bash
 
 # SMPL robot （总共 2 个运动片段，预计需要 5–10 分钟）
-python videoskills/refine.py --task=smpl --folder=demo/test_2 --static_cam --headless --accelerate
+python videoskills/video2agent.py --task=smpl --folder=demo/test_2 --static_cam --headless --accelerate
 
 
 # G1 robot 
-python videoskills/refine.py --task=g1 --folder=demo/test_2 --static_cam --headless --accelerate
+python videoskills/video2agent.py --task=g1 --folder=demo/test_2 --static_cam --headless --accelerate
 ```
 
 
@@ -144,7 +144,7 @@ project_root/
 │   ├── learning/                 # 模型结构定义（拓展部分，主体在rsl_rl)
 │   ├── utils/                    # 工具模块
 │   ├── runner/                   # 训练主流程
-│   └── train.py / refine.py      # 入口脚本 / 启动脚本
+│   └── train.py / video2agent.py      # 入口脚本 / 启动脚本
 │
 ├── GVHMR/                        # 动作估计模块（GVHMR）
 │
