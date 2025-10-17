@@ -174,8 +174,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         motion_lib = self.env._motion_lib
         device = self.device
 
-        if motion_ids is None:
-            motion_ids = list(range(motion_lib.num_motions()))
+        if motion_ids is not None:
+            eval_total = len(motion_ids)
+        else:
+            eval_total = motion_lib.num_motions()
 
         self.env.begin_eval(motion_ids)
 
@@ -186,14 +188,14 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         success_keys = []
         global_metrics = defaultdict(list)
         metrics_success = defaultdict(list)
-        pbar = tqdm(total=len(motion_ids), desc="Evaluating motions", dynamic_ncols=True)
+        pbar = tqdm(total=eval_total, desc="Evaluating motions", dynamic_ncols=True)
         seen = 0
         while True:
             self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
             self.env.enable_data_recording() # enable recording during evaluation
 
             padded_ids, done_all = self.env.next_eval_batch_ids()  # [num_envs]
-            batch_size = min(num_envs, len(motion_ids) - seen) if seen < len(motion_ids) else num_envs
+            batch_size = min(num_envs, eval_total - seen) if seen < eval_total else num_envs
             batch_ids = padded_ids[:batch_size]
             batch_size = len(batch_ids)
 
@@ -246,6 +248,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
 
                 failed_rate = ((reward_until_fail[:batch_size] > 0).sum().float() / batch_size).item()
+
                 pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len, failed_rate = f"{failed_rate:.2%}")
 
                 if done_flags[:batch_size].all():
@@ -253,7 +256,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
                 self.env.done_flags = done_flags.clone().detach()
 
-            seen = min(len(motion_ids), seen + batch_size)
+            pbar.update(batch_size)
+            seen = min(eval_total, seen + batch_size)
 
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()
@@ -302,6 +306,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                         metrics_success[k].append(v.pop(0))
 
             if done_all:
+                pbar.close()
                 break
 
         print("\n[Eval] Overall Metrics:")
@@ -326,7 +331,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         motion_lib.export_sampling_state(motion_sampling_state_path)
 
         print(f"[Eval] Success rate: {success_rate:.2%}")
-        print(f"[Eval] Mean reward across {len(motion_ids)} motions: {mean_rew:.2f}")
+        print(f"[Eval] Mean reward across {num_envs} motions: {mean_rew:.2f}")
         print(f"[Eval] Avg. reward until failure (only failed): {np.mean(reward_until_fail_list):.2f}")
 
         self.env.disable_data_recording()

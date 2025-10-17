@@ -183,8 +183,8 @@ if __name__ == "__main__":
         beta = np.zeros(20)
         gender_number, beta[:], gender = [0], 0, "neutral"
 
-        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v2.xml")
-        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid_v2.xml")
+        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid.xml")
+        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
         # 也就是说，机器人和 smpl 的root 几乎一致。
         root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree_smpl.local_translation[0]

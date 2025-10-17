@@ -370,6 +370,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         if not self.headless:
             time.sleep(0.5)
 
+
     def render(self):
         if not self.headless:
             max_vis_envs = self.num_envs
@@ -377,28 +378,27 @@ class LeggedRobotHoi(LeggedRobotImi):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
                 body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                obj_near_env = body_pos_env + ig_env
+                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_env = body_pos_env + ig_env
                 #
                 num_lines = body_pos_env.shape[0]
-                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # #
+                # verts[0::2] = body_pos_env
+                # verts[1::2] = obj_near_env
                 #
-                verts[0::2] = body_pos_env
-                verts[1::2] = obj_near_env
+                # # 颜色（蓝色）
+                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+                #
+                self.ref_ig[i].cpu().numpy()  # (52, 3)
+                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
 
-                # 颜色（蓝色）
-                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
-                #
-                # self.ref_ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
-                #
-                # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
-                # verts_ref[0::2] = self.ref_body_pos[i].detach().cpu().numpy()
-                # verts_ref[1::2] = obj_near_ref
-                # colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
-                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
-
+                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                verts_ref[0::2] = body_pos_env
+                verts_ref[1::2] = obj_near_ref
+                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
 
                 # 画线
 
@@ -743,6 +743,65 @@ class LeggedRobotHoi(LeggedRobotImi):
             return self._eval_single_batch_ids, True
         else:
             return self._eval_single_batch_ids, True
+
+    def reset_with_motion_ids(self, motion_ids, random = False):
+        """ Reset all environments with given motion ids. (For Evaluation)
+            This method is used to reset the environment with specific motion ids, e.g. in the training stage.
+        Args:
+            motion_ids (torch.Tensor): Tensor of shape [num_envs] containing motion ids to reset the environments with.
+        """
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        self._sampled_motion_ids = motion_ids.detach()
+        self._motion_start_times = torch.zeros(self.num_envs, device=self.device)
+        if len(env_ids) == 0:
+            return
+
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], self._motion_start_times )
+
+        self._set_env_state(env_ids=env_ids,
+                            root_pos=motion_state["root_pos"] + self.pos_offset['root'][env_ids],
+                            root_rot=motion_state["root_rot"],
+                            dof_pos=motion_state["dof_pos"],
+                            root_vel=motion_state["root_vel"],
+                            root_ang_vel=motion_state["root_ang_vel"],
+                            dof_vel=motion_state["dof_vel"],
+                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                            key_rot=motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"]
+                            )
+
+        self._reset_obj(env_ids)
+        self._reset_env_tensors(env_ids)
+        self.gym.clear_lines(self.viewer)
+
+        self.actions[env_ids] = 0.
+        self.last_actions[env_ids] = 0.
+        self.last_dof_vel[env_ids] = 0.
+        # self.feet_air_time[env_ids] = 0.  # good idea!
+        self.episode_length_buf[env_ids] = 0
+        self.reset_buf[env_ids] = 1
+        # fill extras
+        self.extras["episode"] = {}
+        for key in self.episode_sums.keys():
+            self.extras["episode"]['rew_' + key] = torch.mean(
+                self.episode_sums[key][env_ids])
+            # self.extras["episode"]['rew_' + key] = torch.mean(
+            #     self.episode_sums[key][env_ids]) / self.max_episode_length_s
+            self.episode_sums[key][env_ids] = 0.
+        # send timeout info to the algorithm
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
+
+        self._refresh_sim_tensors()
+
+        motion_lens = self._motion_lib._motion_lengths[motion_ids]
+        self.extras["motion_length"] = motion_lens.clone()
+        self.compute_observations()
+
+        # obs, _, _, _, _ = self.step(
+        #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
+        return self.obs_buf
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):

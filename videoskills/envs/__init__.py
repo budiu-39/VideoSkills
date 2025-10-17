@@ -10,6 +10,7 @@ from .smpl.smpl_env import SMPLRobot
 from .base.legged_robot import LeggedRobot
 from .smplx.smplx_hoi_config import SMPLXRobotCfg as SMPLXRobotCfg_HOI, SMPLXRoughCfgPPO as SMPLXRoughCfgPPO_HOI
 from .smplx.smplx_phc_config import SMPLXRobotCfg, SMPLXRoughCfgPPO
+from .smplx.smplx_attention_config import SMPLXRobotCfg as SMPLXRobotCfg_attn, SMPLXRoughCfgPPO as SMPLXRoughCfgPPO_attn
 from .smplx.smplx_env import SMPLXRobot
 from .smplx.smplx_hoi_env import SMPLXRobotHoi
 
@@ -21,3 +22,4 @@ task_registry.register( "smpl", SMPLRobot, SMPLRobotCfg(), SMPLRoughCfgPPO())
 task_registry.register( "smpl_attn", SMPLRobot, SMPLRobotCfg_attn(), SMPLRoughCfgPPO_attn())
 task_registry.register( "smplx_hoi", SMPLXRobotHoi, SMPLXRobotCfg_HOI(), SMPLXRoughCfgPPO_HOI())
 task_registry.register( "smplx", SMPLXRobot, SMPLXRobotCfg(), SMPLXRoughCfgPPO())
+task_registry.register( "smplx_attn", SMPLXRobot, SMPLXRobotCfg_attn(), SMPLXRoughCfgPPO_attn())

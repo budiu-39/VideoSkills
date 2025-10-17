@@ -678,7 +678,6 @@ class LeggedRobotImi(LeggedRobot):
     #     return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
 
 
-
     def reset_with_motion_ids(self, motion_ids, random = False):
         """ Reset all environments with given motion ids. (For Evaluation)
             This method is used to reset the environment with specific motion ids, e.g. in the training stage.
@@ -686,12 +685,25 @@ class LeggedRobotImi(LeggedRobot):
             motion_ids (torch.Tensor): Tensor of shape [num_envs] containing motion ids to reset the environments with.
         """
         env_ids = torch.arange(self.num_envs, device=self.device)
-        self._sampled_motion_ids = motion_ids
+        self._sampled_motion_ids = motion_ids.detach()
         self._motion_start_times = torch.zeros(self.num_envs, device=self.device)
         if len(env_ids) == 0:
             return
+        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], self._motion_start_times[env_ids])
 
-        self.reset_idx(env_ids)
+        self._set_env_state(env_ids=env_ids,
+                            root_pos=motion_state["root_pos"] + self.pos_offset['root'][env_ids],
+                            root_rot=motion_state["root_rot"],
+                            dof_pos=motion_state["dof_pos"],
+                            root_vel=motion_state["root_vel"],
+                            root_ang_vel=motion_state["root_ang_vel"],
+                            dof_vel=motion_state["dof_vel"],
+                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                            key_rot=motion_state["key_rot"],
+                            key_vel=motion_state["key_vel"],
+                            key_ang_vel=motion_state["key_ang_vel"]
+                            )
+        self._reset_env_tensors(env_ids)
         self.gym.clear_lines(self.viewer)
 
         self.actions[env_ids] = 0.
@@ -725,9 +737,9 @@ class LeggedRobotImi(LeggedRobot):
     def begin_eval(self, motion_ids):
         """Initialize a simple linear iterator over motion_ids for eval."""
         if motion_ids is None:
-            # 全量
             motion_ids = list(range(self._motion_lib.num_motions()))
-        self._eval_motion_ids = torch.as_tensor(motion_ids, device=self.device, dtype=torch.long)
+        motion_ids = torch.argsort(self._motion_lib._motion_lengths[motion_ids], descending=False, stable=True)
+        self._eval_motion_ids = motion_ids.to(self.device, dtype=torch.long)
         self._eval_cursor = 0
 
     def next_eval_batch_ids(self):
