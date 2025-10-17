@@ -240,7 +240,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
         obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
-        ig = -compute_sdf(self.body_pos.view(-1, 52, 3), obj_points ).view(-1, 3)  # 人到物体
+        ig = -compute_sdf(self.body_pos.view(-1, 52, 3), obj_points).view(-1, 3)  # 人到物体
 
         self.ig = ig.detach().view(self.num_envs, -1, 3)
 

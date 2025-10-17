@@ -163,7 +163,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
         state_init = self.env._state_init
-        self.env._state_init == 'start'
+        self.env._state_init = 'start'
         if hasattr(self.alg.actor_critic, "set_update_rms"):
             self.alg.actor_critic.set_update_rms(False)
         self.env.eval_mode = True
@@ -244,14 +244,16 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
                 max_alive_ref_len = motion_lengths[alive].max().item()
 
-                seen = min(len(motion_ids), seen + batch_size)
-                failed_rate = ((reward_until_fail > 0).sum().float() / batch_size).item()
+
+                failed_rate = ((reward_until_fail[:batch_size] > 0).sum().float() / batch_size).item()
                 pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len, failed_rate = f"{failed_rate:.2%}")
 
                 if done_flags[:batch_size].all():
                     break
 
                 self.env.done_flags = done_flags.clone().detach()
+
+            seen = min(len(motion_ids), seen + batch_size)
 
             for env_id in range(batch_size):
                 ep_len = episode_lengths[env_id].item()

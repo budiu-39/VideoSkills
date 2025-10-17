@@ -693,31 +693,7 @@ class LeggedRobotImi(LeggedRobot):
 
         self.reset_idx(env_ids)
         self.gym.clear_lines(self.viewer)
-        # reset robot states
-        # motion_times = torch.zeros(self.num_envs, device=self.device)
-        # motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], motion_times)
-        #
-        # self._set_env_state(env_ids=env_ids,
-        #                     root_pos=motion_state["root_pos"] +  self.pos_offset['root'][env_ids],
-        #                     root_rot=motion_state["root_rot"],
-        #                     dof_pos=motion_state["dof_pos"],
-        #                     root_vel=motion_state["root_vel"],
-        #                     root_ang_vel=motion_state["root_ang_vel"],
-        #                     dof_vel=motion_state["dof_vel"],
-        #                     key_pos=motion_state["key_pos"] +  self.pos_offset['body'][env_ids],
-        #                     key_rot=motion_state["key_rot"],
-        #                     key_vel=motion_state["key_vel"],
-        #                     key_ang_vel=motion_state["key_ang_vel"]
-        #                     )
-        #
-        #
-        # self._motion_start_times[env_ids] = motion_times
-        # self._reset_env_tensors(env_ids)
-        # self._resample_commands(env_ids)
 
-        # reset buffers
-        # if self.actions.is_inference():  # PyTorch ≥2.2
-        #     self.actions = self.actions.clone()
         self.actions[env_ids] = 0.
         self.last_actions[env_ids] = 0.
         self.last_dof_vel[env_ids] = 0.

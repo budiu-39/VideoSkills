@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smplx_train'
+        run_name = 'smplx_train_eval_fixed'
         experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -49,7 +49,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLXRobotCfg(LeggedRobotCfg):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'hybrid'
+        type = 'start'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:

@@ -101,7 +101,7 @@ if __name__ == "__main__":
         'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
         'test': ['Transitions_mocap', 'SSM_synced'],
         'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
-                  "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
+                  "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]
     }
     process_set = amass_splits[process_split]
     length_acc = []
