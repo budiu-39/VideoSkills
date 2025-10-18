@@ -150,7 +150,7 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
 
 
 def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = None):
-    MODEL_PATH = 'data/smpl'
+    MODEL_PATH = 'data/SMPL/smpl'
     smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
     # 判断输入是文件还是目录
     if os.path.isfile(ref_sim_data_path):

@@ -738,25 +738,30 @@ class LeggedRobotImi(LeggedRobot):
         """Initialize a simple linear iterator over motion_ids for eval."""
         if motion_ids is None:
             motion_ids = list(range(self._motion_lib.num_motions()))
-        motion_ids = torch.argsort(self._motion_lib._motion_lengths[motion_ids], descending=False, stable=True)
-        self._eval_motion_ids = motion_ids.to(self.device, dtype=torch.long)
+        motion_ids = torch.as_tensor(motion_ids, device=self.device, dtype=torch.long)
+        self._eval_motion_ids = motion_ids
         self._eval_cursor = 0
 
     def next_eval_batch_ids(self):
-        """Return a tensor of shape [num_envs] for the next eval batch, with global padding."""
+        """Return a tensor of shape [num_envs] for the next eval batch, using random padding (no overrun)."""
         n = int(self.num_envs)
         start = int(self._eval_cursor)
         end = min(start + n, len(self._eval_motion_ids))
         core = self._eval_motion_ids[start:end]
-        pad = []
+
+        # 若不满，随机从已有样本中补齐（而不是固定取前面的）
         if end - start < n:
             num_pad = n - (end - start)
-            # 兼容原逻辑：全局随机补齐
-            idx = torch.randint(low=0, high=len(self._eval_motion_ids), size=(num_pad,), device=self.device)
-            pad = self._eval_motion_ids[idx]
+            pad_idx = torch.randint(low=0, high=len(self._eval_motion_ids), size=(num_pad,), device=self.device)
+            pad = self._eval_motion_ids[pad_idx]
+            batch = torch.cat([core, pad], dim=0)
+        else:
+            batch = core
+
+        # 更新游标（只向前推进真实未评估部分）
         self._eval_cursor = end
-        batch = core if len(pad) == 0 else torch.cat([core, pad], dim=0)
         done = (self._eval_cursor >= len(self._eval_motion_ids))
+
         return batch.to(self.device), done
 
     # def init_pd_from_mass_matrix(self, zeta: float = 0.8):

@@ -196,7 +196,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             padded_ids, done_all = self.env.next_eval_batch_ids()  # [num_envs]
             batch_size = min(num_envs, eval_total - seen) if seen < eval_total else num_envs
-            batch_ids = padded_ids[:batch_size]
+            batch_ids = padded_ids[:batch_size].clone()
             batch_size = len(batch_ids)
 
             self.env.reset_with_motion_ids(padded_ids)

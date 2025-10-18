@@ -258,7 +258,7 @@ class MotionLib():
 
             self._motion_files.append(curr_file)
 
-        # self._sort_motions_by_length()
+        self._sort_motions_by_length()
 
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
 

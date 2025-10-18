@@ -14,7 +14,7 @@ import os, shutil, tempfile
 from typing import List, Iterable, Tuple
 from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
 import torch
-
+from videoskills import LEGGED_GYM_ROOT_DIR
 
 class MotionRefinePipeline:
     def __init__(self, env_cfg, train_cfg, args, log_dir: str):
@@ -24,7 +24,11 @@ class MotionRefinePipeline:
         self.log_dir = log_dir
 
         # 收集所有 motion（每个 .npy 即一个 motion）
-        self.motion_files = glob.glob(os.path.join(env_cfg.motion.file, f"**/*.npy"), recursive=True)
+        if args.motion_file is not None:
+            motion_file = 'dataset/smpl_motion/' + args.motion_file
+        else:
+            motion_file = env_cfg.motion.file.format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+        self.motion_files = glob.glob(os.path.join(motion_file, f"**/*.npy"), recursive=True)
         if not self.motion_files:
             raise RuntimeError("No motion files found.")
 
@@ -67,16 +71,17 @@ class MotionRefinePipeline:
     # ------------------------ 外部主入口 ------------------------ #
     def run(self, batch_size_easy: int = 18):
         easy_files, hard_files = self.pre_eval_all()
+        sequential_mode = (getattr(self.args, "sequential", False)
+                           or (hasattr(self.args, "accelerate") and not self.args.accelerate))
+        group_size = min(batch_size_easy, self.runner.env.num_envs)
+        self.plan_groups_and_order(easy_files, hard_files, group_size, sequential_mode=sequential_mode)
 
         # 分批 refine（easy 走批、hard 逐个）
-        if getattr(self.args, "sequential", False) or (hasattr(self.args, "accelerate") and not self.args.accelerate):
-            # 顺序模式（不加速）：easy + hard 全部逐个 refine
+        if sequential_mode:
             files = easy_files + hard_files
             print(f"[Refine] Sequential mode ON (no acceleration). Total motions: {len(files)}")
             self.refine_hard(files)
         else:
-            # 加速模式（默认）：批量跑 easy + 单个跑 hard
-            group_size = min(batch_size_easy, self.runner.env.num_envs)
             print(f"[Refine] Accelerated mode (default). Easy batch size = {group_size}")
             self.refine_easy(easy_files, group_size)
             self.refine_hard(hard_files)
@@ -84,51 +89,114 @@ class MotionRefinePipeline:
         if wandb.run is not None:
             wandb.log({"Refine/easy_count": len(easy_files), "Refine/hard_count": len(hard_files)})
 
-        if os.path.isdir(self.tmp_root) and not os.listdir(self.tmp_root):
-            os.rmdir(self.tmp_root)
-
     # ------------------------ 预评估/分类 ------------------------ #
 
-    def pre_eval_all(self) -> Tuple[List[str], List[str]]:
-        """
-        先跑一次 runner.eval() 得到 success_keys / failed_keys，
-        再把 key 通过 `key.split('-')[-1]` -> 文件名 stem -> 映射回 *.npy 的绝对路径。
-        返回: (easy_files, hard_files)，均为 *.npy 的路径列表。
-        """
-        # 1) 跑评估（确保当前 MotionLib 已包含你要评估的 motions）
+    def pre_eval_all(self):
+        """跑一次 eval，得到 easy/hard 的 *.npy 列表（顺序保持与 eval 输出一致）"""
         eval_out = self.runner.eval(motion_ids=None)
 
-        # 2) 读取 keys（去重保序）
-        def unique_keep_order(xs: List[str]) -> List[str]:
+        def unique_keep_order(xs):
             return list(dict.fromkeys(xs)) if xs else []
 
         success_keys = unique_keep_order(eval_out.get("success_keys", []))
         failed_keys = unique_keep_order(eval_out.get("failed_keys", []))
 
-        # 3) 预构建 stem -> fullpath 映射，stem 就是文件名不含后缀
-        #    例如 /.../Aerial_Kick_..._clip3.npy  ->  stem="Aerial_Kick_..._clip3"
-        stem2path = {}
-        for p in self.motion_files:
-            stem2path[Path(p).stem] = p
+        # 关键：直接从 MotionLib 拿 key <-> filepath（零歧义，不用 split('-')）
+        lib = self.runner.env._motion_lib
+        key2path = {k: f for k, f in zip(lib._motion_keys, lib._motion_files)}
 
-        # 4) 把 key 映射回 *.npy
-        def keys_to_files(keys: List[str]) -> List[str]:
-            out, miss = [], []
-            for k in keys:
-                stem = k.split('-')[-1]  # 取最后一段作为文件名 stem
-                fp = stem2path.get(stem, None)  # 在已知的 motion_files 里找
-                if fp is not None:
-                    out.append(fp)
-                else:
-                    miss.append(k)
-            if miss:
-                print(f"[WARN] {len(miss)} keys not matched to any *.npy. Examples: {miss[:5]}")
-            return out
+        miss = [k for k in success_keys + failed_keys if k not in key2path]
+        if miss:
+            print(f"[WARN] {len(miss)} eval keys不在当前MotionLib里（可能目录不同步）: {miss[:5]}")
 
-        easy_files = keys_to_files(success_keys)
-        hard_files = keys_to_files(failed_keys)
+        easy_files = [key2path[k] for k in success_keys if k in key2path]
+        hard_files = [key2path[k] for k in failed_keys if k in key2path]
 
+        print(f"[PreEval] easy={len(easy_files)}, hard={len(hard_files)}")
         return easy_files, hard_files
+
+    # --- 在类里新增：列出所有 motion、分组，以及 refine 执行顺序（保存到log_dir） ---
+    def plan_groups_and_order(self, easy_files, hard_files, group_size, sequential_mode=False):
+        """
+        输出三部分：
+          1) 全量 motions 列表
+          2) easy/hard 分组（文件级）
+          3) refine 执行顺序（批次/逐个）
+        同时保存到 {log_dir}/refine_plan_{timestamp}.json 和 .csv
+        """
+        import json, time, csv
+        ts = time.strftime("%Y%m%d-%H%M%S")
+
+        # 1) 全量 motions（来自初始化收集）
+        all_motions = list(dict.fromkeys(self.motion_files))
+
+        # 2) 分组
+        groups = {
+            "easy": easy_files,
+            "hard": hard_files
+        }
+
+        # 3) 执行顺序：顺序模式=全部逐个；加速模式=easy按批次→hard逐个
+        schedule = []
+        if sequential_mode:
+            for i, f in enumerate(easy_files + hard_files, 1):
+                schedule.append({"step": i, "type": "single", "files": [f]})
+        else:
+            # easy 批次
+            if easy_files:
+                for i in range(0, len(easy_files), group_size):
+                    batch = easy_files[i:i + group_size]
+                    schedule.append({"step": len(schedule) + 1, "type": "batch", "files": batch})
+            # hard 逐个
+            for f in hard_files:
+                schedule.append({"step": len(schedule) + 1, "type": "single", "files": [f]})
+
+        # 打印到控制台（简洁版）
+        print("\n========== [Plan] Motions / Groups / Refine Order ==========")
+        print(f"Total motions: {len(all_motions)}")
+        print(f"Easy: {len(groups['easy'])} | Hard: {len(groups['hard'])}")
+        print("Refine order (前10步预览):")
+        for item in schedule[:10]:
+            kind = "BATCH" if item["type"] == "batch" else "SINGLE"
+            print(
+                f"  Step {item['step']:>3} [{kind}]  x{len(item['files'])}  e.g., {os.path.basename(item['files'][0])}")
+        print("...（完整顺序已保存到文件）")
+
+        # 保存 JSON
+        plan_json = {
+            "total": len(all_motions),
+            "all_motions": all_motions,
+            "groups": groups,
+            "schedule": schedule,
+            "mode": "sequential" if sequential_mode else "accelerated",
+            "group_size_easy": None if sequential_mode else group_size,
+        }
+        json_path = os.path.join(self.log_dir, f"refine_plan_{ts}.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(plan_json, f, indent=2, ensure_ascii=False)
+
+        # 保存 CSV（按执行顺序展开）
+        csv_path = os.path.join(self.log_dir, f"refine_plan_{ts}.csv")
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["step", "type", "file"])
+            for item in schedule:
+                for f in item["files"]:
+                    w.writerow([item["step"], item["type"], f])
+
+        # W&B 记录（可选）
+        if getattr(self.args, "use_wandb", False) and not getattr(self.args, "dev", False):
+            import wandb
+            wandb.log({
+                "Plan/total_motions": len(all_motions),
+                "Plan/easy_count": len(groups["easy"]),
+                "Plan/hard_count": len(groups["hard"]),
+                "Plan/steps": len(schedule)
+            })
+
+        print(f"[Plan] Saved: {json_path}")
+        print(f"[Plan] Saved: {csv_path}")
+        return schedule, json_path, csv_path
 
     # ------------------------ refine（easy 批处理） ------------------------ #
     def refine_easy(self, files: List[str], group_size: int):
@@ -205,22 +273,22 @@ def config(args):
 def render(log_dir, render_failed=False):
     rollout_dir = os.path.join(log_dir, 'refine_results')
     rollout_success_dir = os.path.join(rollout_dir, 'succeed')
-    gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
+    # gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
     if args.task == 'smpl':
         from scripts.render.constrast_render import render as smpl_render
-        smpl_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True, gvhmr_output_dir)
+        smpl_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True)
         if render_failed:
             rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
-            smpl_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True, gvhmr_output_dir)
-    elif args.task == 'g1' and os.environ.get("DISPLAY", "") != "":
-        from scripts.render.vis_motion_rollout import mujoco_render as g1_render
-        humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
-        g1_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True, gvhmr_output_dir, \
-                      humanoid_model_file)  #, retarget_result_render_dir)
-        if render_failed:
-            rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
-            g1_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True,
-                          gvhmr_output_dir, humanoid_model_file) #, retarget_result_render_dir)
+            smpl_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True)
+    # elif args.task == 'g1' and os.environ.get("DISPLAY", "") != "":
+    #     from scripts.render.vis_motion_rollout import mujoco_render as g1_render
+    #     humanoid_model_file = 'data/robots/g1/g1_29dof.xml'
+    #     g1_render(rollout_success_dir, f'{log_dir}/render_results/succeed', True, gvhmr_output_dir, \
+    #                   humanoid_model_file)  #, retarget_result_render_dir)
+    #     if render_failed:
+    #         rollout_failed_dir = os.path.join(log_dir, 'refine_results/failed')
+    #         g1_render(rollout_failed_dir, f'{log_dir}/render_results/failed', True,
+    #                       gvhmr_output_dir, humanoid_model_file) #, retarget_result_render_dir)
 
 if __name__ == '__main__':
     args = get_args()
@@ -235,61 +303,18 @@ if __name__ == '__main__':
         render(args.render_run)
         sys.exit(0)
 
-    # 1.GVHMR
-    folder = args.folder
-    folder = Path(folder)
-    gvhmr_root = (Path(__file__).resolve().parents[1] / 'GVHMR').resolve()
-    if args.gvhmr_output is not None:
-        gvhmr_output_dir = args.gvhmr_output
-    else:
-        gvhmr_output_dir = os.path.join(log_dir, 'gvhmr_results')
-    mp4_paths = sorted(
-        [p.resolve() for p in folder.glob("*.mp4")] +
-        [p.resolve() for p in folder.glob("*.MP4")]
-    )
-    print(f"Found {len(mp4_paths)} .mp4 files in {folder}")
-    for mp4_path in tqdm(mp4_paths):
-        command = ["python", "tools/demo/demo.py", "--video", str(mp4_path)]
-        command += ["--output_root", gvhmr_output_dir]
-        if args.static_cam:
-            command += ["-s"]
-        print(f"Running: {' '.join(command)}")
-        try:
-            subprocess.run(command, env=dict(os.environ), cwd=str(gvhmr_root), check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"[WARN] GVHMR failed on {mp4_path} (rc={e.returncode}). Skip this clip.")
-            continue
+    # 1.preprocess (smpl) or retarget (gvhmr)
+    # motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
+    # result = process_folder(gvhmr_output_dir, motion_data_dir)
 
-    # 2.preprocess (smpl) or retarget (gvhmr)
-
-    if args.task == 'smpl':
-        motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
-        result = process_folder(gvhmr_output_dir, motion_data_dir)
-        env_cfg.motion.file = motion_data_dir
-    elif args.task == 'g1':
-        from scripts.retarget.fit_smpl_motion import retarget_from_gvhmr
-        motion_data_dir = os.path.join(log_dir, 'retarget_results')
-        retarget_result_render_dir = os.path.join(motion_data_dir, 'rendered_videos')
-        if os.environ.get("DISPLAY", "") == "":
-            retarget_result_render_dir = None
-        retarget_from_gvhmr(
-            input_dir=gvhmr_output_dir,
-            output_dir=motion_data_dir,
-            render_dir=retarget_result_render_dir,
-            num_jobs=1,
-        )
-        env_cfg.motion.file = motion_data_dir
-    else:
-        raise NotImplementedError(f"Task {args.task} not implemented for Video2Agent.py")
-
-    # 3.refinement
+    # 2.refinement
     pipeline = MotionRefinePipeline(env_cfg, train_cfg, args, log_dir)
     pipeline.run(batch_size_easy=18)
 
 
-    # 4.rendering
-    render_failed = False
-    render(log_dir)
+    # 3.rendering
+    render_failed = True
+    render(log_dir, render_failed)
 
 
 

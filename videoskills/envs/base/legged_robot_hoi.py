@@ -751,7 +751,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             motion_ids (torch.Tensor): Tensor of shape [num_envs] containing motion ids to reset the environments with.
         """
         env_ids = torch.arange(self.num_envs, device=self.device)
-        self._sampled_motion_ids = motion_ids.detach()
+        self._sampled_motion_ids = motion_ids.clone()
         self._motion_start_times = torch.zeros(self.num_envs, device=self.device)
         if len(env_ids) == 0:
             return

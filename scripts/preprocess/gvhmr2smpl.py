@@ -92,6 +92,9 @@ def process_folder(folder_path, output_path):
                     pose_aa[:, :3], root_trans_offset = rotate(pose_aa[:, :3], root_trans_offset.squeeze())
                     pose_aa[:, :3], root_trans_offset = rotate(pose_aa[:, :3], root_trans_offset.squeeze(),
                                                                [[1., 0., 0.], [0., -1., 0.], [0., 0., -1]])
+                    # 等效
+                    # pose_aa[:, :3], root_trans_offset = rotate(pose_aa[:, :3], root_trans_offset.squeeze(),
+                    #                                            [[1., 0., 0.], [0., 0., -1.], [0., 1, 0.]])
 
                     N = pose_aa.shape[0]
                     pose_aa_mj = pose_aa.reshape(N, 24, 3)[:, smpl_2_mujoco]
