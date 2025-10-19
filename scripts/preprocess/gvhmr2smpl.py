@@ -13,7 +13,7 @@ from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
 import torch
 import joblib
-
+from scripts.preprocess.amass2smpl import vis_mujoco
 
 import os
 
@@ -52,14 +52,15 @@ def process_folder(folder_path, output_path):
         "model": "smpl",
     }
 
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/smpl")
+    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
     smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
     amass_full_motion_dict = {}
 
     # dir_name = folder_path.split('/')[-1]
     dir_name = output_path
     os.makedirs(os.path.join(output_path), exist_ok=True)
-    smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
+    smpl_parser_n = SMPL_Parser(model_path='data/SMPL/smpl', gender="neutral")
+
 
     for root, dirs, files in os.walk(folder_path):
         for file in files:
@@ -163,27 +164,10 @@ def process_folder(folder_path, output_path):
                                                                                     root_trans_offset,
                                                                                     is_local=False)
 
-                    pose_quat_global = new_sk_state.global_rotation.numpy()
-                    pose_quat = new_sk_state.local_rotation.numpy()
-                    # pose_aa = sRot.from_quat(pose_quat.reshape(-1, 4)).as_rotvec().reshape(-1, 72)
-                    # Extract data
-                    new_motion_out = {}
-                    key_name_dump = subfolder_name
-                    new_motion_out['pose_quat_global'] = pose_quat_global
-                    new_motion_out['pose_quat'] = pose_quat
-                    new_motion_out['trans_orig'] = root_trans
-                    new_motion_out['root_trans_offset'] = root_trans_offset.double()
-                    new_motion_out['beta'] = beta
-                    new_motion_out['gender'] = gender
-                    new_motion_out['pose_aa'] = pose_aa
-                    # pose aa is pose for smpl motion, spl motion lab is build on smpl. I see.
-                    # But why pose aa seems to only affect the position rather than the rotation?
-                    # Because pose_aa is just used to fix height!!! So the index of it is base on smpl rather than
-                    # smpl humanoid
-                    new_motion_out['fps'] = 30
 
-                    amass_full_motion_dict[key_name_dump] = new_motion_out
 
+                    padding = 10  # 或者改成参数传入
+                    new_sk_state = pad_skeleton_state(new_sk_state, padding)
                     motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
 
                     # 构建保存路径
@@ -192,7 +176,39 @@ def process_folder(folder_path, output_path):
                     # 保存 motion 对象为 numpy 文件
                     motion_obj.to_file(save_path)
 
+                    viz = False
+                    if viz:
+                        motion_traj = {}
+                        motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
+                        motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
+                        motion_traj['dof'] = sRot.from_quat(
+                            new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_rotvec().reshape(N + padding, -1, 3)
+                        vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
+
     return amass_full_motion_dict
+
+def pad_skeleton_state(sk_state, padding=10):
+    """在 SkeletonState 最前端复制第一帧若干次。padding=0 时不做任何操作。"""
+    if padding <= 0:
+        return sk_state  # 不需要 padding，直接返回原对象
+
+    root_trans = sk_state.root_translation
+    global_rot = sk_state.global_rotation
+
+    # 取第一帧并重复
+    first_root = root_trans[0:1].repeat(padding, 1)
+    first_global = global_rot[0:1].repeat(padding, 1, 1)
+
+    # 拼接在前端
+    new_root = torch.cat([first_root, root_trans], dim=0)
+    new_global = torch.cat([first_global, global_rot], dim=0)
+
+    return SkeletonState.from_rotation_and_root_translation(
+        sk_state.skeleton_tree,
+        new_global,
+        new_root,
+        is_local=False
+    )
 
 def quaternion_distance(q1, q2):
     # Ensure the quaternions are normalized
@@ -221,16 +237,16 @@ if __name__ == "__main__":
     pkl_per_motoin = args.pkl_per_motoin
     result = process_folder(folder_path, output_path)
     # pkl_per_motoin = True
-    vis = False
-    if vis:
-        for key in result.keys():
-            motion = {}
-            motion[key] = result[key]
-            output_path = os.path.join(args.output_path, key + ".pkl")
-            if not os.path.exists(output_path):
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            with open(output_path, 'wb') as f:
-                joblib.dump(motion, f)
+    # vis = True
+    # if vis:
+    #     for key in result.keys():
+    #         motion = {}
+    #         motion[key] = result[key]
+    #         output_path = os.path.join(args.output_path, key + ".pkl")
+    #         if not os.path.exists(output_path):
+    #             os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    #         with open(output_path, 'wb') as f:
+    #             joblib.dump(motion, f)
         # vis_mujoco(motion[key])
 
 # joblib.dump(result, output_path, compress=True)

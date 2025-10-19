@@ -31,6 +31,9 @@ from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, Sk
 import trimesh
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 from scripts.retarget.smpl_humanoid_tool import  humanoid2smpl
+from scripts.preprocess.mujoco_contact_inference import penetration_depth_sequence_ig
+from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body
+from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
 # ---------------------- slicing spec inferred from user's code ----------------------
 SLICE_SPEC = {
     "root_pos":       (0, 3),      # (T,3)
@@ -160,7 +163,7 @@ def convert_single_tensor(hoi_tensor: torch.Tensor, out_path_npy: str, fps: int 
     fix_height = True  # 开启更稳妥
     N  = shaped["root_pos"].size(0)
 
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_v1.xml")
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_hand.xml")
 
     root_trans_offset = shaped["root_pos"].clone()  # (N,3)
 
@@ -208,7 +211,7 @@ def convert_single_tensor(hoi_tensor: torch.Tensor, out_path_npy: str, fps: int 
 
     obj_pts_world = _quat_rotate_xyzw(shaped["obj_rot"], obj_points_local) + shaped["obj_pos"].unsqueeze(1)  # [T,P,3]
 
-    ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
+    ig_torch = - compute_sdf(shaped["body_pos"], obj_pts_world)  # [T,52,3]
     ref_ig = ig_torch.cpu().numpy().astype(np.float32)
 
     dt = 1.0 / fps
@@ -220,6 +223,24 @@ def convert_single_tensor(hoi_tensor: torch.Tensor, out_path_npy: str, fps: int 
     obj_acc_np[1:] = (obj_vel_np[1:] - obj_vel_np[:-1]) / dt
     obj_rot = shaped["obj_rot"].numpy()  # [T,4]
     obj_rot_vel = angular_velocity_world_from_quat_xyzw(obj_rot, dt)
+
+    body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid_hand.xml",
+                                                                      samples_per_geom=500)
+    sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+    pen_seq = penetration_depth_sequence_ig(
+        mj_model,
+        body_geoms,
+        mj2sk,
+        obj_pts_world.numpy(),  # e.g. List[np.ndarray], len T, each (P_t,3)
+        body_pos_t.numpy().astype(np.float32),  # (T, B, 3)
+        new_sk_state.global_rotation.numpy().astype(np.float32),  # (T, B, 4) xyzw
+    )
+
+    first_frame_collided = (pen_seq[0] > 0).any()
+    if first_frame_collided:
+        key_str = os.path.basename(os.path.normpath(out_path_npy))  # 样本名
+        print(f"[SKIP-FIRST-FRAME-COLLISION] {key_str}")
+        return
 
     bundle = {
         "motion": motion_dict,
@@ -233,7 +254,7 @@ def convert_single_tensor(hoi_tensor: torch.Tensor, out_path_npy: str, fps: int 
         "interaction": {
             "ig": ref_ig,                              # (T,52,3)
             "contact_robot": _to_numpy32(shaped["contact_human"]),        # (T,52)
-            "contact_obj": _to_numpy32(shaped["contact_obj"]),            # (T,)
+            "collision_tag": (pen_seq > 0).any(axis=1)
         }
     }
 

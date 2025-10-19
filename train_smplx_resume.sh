@@ -32,5 +32,5 @@ ls $WORK # not necessary just here to illustrate that $WORK is available here
 # - determine commandline arguments for `srun` calls
 
 # Compute Phase
-srun python videoskills/train.py --task=smplx --resume --load_run=smplx_train --use_wandb --headless
+srun python videoskills/train.py --task=smplx --resume --load_run=smplx_universal_old --use_wandb --headless
 # srun will automatically pickup the configuration defined via `#SBATCH` and `sbatch` command line arguments

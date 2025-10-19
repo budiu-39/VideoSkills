@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'behave_sit_new_4096_test'
+        run_name = 'omomo'
         experiment_name = 'smplx_hoi_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -78,7 +78,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
     class asset(LeggedRobotCfg.asset):
-        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid.xml'
+        file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_hand.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
@@ -87,13 +87,14 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         self_collisions = 1
         load_obj = True
         default_dof_drive_mode = 1
-        asset_root = 'dataset/behave/objects_centered'
+        asset_root = 'dataset/OMOMO_new/objects'
+        # asset_root = 'dataset/behave/objects_centered'
         # asset_root = 'dataset/omomo/objects_centered'
 
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_sit_new')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
 

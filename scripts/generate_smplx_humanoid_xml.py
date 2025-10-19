@@ -42,7 +42,7 @@ def build_and_write_smplx_humanoid_xml(betas, gender):
         "box_body": False,
         "gender": gender,
         "masterfoot": False,
-        "rel_joint_lm": False,
+        "rel_joint_lm": True,
         "body_params": {}, "joint_params": {}, "geom_params": {}, "actuator_params": {},
     }
 
@@ -73,7 +73,7 @@ def build_and_write_smplx_humanoid_xml(betas, gender):
     set_joint_ds(smpl_robot, default_d=20.0, default_k=200.0, per_joint=per_joint)
 
     # 3) 写 XML
-    xml_path = "/tmp/SMPLX_humanoid.xml"
+    xml_path = "data/robot/smpl/smplx_humanoid_restricted.xml"
     smpl_robot.write_xml(xml_path)
 
     return xml_path

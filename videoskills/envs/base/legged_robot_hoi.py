@@ -24,8 +24,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
-        self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
-        # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
+        # self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
         self.et_counter = {
@@ -378,30 +378,27 @@ class LeggedRobotHoi(LeggedRobotImi):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
                 body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_env = body_pos_env + ig_env
+                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                obj_near_env = body_pos_env + ig_env
                 #
                 num_lines = body_pos_env.shape[0]
-                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
-                # #
-                # verts[0::2] = body_pos_env
-                # verts[1::2] = obj_near_env
+                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
                 #
-                # # 颜色（蓝色）
-                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
-                #
-                self.ref_ig[i].cpu().numpy()  # (52, 3)
-                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
+                verts[0::2] = body_pos_env
+                verts[1::2] = obj_near_env
 
-                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
-                verts_ref[0::2] = body_pos_env
-                verts_ref[1::2] = obj_near_ref
-                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
+                # 颜色（蓝色）
+                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
-                # 画线
+                # self.ref_ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
 
+                # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # verts_ref[0::2] = body_pos_env
+                # verts_ref[1::2] = obj_near_ref
+                # colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
 
                 for j in range(self.num_bodies):
                     # if j in self.body_no_hand_ids:

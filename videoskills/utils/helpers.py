@@ -218,7 +218,7 @@ def get_args():
         args.sim_device += f":{args.sim_device_id}"
 
     if args.dev:
-        args.num_envs = 16
+        args.num_envs = 32
         args.headless = False
     return args
 

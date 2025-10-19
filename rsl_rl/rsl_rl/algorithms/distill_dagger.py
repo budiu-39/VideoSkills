@@ -27,7 +27,7 @@ from rsl_rl.modules.actor_critic_attention import ActorCritic_Attention  # 学�
 @dataclass
 class DAggerCfg:
     # 交互
-    num_envs: int = 1024
+    num_envs: int = 512
     steps_per_env: int = 32         # 每次 DAgger 迭代 rollout 步数
     max_iters: int = 1000           # DAgger 迭代总数
 
@@ -39,7 +39,7 @@ class DAggerCfg:
 
     # 数据集与优化
     replay_capacity: int = 2_000_000      # 样本上限（T*B 级别）
-    batch_size: int = 16384               # 每次优化的样本数（越大越稳定，但显存占用高）
+    batch_size: int = 8192               # 每次优化的样本数（越大越稳定，但显存占用高）
     epochs_per_iter: int = 1
     lr: float = 3e-4
     weight_decay: float = 0.01

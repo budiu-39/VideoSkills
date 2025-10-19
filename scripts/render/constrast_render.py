@@ -279,6 +279,6 @@ if __name__ == '__main__':
             os.environ["PYOPENGL_PLATFORM"] = "egl"  # 若无 NVIDIA EGL，可改用 'osmesa'
             os.environ["PYGLET_HEADLESS"] = "True"
 
-    output_path = 'output/render_smpl_contrast'
+    output_path = 'demo/kungfu_viz'
 
     render(ref_sim_data_path, output_path, opt.use_offscreen, opt.raw_video_path)

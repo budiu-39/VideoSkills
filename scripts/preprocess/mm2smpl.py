@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import glob
-from utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
@@ -18,6 +18,7 @@ import joblib
 import torch
 import mujoco
 import time
+from scripts.preprocess.padding import pad_skeleton_state
 
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
@@ -110,7 +111,7 @@ def pose_272_to_smpl(data_272):
 
 if __name__ == "__main__":
 
-    output_dir = "dataset/smpl_motion/Kungfu"
+
     upright_start = True
     robot_cfg = {
         "mesh": False,
@@ -134,7 +135,8 @@ if __name__ == "__main__":
     }
 
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
-    folder_path = "/home/miku/Documents/Dataset/kungfu"
+    folder_path = "/home/miku/Documents/VideoSkills/demo/tmp"
+    output_dir = "/home/miku/Documents/VideoSkills/demo"
     npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
     framerate = 30
 
@@ -204,6 +206,8 @@ if __name__ == "__main__":
 
         fps = 30
 
+        padding = 10  # 或者改成参数传入
+        new_sk_state = pad_skeleton_state(new_sk_state, padding)
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
 
         # 构建保存路径
@@ -214,7 +218,7 @@ if __name__ == "__main__":
         motion_traj = {}
         motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
         motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
-        motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
+        motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N + padding, -1, 3)
         # vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
 
 

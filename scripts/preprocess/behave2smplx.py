@@ -388,7 +388,7 @@ if __name__ == "__main__":
         "actuator_params": {},
         "model": "smplx",
     }
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid.xml")
+    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_hand.xml")
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
 
@@ -563,7 +563,7 @@ if __name__ == "__main__":
             ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
             ref_ig = ig_torch.cpu().numpy().astype(np.float32)
 
-        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid.xml",
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid_hand.xml",
                                                                 samples_per_geom=500)
 
         qpos_seq_np = build_qpos_seq_from_state(mj_model, new_sk_state)
@@ -673,7 +673,7 @@ if __name__ == "__main__":
 
         if args.render:
             temp_xml = create_temp_xml_with_object(
-                "data/robots/smpl/smplx_humanoid.xml",
+                "data/robots/smpl/smplx_humanoid_hand.xml",
                 obj_mesh_path
             )
             motion_traj = {}
