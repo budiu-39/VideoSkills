@@ -29,12 +29,19 @@ if __name__ == "__main__":
     # 简单测试
     # load npy
     import numpy as np
-    motion_data = np.load("/home/miku/Documents/VideoSkills/demo/Boxing_kicking_4_clip1.npy", allow_pickle=True).item()
-
-    sk_state = SkeletonState.from_dict(motion_data['skeleton_state'])
-    padded_state = pad_skeleton_state(sk_state, padding=3)
-
-    print("Original length:", sk_state.root_translation.shape[0])
-    print("Padded length:", padded_state.root_translation.shape[0])
+    import glob
+    motion_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/Kungfu_1"
+    motion_out_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/Kungfu_1_padded"
+    motion_files = sorted(glob.glob(motion_dir + '/*.npy'))
+    for motion_file in motion_files:
+        motion_data = np.load(motion_file, allow_pickle=True).item()
+        # a = SkeletonMotion.from_dict(motion_data)
+        sk_state = SkeletonState.from_dict(motion_data)
+        padded_state = pad_skeleton_state(sk_state, padding=10)
+        motion_data = SkeletonMotion.from_skeleton_state(padded_state, 30)
+        out_file = motion_file.replace(motion_dir, motion_out_dir)
+        motion_data.to_file(out_file)
+    # print("Original length:", sk_state.root_translation.shape[0])
+    # print("Padded length:", padded_state.root_translation.shape[0])
 
 

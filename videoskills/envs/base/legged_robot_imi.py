@@ -637,6 +637,9 @@ class LeggedRobotImi(LeggedRobot):
         Computes the imitation reward based on the difference between the current and reference body positions and rotations.
         The reward is computed in the heading frame of the root body.
         """
+        
+
+
         pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
         rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
         diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
