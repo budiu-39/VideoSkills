@@ -24,8 +24,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
-        # self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
-        self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
+        self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
         self.et_counter = {
@@ -388,8 +388,8 @@ class LeggedRobotHoi(LeggedRobotImi):
                 verts[1::2] = obj_near_env
 
                 # 颜色（蓝色）
-                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
                 # self.ref_ig[i].cpu().numpy()  # (52, 3)
                 # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()

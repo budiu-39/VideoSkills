@@ -30,8 +30,8 @@ if __name__ == "__main__":
     # load npy
     import numpy as np
     import glob
-    motion_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/Kungfu_1"
-    motion_out_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/Kungfu_1_padded"
+    motion_dir = "dataset/smpl_motion/Kungfu"
+    motion_out_dir = "dataset/smpl_motion/Kungfu_padded"
     motion_files = sorted(glob.glob(motion_dir + '/*.npy'))
     for motion_file in motion_files:
         motion_data = np.load(motion_file, allow_pickle=True).item()

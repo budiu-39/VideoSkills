@@ -30,7 +30,7 @@ class Body:
         self.v = torch.tensor(vertices)
         self.jtr = torch.tensor(jtr)
 
-def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contacts=None,
+def viz_contrast_smpl_seq(sim_body, imw=1080, imh=1080, fps=30, contacts=None,
                 render_body=True, render_joints=False, render_skeleton=False, render_ground=True, ground_plane=None,
                 use_offscreen=False, out_path=None, wireframe=False, RGBA=False,
                 joints_seq=None, joints_vel=None, follow_camera=False, vtx_list=None, points_seq=None, points_vel=None,
@@ -44,7 +44,7 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
                 contact_color=[1.0, 0.0, 0.0],
                 render_bodies_static=None,
                 render_points_static=None,
-                cam_rot=None, sim_color = [0.2, 0.8, 0.2], ref_color = [0.8, 0.2, 0.2]):
+                cam_rot=None, sim_color = [0.8, 0.2, 0.2]):
     '''
     Visualizes the body model output of a smpl sequence.
     - body : body model output from SMPL forward pass (where the sequence is the batch)
@@ -65,21 +65,11 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
             vertex_colors = np.tile(sim_color, (nv, 1))
             if body_alpha is not None:
                 vtx_alpha = np.ones((vertex_colors.shape[0], 1)) * body_alpha
+                vertex_colors = np.concatenate([vertex_colors, vtx_alpha], axis=1)
             faces = c2c(sim_body.f)
             sim_body_mesh_seq = [
                 trimesh.Trimesh(vertices=c2c(sim_body.v[i]), faces= sim_body.f, vertex_colors = sim_color, process=False)
                 for i in range(sim_body.v.size(0))]
-
-        if ref_body is not None:
-            nv = ref_body.v.size(1)
-            vertex_colors = np.tile(ref_color, (nv, 1))
-            if body_alpha is not None:
-                vtx_alpha = np.ones((vertex_colors.shape[0], 1)) * body_alpha
-            faces = c2c(ref_body.f)
-            body_mesh_seq = [
-                trimesh.Trimesh(vertices=c2c(ref_body.v[i]), faces=ref_body.f, vertex_colors = ref_color,
-                                  process=False)
-                for i in range(ref_body.v.size(0))]
 
     mv = MeshViewer(width=imw, height=imh,
                     use_offscreen=use_offscreen,
@@ -94,10 +84,8 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
     if render_body and render_bodies_static is None:
         if sim_body is not None:
             mv.add_mesh_seq(sim_body_mesh_seq)
-        mv.add_mesh_seq(body_mesh_seq)
     elif render_body and render_bodies_static is not None:
         mv.add_static_meshes([sim_body_mesh_seq[i] for i in range(len(sim_body_mesh_seq)) if i % render_bodies_static == 0])
-        mv.add_static_meshes([body_mesh_seq[i] for i in range(len(body_mesh_seq)) if i % render_bodies_static == 0])
     if render_joints and render_skeleton:
         mv.add_point_seq(joints_seq, color=joint_color, radius=joint_rad, contact_seq=contacts,
                          connections=skel_connections, connect_color=skel_color, vel=joints_vel,
@@ -108,7 +96,6 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
 
     if vtx_list is not None:
         mv.add_smpl_vtx_list_seq(sim_body_mesh_seq, vtx_list, color=[0.0, 0.0, 1.0], radius=0.015)
-        mv.add_smpl_vtx_list_seq(body_mesh_seq, vtx_list, color=[0.0, 0.0, 1.0], radius=0.015)
 
     if points_seq is not None:
         if torch.is_tensor(points_seq[0]):
@@ -129,7 +116,6 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
         if ground_plane is not None:
             if render_body:
                 xyz_orig = sim_body_mesh_seq[0].vertices[0, :]
-                xyz_orig = body_mesh_seq[0].vertices[0, :]
             elif render_joints:
                 xyz_orig = joints_seq[0][0, :]
             elif points_seq is not None:
@@ -148,69 +134,44 @@ def viz_contrast_smpl_seq(sim_body, ref_body, imw=1080, imh=1080, fps=30, contac
 
 
 def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = None):
-    npy_glob = "/home/miku/Documents/Dataset/kungfu"
-    out = "/home/miku/Documents/VideoSkills/rollout"
-    seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
-    source_video_path = '/home/miku/Documents/Video/kungfu_video'
-    smpl_dir = "data/SMPL"
+    MODEL_PATH = 'data/SMPL/smpl'
+    smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
+    # 判断输入是文件还是目录
+    if os.path.isfile(ref_sim_data_path):
+        pkl_files = [ref_sim_data_path]
+    elif os.path.isdir(ref_sim_data_path):
+        pkl_files = [os.path.join(ref_sim_data_path, f) for f in os.listdir(ref_sim_data_path) if f.endswith(".pkl")]
+        pkl_files.sort()  # 保证顺序一致
+        dir_name = ref_sim_data_path.split('/')[-1]
+    else:
+        raise ValueError(f"Invalid path: {ref_sim_data_path}")
 
+    for pkl_file in pkl_files:
+        ref_sim_data = joblib.load(pkl_file)
+        key_name = os.path.splitext(os.path.basename(pkl_file))[0]  # 去掉后缀
+        ref_data = {}
+        sim_data = {}
 
-    # 打开视频（若需要拼接）
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    smpl_model = smplx.create(
-        model_path=smpl_dir,
-        model_type='smpl',
-        gender='neutral',
-        use_pca=False
-    ).to(device)
-    faces = smpl_model.faces
+        ref_data['body_rot'] = torch.tensor(ref_sim_data['gt_rot']).reshape(-1, 24, 4)
+        ref_data['transl'] =  torch.tensor(ref_sim_data['gt_pos']).reshape(-1, 24, 3)[:,0]
+        sim_data['body_rot'] =torch.tensor(ref_sim_data['pred_rot']).reshape(-1, 24, 4)
+        sim_data['transl'] = torch.tensor(ref_sim_data['pred_pos']).reshape(-1, 24, 3)[:,0]
 
-    # 相机参数（可选）
-    K_npy = None
-    Rt_npy = None
-    K = np.load(K_npy) if K_npy else None
-    Rt_seq = np.load(Rt_npy, allow_pickle=True) if Rt_npy else None
+        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
 
-    # ==== 每个 npy 单独输出 ====
-    for f in seq_files:
-        name = os.path.splitext(os.path.basename(f))[0]
-        out_path = os.path.join(out, f"{name}.mp4")
-        print(f"[Render] {f} -> {out_path}")
+        ref_pose, ref_transl = humanoid2smpl(ref_data['body_rot'], ref_data['transl'], skeleton_tree)
+        sim_pose, sim_transl = humanoid2smpl(sim_data['body_rot'], sim_data['transl'], skeleton_tree)
 
-        cap = None
-        width = 720;
-        height = 720
-        fps_data = 30.0  # 你的 SMPL/数据帧率
-        fps_video = None
+        fmt = "%b%d_%H:%M"
+        timestamp = datetime.now().strftime(fmt)
+        # pic_path = os.path.join(output_path, f'pic/{key_name}_{timestamp}')
+        video_path = os.path.join(output_path)
+        # video_path = os.path.join(output_path, f'video/{key_name}_{timestamp}')
+        # os.makedirs(pic_path, exist_ok=1)
+        os.makedirs(video_path, exist_ok=1)
 
-        if source_video_path is not None:
-            full_source_video_path = os.path.join(source_video_path, f"{name}.mp4")
-            cap = cv2.VideoCapture(full_source_video_path)
-            assert cap.isOpened(), f"Cannot open video: {full_source_video_path}"
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps_video = cap.get(cv2.CAP_PROP_FPS)
+        betas = torch.zeros(10).repeat(ref_transl.shape[0], 1)
 
-        # —— 关键：输出 fps 用“数据帧率”，这样拼接后严格对齐 ——
-        out_fps = fps_data
-        out_size = (width * 2, height) if (source_video_path is not None) else (width, height)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, out_fps, out_size)
-
-        # 转换并渲染
-        data_272 = np.load(f, allow_pickle=True)
-        root_trans, pose_aa = pose_272_to_smpl(data_272)
-        T, J, C = pose_aa.shape
-        pad = np.zeros((T, 2, 3), dtype=pose_aa.dtype)
-        pose_aa = np.concatenate([pose_aa, pad], axis=1)
-        verts_seq = smpl_forward_vertices(smpl_model, root_trans, pose_aa, device=device)
-
-        # === Ref body ===
-        ref_pose = ref_pose.float()
-        output = smpl(betas=betas, body_pose=ref_pose[:,1:], global_orient=ref_pose[:, :1], pose2rot=True, transl=ref_transl)
-        vertices = output.vertices.detach().cpu().numpy().squeeze()
-        jtr = output.joints.detach().cpu().numpy().squeeze()
-        ref_body = Body(smpl.faces.astype(np.int64), vertices, jtr)
 
         # === Sim body ===
         sim_pose = sim_pose.float()
@@ -227,7 +188,7 @@ def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = 
 
         mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
         viz_contrast_smpl_seq(
-            sim_body, ref_body, imw=1080, imh=1080, fps=30, contacts=None,
+            sim_body, imw=1080, imh=1080, fps=30, contacts=None,
             render_body=True, render_joints=False, render_skeleton=False, render_ground=True,
             ground_plane=None,
             use_offscreen=use_offscreen, out_path= pic_file, wireframe=False, RGBA=False,

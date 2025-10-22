@@ -135,8 +135,8 @@ if __name__ == "__main__":
     }
 
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
-    folder_path = "/home/miku/Documents/VideoSkills/demo/tmp"
-    output_dir = "/home/miku/Documents/VideoSkills/demo"
+    folder_path = "/mnt/lustre/work/ponsmoll/pba936/humanml3d_272/motion_data"
+    output_dir = "dataset/smpl_motion/humanml3d"
     npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
     framerate = 30
 

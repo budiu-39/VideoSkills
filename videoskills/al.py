@@ -47,17 +47,18 @@ def train(args):
     if args.dev:
         train_cfg.runner.eval_interval = 10
 
-    # train_batch_dir = "dataset/smpl_motion/subset/control3"
-    # test_batch_dir = "dataset/smpl_motion/subset/train_active"
+    train_batch_dir = "dataset/smpl_motion/subset/control3"
+    test_batch_dir = "dataset/smpl_motion/subset/train_active"
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
 
-        # reset_motion_lib_dir(ppo_runner, train_batch_dir)
+        reset_motion_lib_dir(ppo_runner, train_batch_dir)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
-        # reset_motion_lib_dir(ppo_runner, test_batch_dir)
+        ppo_runner.eval()
+        reset_motion_lib_dir(ppo_runner, test_batch_dir)
         ppo_runner.eval()
 
 

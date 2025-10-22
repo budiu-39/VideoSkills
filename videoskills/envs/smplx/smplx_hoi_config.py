@@ -18,7 +18,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'omomo'
+        run_name = 'behave_smalltable'
         experiment_name = 'smplx_hoi_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -87,14 +87,14 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         self_collisions = 1
         load_obj = True
         default_dof_drive_mode = 1
-        asset_root = 'dataset/OMOMO_new/objects'
-        # asset_root = 'dataset/behave/objects_centered'
+        # asset_root = 'dataset/OMOMO_new/objects'
+        asset_root = 'data/objects_centered'
         # asset_root = 'dataset/omomo/objects_centered'
 
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
 
@@ -126,6 +126,27 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             ang_vel = 0.2
             gravity = 0.05
             height_measurements = 0.1
+
+    class sim:
+        dt =  0.01667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
+        # dt = 0.005
+        substeps = 4
+        gravity = [0., 0. ,-9.81]  # [m/s^2]
+        up_axis = 1  # 0 is y, 1 is z
+
+        class physx:
+            num_threads = 10
+            solver_type = 1  # 0: pgs, 1: tgs
+            num_position_iterations = 8
+            num_velocity_iterations = 1
+            contact_offset = 0.02  # [m]
+            rest_offset = 0.0   # [m]
+            bounce_threshold_velocity = 0.5 #0.5 [m/s]
+            max_depenetration_velocity = 5.0
+            max_gpu_contact_pairs = 2**24 #2**24 -> needed for 8000 envs and more
+            default_buffer_size_multiplier = 5
+            contact_collection = 2 # 0: never, 1: last sub-step, 2: all sub-steps (default=2)
+
 
     class env(LeggedRobotCfg.env):
         episode_length_s = 10  # 5 秒应该有 60 hz
@@ -256,10 +277,6 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             ig = 10.0
             cg = 10.0
 
-
-    class sim(LeggedRobotCfg.sim):
-        dt =  0.0166667        # 1/200 * 4 = 1/50    1/60 * 2 = 1/30
-        # dt = 0.005
 
     class amp:
         activate = False

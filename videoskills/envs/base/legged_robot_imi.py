@@ -260,7 +260,7 @@ class LeggedRobotImi(LeggedRobot):
                     T = gymapi.Transform()
                     T.p.x, T.p.y, T.p.z = map(float, foot_pos)
 
-                    gymutil.draw_lines(sphere, self.gym, self.viewer, env_ptr, T)
+                    # gymutil.draw_lines(sphere, self.gym, self.viewer, env_ptr, T)
         super().render()
 
 
@@ -637,7 +637,7 @@ class LeggedRobotImi(LeggedRobot):
         Computes the imitation reward based on the difference between the current and reference body positions and rotations.
         The reward is computed in the heading frame of the root body.
         """
-        
+
 
 
         pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
