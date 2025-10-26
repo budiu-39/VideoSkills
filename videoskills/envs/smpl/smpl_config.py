@@ -16,8 +16,12 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         entropy_coef = 0.01
         normalize_value = False
 
+        num_learning_epochs = 6
+        num_mini_batches = 8
+
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'Kungfu_refine'
+        # run_name = 'kungfu_wo_padding'
+        run_name = 'kung_al_control_99'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -28,16 +32,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 2000  # check for potential saves every this many iterations
-        eval_interval = 2000
+        save_interval = 200  # check for potential saves every this many iterations
+        eval_interval = 200
 
         num_steps_per_env = 32  # per iteration
-        num_learning_epochs = 6
-        num_mini_batches = 8
 
-        # num_steps_per_env = 24 # per iteration
-        # num_learning_epochs = 4
-        # num_mini_batches = 5
 
     class refine:
         success_rate = 0.98
@@ -45,6 +44,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         convergence_criteria = 'reward'  # 'reward' or 'mpjpe'
 
 
+    class active_learning:
+        embeddings_file = 'dataset/motion_embeds/kungfu.json'
 
     class amp_config:
         disc_batch = 512
@@ -62,6 +63,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
             replay_buffer_size = 200000
             demo_buffer_size = 200000
 
+
+
 class SMPLRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
         type = 'random'
@@ -78,8 +81,10 @@ class SMPLRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/Kungfu_padded')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/EgoBody')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 

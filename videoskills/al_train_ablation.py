@@ -10,8 +10,10 @@ from videoskills.utils.helpers import print_and_save_cfg, class_to_dict
 from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
 from videoskills.utils.helpers import parse_motion_file_path
 from videoskills import LEGGED_GYM_ROOT_DIR
+from videoskills.al.active_learner import ActiveLearner
 sys.path.append(os.getcwd())
 import torch
+import json
 
 import sys, os, inspect
 print("argv[0] :", sys.argv[0])
@@ -47,17 +49,33 @@ def train(args):
     if args.dev:
         train_cfg.runner.eval_interval = 10
 
-    train_batch_dir = "dataset/smpl_motion/subset/control3"
-    test_batch_dir = "dataset/smpl_motion/subset/train_active"
+    samples_json_file = "dataset/motion_embeds/kungfu.json"
+    with open(samples_json_file, "r", encoding="utf-8") as f:
+        motion_embeds = json.load(f)
+    reference_json_file = "dataset/motion_embeds/AMASS.json"
+    with open(reference_json_file, "r", encoding="utf-8") as f:
+        ref_motion_embeds = json.load(f)
+    al = ActiveLearner(motion_embeds, ref_motion_embeds)
+    al.seed = 99
+
+    train_batch_dir = "dataset/smpl_motion/kungfu"
+    test_batch_dir = "dataset/smpl_motion/kungfu_test"
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
-
-        reset_motion_lib_dir(ppo_runner, train_batch_dir)
+        selected_keys = al.random_select(n_select = 100)
+        print(al.summary())
+        motion_files = [os.path.join(train_batch_dir, f"{k}.npy") for k in selected_keys]
+        selected_success_keys, _ = al.random_select(mode='success', n_select=100)
+        if len(selected_success_keys) > 0:
+            for k in selected_success_keys:
+                motion_files.append(os.path.join(train_batch_dir, f"{k}.npy"))
+        reset_motion_lib_dir(ppo_runner, motion_files)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
-        ppo_runner.eval()
+        result = ppo_runner.eval()
+        al.add_results(result['success_keys'], result['failed_keys'])
         reset_motion_lib_dir(ppo_runner, test_batch_dir)
         ppo_runner.eval()
 

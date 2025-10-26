@@ -241,7 +241,8 @@ def render_sequence(verts_seq, faces, out_writer, width, height,
 
     renderer.delete()
 
-
+import numpy as np
+from scipy.signal import savgol_filter
 
 def get_data_len_and_duration(data_272, fps_data=30.0):
     """从 (T, 272) 或 (T, …) 的 numpy 数组里读出帧数与时长"""
@@ -249,6 +250,35 @@ def get_data_len_and_duration(data_272, fps_data=30.0):
     dur_data = T_data / float(fps_data)
     return T_data, dur_data
 
+def kinematic_acceleration(root_trans, fps=30, smooth=True):
+    """
+    root_trans: (T, 3) 位置(米), Z-up
+    返回:
+      vel: (T, 3) m/s
+      acc: (T, 3) m/s^2
+    """
+    dt = 1.0 / fps
+    pos = np.asarray(root_trans, dtype=np.float64)
+
+    # 可选平滑，窗口7/多项式3可按需要调
+    if smooth and pos.shape[0] >= 7:
+        pos = savgol_filter(pos, window_length=7, polyorder=3, axis=0, mode='interp')
+
+    T = pos.shape[0]
+    vel = np.zeros_like(pos)
+    acc = np.zeros_like(pos)
+
+    # 速度：中心差分
+    vel[1:-1] = (pos[2:] - pos[:-2]) / (2 * dt)
+    vel[0]    = (pos[1] - pos[0]) / dt
+    vel[-1]   = (pos[-1] - pos[-2]) / dt
+
+    # 加速度：中心差分二阶
+    acc[1:-1] = (pos[2:] - 2*pos[1:-1] + pos[:-2]) / (dt*dt)
+    acc[0]    = (pos[2] - 2*pos[1] + pos[0]) / (dt*dt) if T > 2 else acc[0]
+    acc[-1]   = (pos[-1] - 2*pos[-2] + pos[-3]) / (dt*dt) if T > 2 else acc[-1]
+
+    return vel, acc
 
 if __name__ == "__main__":
     # ap = argparse.ArgumentParser()
@@ -263,17 +293,23 @@ if __name__ == "__main__":
     # ap.add_argument("--Rt_npy", type=str, default=None, help="每帧外参 Rt.npy，可选，形状 (T,3,4) 或 list[(R,t)]")
     # args = ap.parse_args()
 
-    npy_glob = "/mnt/lustre/work/ponsmoll/pba936/VideoSkills/MotionMillion/motion_272rpr/MotionUnion/kungfu"
-    out = "/mnt/lustre/work/ponsmoll/pba936/VideoSkills/kungfu_272_video"
-    seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
-    source_video_path = '/mnt/lustre/work/ponsmoll/pba936/Video/kungfu_video'
-    smpl_dir = "data/SMPL"
+    # npy_glob = "/mnt/lustre/work/ponsmoll/pba936/VideoSkills/MotionMillion/motion_272rpr/MotionUnion/kungfu"
+    # out = "/mnt/lustre/work/ponsmoll/pba936/VideoSkills/kungfu_272_video"
+    # seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
+    # source_video_path = '/mnt/lustre/work/ponsmoll/pba936/Video/kungfu_video'
+    # smpl_dir = "data/SMPL"
 
     # npy_glob = "/home/miku/Documents/Dataset/kungfu"
     # out = "/home/miku/Documents/VideoSkills/rollout"
     # seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
     # source_video_path = '/home/miku/Documents/Video/kungfu_video'
     # smpl_dir = "data/SMPL"
+
+    npy_glob = "/home/miku/Documents/VideoSkills/dataset/humman_1"
+    out = "/home/miku/Documents/VideoSkills/rollout"
+    seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
+    source_video_path = '/home/miku/Downloads/humman'
+    smpl_dir = "data/SMPL"
 
 
     # 打开视频（若需要拼接）

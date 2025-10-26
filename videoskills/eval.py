@@ -34,17 +34,15 @@ def eval(args):
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     # policy = ppo_runner.get_inference_policy(device=env.device)
 
-    log_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-
     result = ppo_runner.eval()
     print('Evaluation result: ', result)
 
     success_keys = result.get("success_keys", [])
     failed_keys = result.get("failed_keys", [])
 
-    with open(f"{log_dir}/success_keys.txt", "w", encoding="utf-8") as f:
+    with open(f"{ppo_runner.log_dir}/success_keys.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(map(str, success_keys)))
-    with open(f"{log_dir}/failed_keys.txt", "w", encoding="utf-8") as f:
+    with open(f"{ppo_runner.log_dir}/failed_keys.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(map(str, failed_keys)))
 
     print(f"Saved {len(success_keys)} success keys and {len(failed_keys)} failed keys to TXT files.")

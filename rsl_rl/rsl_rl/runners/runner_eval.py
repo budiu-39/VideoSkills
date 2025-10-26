@@ -95,6 +95,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             start = time.time()
             early_termination_sum = 0
             dones_sum = 0
+            # self.alg.actor_critic.refresh_temp_rms()
             for i in range(self.num_steps_per_env):
                 with torch.no_grad():
                     actions = self.alg.act(obs, critic_obs)
@@ -331,7 +332,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         motion_lib.export_sampling_state(motion_sampling_state_path)
 
         print(f"[Eval] Success rate: {success_rate:.2%}")
-        print(f"[Eval] Mean reward across {num_envs} motions: {mean_rew:.2f}")
+        print(f"[Eval] Mean reward across {num_total} motions: {mean_rew:.2f}")
         print(f"[Eval] Avg. reward until failure (only failed): {np.mean(reward_until_fail_list):.2f}")
 
         self.env.disable_data_recording()

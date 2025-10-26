@@ -135,19 +135,28 @@ if __name__ == "__main__":
     }
 
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
-    folder_path = "/mnt/lustre/work/ponsmoll/pba936/humanml3d_272/motion_data"
-    output_dir = "dataset/smpl_motion/humanml3d"
-    npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
-    framerate = 30
+    folder_path = "/mnt/lustre/work/ponsmoll/pba936/VideoSkills/MotionMillion/motion_272rpr/MotionGV"
+    # folder_path = "dataset/humanml3d"
+    output_dir = "dataset/smpl_motion/MotionGV"
+    # npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
+    npy_files = sorted(glob.glob(os.path.join(folder_path, '**', '*.npy'), recursive=True))
 
     for fpath in tqdm(npy_files):
-        rel_path = os.path.relpath(fpath, folder_path)
+        rel_path = os.path.relpath(fpath, folder_path)  # 例如 "recording_20210907_S02_S01_01/body_idx_0/000.npy"
+        # # 去掉扩展名
+        rel_noext = os.path.splitext(rel_path)[0]
+        # 把路径分隔符改成短横线
+        motion_key = rel_noext.replace(os.sep, "-")
+        # 构建保存路径
+        save_path = osp.join(output_dir, f"{motion_key}.npy")
+        # save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
         motion = np.load(fpath, allow_pickle=True)
-        skip = int(framerate / 30)
 
         N = motion.shape[0]
 
         root_trans, pose_aa = pose_272_to_smpl(motion)
+        # 加入降采样代码
+
 
         # 经典字段划分
         pose_aa_smpl = np.zeros((N, 24, 3), dtype=pose_aa.dtype)
@@ -206,12 +215,12 @@ if __name__ == "__main__":
 
         fps = 30
 
-        padding = 10  # 或者改成参数传入
+        padding = 0  # 或者改成参数传入
         new_sk_state = pad_skeleton_state(new_sk_state, padding)
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
 
         # 构建保存路径
-        save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
+
         os.makedirs(osp.dirname(save_path), exist_ok=True)
         # 保存 motion 对象为 numpy 文件
         motion_obj.to_file(save_path)

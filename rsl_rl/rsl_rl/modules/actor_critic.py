@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 from rsl_rl.utils.running_mean_std import RunningMeanStd
+import copy
 
 
 class ActorCritic(nn.Module):
@@ -55,6 +56,13 @@ class ActorCritic(nn.Module):
 
         self.actor_obs_rms  = RunningMeanStd((num_actor_obs,))
         self.critic_obs_rms = RunningMeanStd((num_critic_obs,))
+
+        # self.actor_obs_rms_temp = copy.deepcopy(self.actor_obs_rms)
+        # self.critic_obs_rms_temp = copy.deepcopy(self.critic_obs_rms)
+
+        # self.actor_obs_rms_temp.freeze()
+        # self.critic_obs_rms_temp.freeze()
+
         self._update_rms = True  # 控制是否更新统计
 
         # Policy
@@ -154,6 +162,12 @@ class ActorCritic(nn.Module):
         if self._update_rms:
             _ = self.critic_obs_rms(obs)
         return self.critic_obs_rms(obs)
+
+    # def refresh_temp_rms(self):
+    #     self.actor_obs_rms_temp = copy.deepcopy(self.actor_obs_rms)
+    #     self.critic_obs_rms_temp = copy.deepcopy(self.critic_obs_rms)
+    #     self.actor_obs_rms_temp.freeze()
+    #     self.critic_obs_rms_temp.freeze()
 
 def get_activation(act_name):
     if act_name == "elu":
