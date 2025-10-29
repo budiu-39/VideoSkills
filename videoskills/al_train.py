@@ -56,13 +56,13 @@ def train(args):
     with open(reference_json_file, "r", encoding="utf-8") as f:
         ref_motion_embeds = json.load(f)
     al = ActiveLearner(motion_embeds, ref_motion_embeds)
-
+    selected_keys_batch = []
 
     train_batch_dir = "dataset/smpl_motion/kungfu"
     test_batch_dir = "dataset/smpl_motion/kungfu_test"
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
-        selected_keys, _, _ = al.select_by_reference_density(n_select = 100)
+        selected_keys, _, _ = al.select_by_reference_density(n_select = 300)
         print(al.summary())
         motion_files = [os.path.join(train_batch_dir, f"{k}.npy") for k in selected_keys]
         selected_success_keys, _ = al.random_select(mode='success', n_select = 100)
@@ -74,10 +74,15 @@ def train(args):
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
-        result = ppo_runner.eval()
+        result = ppo_runner.eval(log=False)
         al.add_results(result['success_keys'], result['failed_keys'])
         reset_motion_lib_dir(ppo_runner, test_batch_dir)
         ppo_runner.eval()
+
+        with open(f"{log_dir}/selected_keys_iteration_{it}.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(map(str, selected_keys)))
+
+
 
 
 if __name__ == '__main__':

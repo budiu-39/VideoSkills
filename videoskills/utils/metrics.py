@@ -1,21 +1,17 @@
 # following code is copied from PHC
-import glob
+
 import os
 import sys
-import pdb
-import os.path as osp
 
 sys.path.append(os.getcwd())
 
-import numpy as np
-
 import torch
 import numpy as np
-import pickle as pk
 from tqdm import tqdm
 from collections import defaultdict
 
 from scipy.spatial.transform import Rotation as sRot
+from scipy.ndimage import uniform_filter1d
 
 
 def compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all=None, gt_rot_all=None, root_idx=0,
@@ -160,12 +156,146 @@ def compute_error_accel(pred, gt):
     return np.linalg.norm(np.diff(pred, n=2, axis=0) - np.diff(gt, n=2, axis=0), axis=2)
 
 
-#
-# def compute_error_vel(joints_gt, joints_pred, vis=None):
-#     vel_gt = joints_gt[1:] - joints_gt[:-1]
-#     vel_pred = joints_pred[1:] - joints_pred[:-1]
-#     normed = np.linalg.norm(vel_pred - vel_gt, axis=2)
-#
-#     if vis is None:
-#         new_vis = np.ones(len(normed), dtype=bool)
-#     return np.mean(normed[new_vis], axis=1)
+# from CLoSD
+
+def zup_to_yup(motions):
+    idx = torch.tensor([0, 2, 1], device=motions.device)
+    return motions.index_select(dim=2, index=idx)
+
+
+def physical_metrics(pred_motion):
+    results = {
+        'skate_ratio': [],
+        'mean_penetration': [],
+        'penetration': [],
+        'floating': [],
+        'skating': []
+    }
+
+    for m in pred_motion:                 # m: numpy [T, J, 3]
+        L = m.shape[0]
+        lengths = [L]
+
+        # -> torch [1, J, 3, L]，只取前22个关节
+        m_t = torch.tensor(m[:, :22], dtype=torch.float32).permute(1, 2, 0).unsqueeze(0)
+        m_t = zup_to_yup(m_t)
+
+        # 调用指标函数
+        skate_ratio, skate_vel = calculate_skating_ratio(m_t)
+        mean_penetration = calculate_mean_penetration(m_t)
+        penetration = calculate_penetration(m_t, lengths)
+        floating = calculate_floating(m_t, lengths)
+        skating = calculate_foot_sliding(m_t, lengths)
+
+        results['skate_ratio'].append(float(np.mean(skate_ratio)))
+        results['mean_penetration'].append(float(mean_penetration))
+        results['penetration'].append(float(penetration))
+        results['floating'].append(float(floating))
+        results['skating'].append(float(skating))
+
+    return results
+
+
+def calculate_skating_ratio(motions):
+    '''
+    Code adopted from the GMD codebase.
+    '''
+    thresh_height = 0.05  # 10
+    fps = 20.0
+    thresh_vel = 0.50  # 20 cm /s
+    avg_window = 5  # frames
+
+    batch_size = motions.shape[0]
+    # 10 left, 11 right foot. XZ plane, y up
+    # motions [bs, 22, 3, max_len]
+    verts_feet = motions[:, [10, 11], :, :].detach().cpu().numpy()  # [bs, 2, 3, max_len]
+    verts_feet_plane_vel = np.linalg.norm(verts_feet[:, :, [0, 2], 1:] - verts_feet[:, :, [0, 2], :-1],
+                                          axis=2) * fps  # [bs, 2, max_len-1]
+    # [bs, 2, max_len-1]
+    vel_avg = uniform_filter1d(verts_feet_plane_vel, axis=-1, size=avg_window, mode='constant', origin=0)
+
+    verts_feet_height = verts_feet[:, :, 1, :]  # [bs, 2, max_len]
+    # If feet touch ground in agjecent frames
+    feet_contact = np.logical_and((verts_feet_height[:, :, :-1] < thresh_height),
+                                  (verts_feet_height[:, :, 1:] < thresh_height))  # [bs, 2, max_len - 1]
+    # skate velocity
+    skate_vel = feet_contact * vel_avg
+
+    # it must both skating in the current frame
+    skating = np.logical_and(feet_contact, (verts_feet_plane_vel > thresh_vel))
+    # and also skate in the windows of frames
+    skating = np.logical_and(skating, (vel_avg > thresh_vel))
+
+    # Both feet slide
+    skating = np.logical_or(skating[:, 0, :], skating[:, 1, :])  # [bs, max_len -1]
+    skating_ratio = np.sum(skating, axis=1) / skating.shape[1]
+
+    return skating_ratio, skate_vel
+
+
+def calculate_mean_penetration(motions, mask=None):
+    '''
+    Mean penetration of the joints into the ground.
+    '''
+    import torch
+    # samples shape:  B x n_joints x 3 x L
+    joint_heights = motions[:, :, 1]
+    penetration = torch.clamp(joint_heights, max=0)  # B x n_joints x L
+    if mask is not None:
+        penetration *= mask.view(mask.shape[0], 1, mask.shape[-1], 1)
+    per_joint_penalty = penetration.amin(dim=1).sum() * -1.
+    per_joint_frame_penalty = penetration.amin(dim=1).amin(dim=-1).sum() * -1.
+    non_zero_count = torch.sum(penetration != 0, dtype=torch.float32)
+
+    return per_joint_frame_penalty.numpy() * 100.  # / non_zero_count # convert to centimeters
+
+
+def calculate_penetration(motions, lengths):
+    '''
+    Based on PhysDiff's implementation.
+    '''
+    penetration_list = []
+    joint_heights = motions[:, :, 1, :]  # B x n_joints x L
+    lowest_heights = joint_heights.min(dim=1)[0]  # B x L
+    tolerance = 0.005
+    for i, motion_len in enumerate(lengths):
+        penetration = (lowest_heights[i, :motion_len] + tolerance).clamp_max(0) * 1000 * -1.
+        penetration_list += penetration.tolist()
+
+    return np.mean(penetration_list)
+
+
+def calculate_floating(motions, lengths):
+    '''
+    Based on PhysDiff's implementation.
+    '''
+    floating_list = []
+    joint_heights = motions[:, :, 1, :]  # B x n_joints x L
+    lowest_heights = joint_heights.min(dim=1)[0]  # B x L
+    tolerance = 0.005
+    for i, motion_len in enumerate(lengths):
+        floating = (lowest_heights[i, :motion_len] - tolerance).clamp_min(0) * 1000
+        floating_list += floating.tolist()
+
+    return np.mean(floating_list)
+
+
+def calculate_foot_sliding(motions, lengths):
+    '''
+    Based on PhysDiff's implementation.
+    '''
+    import torch
+    skating_list = []
+    margin = 0.005
+    for joints, motion_len in zip(motions, lengths):
+        # joints: n_joints x 3 x L
+        for t in range(motion_len - 1):
+            contact_idx = joints[:, 1, t].min(dim=-1)[1]
+            if joints[contact_idx, 1, t] <= margin and joints[contact_idx, 1, t + 1] <= margin:
+                offset = joints[contact_idx, [0, 2], t + 1] - joints[contact_idx, [0, 2], t]  # horizontal distance
+                skate_i = torch.norm(offset).mean().item() * 1000
+            else:
+                skate_i = 0.
+            skating_list.append(skate_i)
+
+    return np.mean(skating_list)

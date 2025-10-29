@@ -469,7 +469,17 @@ class LeggedRobotImi(LeggedRobot):
         body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
                                    - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
         # 只要任何一个关键点 > 0.5 m 就触发
-        body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
+        # TODO： 这是原版
+        # body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
+        # TODO： 这是原版平均距离且无视 gavity axis 的版本
+        root_pos_wo_h = self.base_pos.clone() # → ℝ[num_envs, 2]
+        root_pos_wo_h[:, 0:2] = 0.0  # 去除前后位移影响
+        ref_rot_pos_wo_h = self.ref_root_pos.clone()
+        ref_rot_pos_wo_h[:, 0:2] = 0.0
+        body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id] - root_pos_wo_h.unsqueeze(1)
+                                   + ref_rot_pos_wo_h.unsqueeze(1)
+                                   - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
+        body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
         if self.eval_mode:
             body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
         body_too_far *= (self.episode_length_buf > 1)
@@ -641,6 +651,46 @@ class LeggedRobotImi(LeggedRobot):
 
 
         pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
+        rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
+        diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
+        rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
+        vel_err = torch.mean(torch.square(self.body_vel - self.ref_body_vel), dim=1).mean(-1)
+        ang_vel_err = torch.mean(torch.square(self.body_ang_vel - self.ref_body_ang_vel), dim=1).mean(-1)
+
+        # Compute the reward as a weighted sum of the errors
+        reward_pos = self.cfg.rewards.task_w.w_pos * torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err)
+        reward_rot = self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err)
+        reward_vel = self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err)
+        reward_ang_vel = self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
+
+        reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
+        self.extras['reward_pos'] = reward_pos
+        self.extras['reward_rot'] = reward_rot
+        self.extras['reward_vel'] = reward_vel
+        self.extras['reward_ang_vel'] = reward_ang_vel
+        self.extras['pos_err'] = pos_err
+        self.extras['rot_err'] = rot_err
+        self.extras['vel_err'] = vel_err
+        self.extras['ang_vel_err'] = ang_vel_err
+
+        return reward
+
+    def _reward_imitation_rela(self):
+        # reward 是不需要 heading 归一化 的！
+        """
+        Computes the imitation reward based on the difference between the current and reference body positions and rotations.
+        The reward is computed in the heading frame of the root body.
+        """
+
+        cur_root_h = self.base_pos.clone()
+        ref_root_h = self.ref_root_pos.clone()
+        cur_root_h[:, 0:2] = 0.0
+        ref_root_h[:, 0:2] = 0.0
+
+        rel_pos = self.body_pos[...] - cur_root_h.unsqueeze(1)
+        ref_rel_pos = self.ref_body_pos[...] - ref_root_h.unsqueeze(1)
+
+        pos_err = torch.mean(torch.square(rel_pos - ref_rel_pos), dim=1).mean(-1)
         rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
         diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
         rot_err = (diff_global_body_angle ** 2).mean(dim=-1)

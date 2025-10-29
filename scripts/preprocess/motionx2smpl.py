@@ -19,7 +19,7 @@ import torch
 import mujoco
 import time
 from scripts.preprocess.padding import pad_skeleton_state
-
+import json
 
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
@@ -112,7 +112,6 @@ def pose_272_to_smpl(data_272):
 
 if __name__ == "__main__":
 
-
     upright_start = True
     robot_cfg = {
         "mesh": False,
@@ -136,41 +135,55 @@ if __name__ == "__main__":
     }
 
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
-    folder_path = "/home/miku/Documents/VideoSkills/dataset/MotionMillion/kungfu"
-    # folder_path = "/home/miku/Documents/VideoSkills/dataset/motionx++_272/kungfu"
+    folder_path = "/home/miku/Documents/VideoSkills/dataset/motionx++/kungfu"
     # folder_path = "dataset/humanml3d"
-    output_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionMillion/kungfu"
-    npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
-    # npy_files = sorted(glob.glob(os.path.join(folder_path, '**', '*.npy'), recursive=True))
+    output_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionX++/kungfu"
+    # npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
+    npy_files = sorted(glob.glob(os.path.join(folder_path, '*.json'), recursive=True))
 
     for fpath in tqdm(npy_files):
+        with open(fpath, 'r') as f:
+            motion_data = json.load(f)
         rel_path = os.path.relpath(fpath, folder_path)  # 例如 "recording_20210907_S02_S01_01/body_idx_0/000.npy"
         # # 去掉扩展名
-        rel_noext = os.path.splitext(rel_path)[0]
-        # 把路径分隔符改成短横线
-        motion_key = rel_noext.replace(os.sep, "-")
-        # 构建保存路径
-        save_path = osp.join(output_dir, f"{motion_key}.npy")
-        # save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
-        motion = np.load(fpath, allow_pickle=True)
+        # rel_noext = os.path.splitext(rel_path)[0]
+        # # 把路径分隔符改成短横线
+        # motion_key = rel_noext.replace(os.sep, "-")
+        # # 构建保存路径
+        # save_path = osp.join(output_dir, f"{motion_key}.npy")
+        save_path = osp.join(output_dir, rel_path).replace(".json", ".npy")
+        # motion = np.load(fpath, allow_pickle=True)
 
-        N = motion.shape[0]
-
-        root_trans, pose_aa = pose_272_to_smpl(motion)
         # 加入降采样代码
+        root_trans = np.array([np.array(i['smplx_params']['trans'], dtype=np.float32)
+                               for i in motion_data['annotations']])
 
+        # 提取 pose（root_orient + pose_body 拼接）
+        pose_aa = np.array([np.concatenate([np.array(i['smplx_params']['root_orient'], dtype=np.float32),
+                                            np.array(i['smplx_params']['pose_body'], dtype=np.float32)])
+                            for i in motion_data['annotations']])
+
+        N = pose_aa.shape[0]
 
         # 经典字段划分
         pose_aa_smpl = np.zeros((N, 24, 3), dtype=pose_aa.dtype)
-        pose_aa_smpl[:, :22, :] = pose_aa
+        pose_aa_smpl[:, :22, :] = pose_aa.reshape(N, 22, 3)
         # ------- 组装成 24 关节（缺失补单位四元数）-------
 
         smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
-        R_cam2world = [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]]
+        # R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., 1., 0.]]
+        R_cam2world = [[1., 0., 0.], [0., 0., 1.], [0., -1., 0.]]
+        #
+        # Rz_180 = np.array([[-1., 0., 0.],
+        #                    [0., -1., 0.],
+        #                    [0., 0., 1.]])
+        #
+        # R_cam2world = Rz_180 @ R_cam2world
 
         skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
         root_trans_offset = root_trans + skeleton_tree.local_translation[0].numpy()
         pose_aa_smpl[:, 0], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_smpl[:, 0], root_trans_offset, R_cam2world)
+
         root_trans_offset = torch.from_numpy(root_trans_offset)
         pose_aa_mj = pose_aa_smpl[:, smpl_2_mujoco]
         pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
@@ -216,7 +229,7 @@ if __name__ == "__main__":
                                                                             torch.from_numpy(pose_quat_global),
                                                                             root_trans_offset, is_local=False)
 
-        fps = 45
+        fps = 30
 
         padding = 0  # 或者改成参数传入
         new_sk_state = pad_skeleton_state(new_sk_state, padding)

@@ -21,7 +21,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        run_name = 'kung_al_control_99'
+        run_name = 'MotionX++_kungfu'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -32,8 +32,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 200  # check for potential saves every this many iterations
-        eval_interval = 200
+        save_interval = 2000  # check for potential saves every this many iterations
+        eval_interval = 2000
 
         num_steps_per_env = 32  # per iteration
 
@@ -82,8 +82,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/EgoBody')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionX++/kungfu')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
@@ -204,7 +205,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
             w_rot = 0.5
             w_vel = 0.1
         class scales:
-            imitation = 1.0
+            imitation_rela = 1.0
             # torques = -0.000001
             dof_force = -0.0005
             # action_rate = - 0.02

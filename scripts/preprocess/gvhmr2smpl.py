@@ -166,7 +166,7 @@ def process_folder(folder_path, output_path):
 
 
 
-                    padding = 10  # 或者改成参数传入
+                    padding = 0  # 或者改成参数传入
                     new_sk_state = pad_skeleton_state(new_sk_state, padding)
                     motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
 

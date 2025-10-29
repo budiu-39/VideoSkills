@@ -8,7 +8,7 @@ import joblib
 import time
 import statistics
 from collections import defaultdict
-from videoskills.utils.metrics import compute_metrics
+from videoskills.utils.metrics import compute_metrics, physical_metrics
 from collections import deque
 # from torch.utils.tensorboard import SummaryWriter
 
@@ -160,7 +160,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.current_learning_iteration += num_learning_iterations
         # self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
-    def eval(self, motion_ids=None):
+    def eval(self, motion_ids=None, log = True):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
         state_init = self.env._state_init
@@ -296,8 +296,18 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
+            physics_metrics = physical_metrics(gt_pos_all)
 
             for k, v in batch_metrics.items():
+                global_metrics[k].extend(v)
+                for j, valid in enumerate(valid_mask):
+                    if not valid:
+                        continue
+                    key = motion_lib._motion_keys[motion_ids_sorted[j]]
+                    if key not in failed_keys:
+                        metrics_success[k].append(v.pop(0))
+
+            for k, v in physics_metrics.items():
                 global_metrics[k].extend(v)
                 for j, valid in enumerate(valid_mask):
                     if not valid:
@@ -346,7 +356,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         # del cum_rewards, episode_lengths, done_flags
         # torch.cuda.empty_cache()  # 释放可回收显存缓存
 
-        if wandb.run is not None:
+        if wandb.run is not None and log:
             wandb.log({
                 "Eval/mean_reward": mean_rew,
                 "Eval/success_rate": success_rate,

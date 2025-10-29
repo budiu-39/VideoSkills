@@ -143,28 +143,41 @@ class ActiveLearner:
         k_eff = max(1, min(k, X_ref_np.shape[0]))
         nbrs = NearestNeighbors(n_neighbors=k_eff, n_jobs=-1).fit(X_ref_np)
         dists, _ = nbrs.kneighbors(X_query_np, return_distance=True)
-        avg = dists.mean(axis=1)  # [Nq]
-        densities = 1.0 / (avg + 1e-8)  # 越大越密
+        densities = 1.0 / (dists.mean(axis=1) + 1e-8)
 
-        # 选择规则
-        if n_select is not None:
-            # 目标数量（四舍五入到整数，至少 1）
-            n_q = len(densities)
-            n_target = max(1, n_select)
-            # 选“最密”的 n_target 个（与高分位等价）
-            # 用 argpartition O(N) 取 Top-k，再按密度降序排一下，保证可重复性
-            rng = np.random.default_rng(seed=self.seed)  # 可设固定种子以保证复现
-            selected_local = np.zeros(n_q, dtype=bool)
-            rand_idx = rng.choice(n_q, size=n_target, replace=False)
-            selected_local[rand_idx] = True
-        else:
-            # 用分位阈值
-            thr = np.quantile(densities, quantile)
-            selected_local = densities >= thr
+        # 先按分位阈值得到“初选”
+        thr = np.quantile(densities, quantile)
+        selected_mask = densities >= thr  # 稀疏改法：densities <= np.quantile(densities, 1-quantile)
+        selected_idx = np.where(selected_mask)[0]
 
-        # 映射回全局索引与 key
-        import torch
-        selected_indices = q_idx[torch.as_tensor(selected_local, dtype=torch.bool, device=q_idx.device)]
+        # 如果没要求固定数量，直接返回
+        if n_select is None or  len(selected_idx) == n_select:
+            selected_indices = q_idx[torch.as_tensor(selected_idx, dtype=torch.long, device=q_idx.device)]
+            selected_keys = [self.keys[i.item()] for i in selected_indices]
+            return selected_keys, selected_indices, densities
+
+        n_select = max(0, int(n_select))
+        N = len(densities)
+        rng = np.random.default_rng(seed=self.seed)
+
+        if len(selected_idx) > n_select:
+            # 从已选里随机下采样到 n_select
+            selected_idx = rng.choice(selected_idx, size=n_select, replace=False)
+
+        elif len(selected_idx) < n_select:
+            need = n_select - len(selected_idx)
+
+            mask = np.ones(len(q_idx), dtype=bool)
+            mask[selected_idx] = False
+            remain_local = np.nonzero(mask)[0]
+            if len(remain_local) < need:
+                need = len(remain_local)
+            chosen_extra_local = rng.choice(remain_local, size=need, replace=False)
+
+            selected_idx = np.concatenate([selected_idx, chosen_extra_local])
+
+
+        selected_indices = q_idx[torch.as_tensor(selected_idx, dtype=torch.long, device=q_idx.device)]
         selected_keys = [self.keys[i.item()] for i in selected_indices]
 
         return selected_keys, selected_indices, densities
