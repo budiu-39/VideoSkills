@@ -58,8 +58,8 @@ def train(args):
     al = ActiveLearner(motion_embeds, ref_motion_embeds)
     selected_keys_batch = []
 
-    train_batch_dir = "dataset/smpl_motion/kungfu"
-    test_batch_dir = "dataset/smpl_motion/kungfu_test"
+    train_batch_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/control1_amass_al"
+    test_batch_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/control1_amass_al"
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
         selected_keys, _, _ = al.select_by_reference_density(n_select = 300)

@@ -12,6 +12,8 @@ import glob
 from smplx import SMPL
 from scipy import ndimage
 from scripts.preprocess.body_model_smplx import BodyModelSMPLX
+import numpy as np
+import joblib
 
 def compute_canonical_transform(global_orient):
     rotation_matrix = torch.tensor([
@@ -114,6 +116,7 @@ if __name__ == '__main__':
 
     amass_root = args.filedir
     all_npzs = glob.glob(f"{amass_root}/**/*.npz", recursive=True)
+    amass_occlusion = joblib.load("data/amass_copycat_occlusion_v3.pkl")
 
     smpl_parser_n = BodyModelSMPLX(model_path='/mnt/lustre/work/ponsmoll/pba936/VideoSkills/data/SMPL', model_type= 'smplx')
     smpl_parser_n.cuda()
@@ -121,14 +124,43 @@ if __name__ == '__main__':
     bad_cnt = 0
     for data_path in tqdm(all_npzs):
         npz_data = dict(np.load(open(data_path, "rb"), allow_pickle=True))
+        if not 'mocap_framerate' in npz_data:
+            continue
+
         if 'trans' not in npz_data.keys():
             bad_cnt += 1
             continue
-        root_trans = npz_data['trans']
+        bound = 0
+        framerate = npz_data['mocap_framerate']
 
+        skip = int(framerate / 30)
+        root_trans = npz_data['trans'][::skip, :]
+        body_pos = npz_data['poses'][::skip, :]
+        rel = os.path.relpath(data_path, amass_root)
+        key_name = rel.split("/")
+        key_name_dump = "0-" + "_".join(key_name).replace(".npz", "")
+        if key_name_dump in amass_occlusion:
+            issue = amass_occlusion[key_name_dump]["issue"]
+            if (issue == "sitting" or issue == "airborne") and "idxes" in amass_occlusion[key_name_dump]:
+                bound = amass_occlusion[key_name_dump]["idxes"][0]  # This bounded is calucaled assuming 30 FPS.....
+                if bound < 10:
+                    print("bound too small", key_name_dump, bound)
+                    continue
+            else:
+                print("issue irrecoverable", key_name_dump, issue)
+                continue
 
-        smpl_data = np.concatenate([npz_data['poses'][..., :66], np.zeros((root_trans.shape[0], 6)),
-                                           npz_data['trans'], np.zeros((root_trans.shape[0], 10))], axis=-1)
+        if "0-KIT_442_PizzaDelivery02_poses" == key_name_dump:
+            bound = -2
+
+        if bound == 0:
+            bound = root_trans.shape[0]
+
+        root_trans = root_trans[:bound]
+        body_pos = body_pos[:bound]
+
+        smpl_data = np.concatenate([body_pos[..., :66], np.zeros((root_trans.shape[0], 6)),
+                                           root_trans, np.zeros((root_trans.shape[0], 10))], axis=-1)
 
         smpl_data = process_pose(smpl_data)
         smpl_data = smpl_data

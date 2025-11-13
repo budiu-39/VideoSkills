@@ -10,7 +10,9 @@ from videoskills.utils.motion_lib import MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
+from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 from torch import Tensor
+
 
 
 class LeggedRobotImi(LeggedRobot):
@@ -30,20 +32,10 @@ class LeggedRobotImi(LeggedRobot):
         if self.cfg.env.activate_quat_to_tan_norm:
             self.cfg.env.num_observations = self.cfg.env.norm_num_observations
 
-        self.activate_amp = self.cfg.amp.activate
-        if self.activate_amp:
-            self.num_amp_obs_steps = self.cfg.amp.num_amp_obs_steps
-            self.num_amp_obs_per_step = self.cfg.amp.num_amp_obs
-            self._amp_obs_buf = torch.zeros((self.cfg.env.num_envs, self.num_amp_obs_steps, self.num_amp_obs_per_step),
-                                            device=sim_device, dtype=torch.float)
-            self._curr_amp_obs_buf = self._amp_obs_buf[:, 0]
-            self._hist_amp_obs_buf = self._amp_obs_buf[:, 1:]
-
-            self._amp_obs_demo_buf = None
-
         self._parse_cfg(self.cfg)
 
         self.early_termination_buf = torch.zeros(self.cfg.env.num_envs, device=sim_device, dtype=torch.bool)
+        self._too_far_count = torch.zeros(self.cfg.env.num_envs, device=sim_device, dtype=torch.int32)
 
         if isinstance(self.cfg.motion.file, list):
             motion_file = self.cfg.motion.file
@@ -158,14 +150,6 @@ class LeggedRobotImi(LeggedRobot):
 
         self.body_ids = torch.arange(len(self.body_names), device=self.device, dtype=torch.long)
 
-        if self.activate_amp:
-            key_body_ids = []
-            for body_name in self.cfg.motion.key_bodies:
-                body_id = self.gym.find_actor_rigid_body_handle(self.envs[0], self.robot_handles[0], body_name)
-                assert (body_id != -1)
-                key_body_ids.append(body_id)
-
-            self.key_body_ids = key_body_ids
 
         # Test
         body_props = self.gym.get_actor_rigid_body_properties(self.envs[0], self.robot_handles[0])  # 获取刚体属性
@@ -274,6 +258,16 @@ class LeggedRobotImi(LeggedRobot):
                                      rotate_motion=self.cfg.motion.rotate_motion,
                                      device=self.device)
 
+
+    def _load_gt_motion(self, motion_file):
+
+        self._motion_lib_gt = MotionLib(motion_file=motion_file,
+                                     dof_body_ids=self.dof_body_ids,
+                                     dof_offsets=self.dof_offsets,
+                                     key_body_ids=self.body_ids,
+                                     rotate_motion=self.cfg.motion.rotate_motion,
+                                     device=self.device)
+
     def reset_idx(self, env_ids):
         # TODO: 需要更新 task obs!!!!
         """ Reset some environments.
@@ -298,6 +292,7 @@ class LeggedRobotImi(LeggedRobot):
         self.last_dof_vel[env_ids] = 0.
         # self.feet_air_time[env_ids] = 0.  # good idea!
         self.episode_length_buf[env_ids] = 0
+        self._too_far_count[env_ids] = 0
         # TODO： 修改了這裡，从 1 改成了 0
         self.reset_buf[env_ids] = 1
         # self.early_termination_buf[env_ids] = 0
@@ -333,30 +328,6 @@ class LeggedRobotImi(LeggedRobot):
             self.extras["time_outs"] = self.time_out_buf
 
         self._refresh_sim_tensors()
-
-        if self.activate_amp:
-            self._init_amp_obs_ref(env_ids)
-
-    def _init_amp_obs_ref(self, env_ids):
-        dt = self.dt
-
-        time_steps = -dt * (torch.arange(0, self.num_amp_obs_steps - 1, device=self.device) + 1)
-        expanded_motion_ids = torch.tile(self._sampled_motion_ids[env_ids].unsqueeze(1),
-                                         (1, self.num_amp_obs_steps - 1)).reshape(-1)
-
-        motion_times = self._motion_start_times[env_ids].view(-1, 1) + time_steps.view(1, -1)
-        motion_times = motion_times.view(-1)
-
-        motion_state = self._motion_lib.get_motion_state(expanded_motion_ids, motion_times)
-
-        key_pos = motion_state["key_pos"][:, self.key_body_ids, :]
-        amp_obs_demo = compute_amp_observations_jit(motion_state["root_pos"], motion_state["root_rot"],
-                                                    motion_state["root_vel"], motion_state["root_ang_vel"],
-                                                    motion_state["dof_pos"], motion_state["dof_vel"],
-                                                    key_pos)
-
-        self._hist_amp_obs_buf[env_ids] = amp_obs_demo.view(self._hist_amp_obs_buf[env_ids].shape)
-
 
     def _reset_robot(self, env_ids):
         """ Resets DOF position and velocities of selected environmments
@@ -455,36 +426,60 @@ class LeggedRobotImi(LeggedRobot):
         return
 
     def check_termination(self):
-        # 这里并没有取分 early termination 和 time out
         """ Check if environments need to be reset
         """
         # self.reset_buf = torch.any(torch.norm(self.contact_forces[:, self.termination_contact_indices, :], dim=-1) > 1., dim=1)
-
         # fall = torch.logical_or(torch.abs(self.rpy[:,1])>1.0, torch.abs(self.rpy[:,0])>0.8)  # raw pitch yaw
 
+        # 1) 时间相关
         time_out = self.episode_length_buf > self.max_episode_length # no terminal reward for time-outs
         progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt  # progress is the current ref_motion
         motion_lens = self._motion_lib.get_motion_length(self._sampled_motion_ids)
         ref_out = (progress + self._motion_start_times )> motion_lens
-        body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
-                                   - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
-        # 只要任何一个关键点 > 0.5 m 就触发
-        # TODO： 这是原版
+
+        use_gt = bool(self.eval_mode) and hasattr(self, "_motion_lib_gt")
+
+        if use_gt:
+            ref_body_pos_used = self.ref_body_pos_gt
+            ref_root_pos_used = self.ref_root_pos_gt
+        else:
+            ref_body_pos_used = self.ref_body_pos
+            ref_root_pos_used = self.ref_root_pos
+
+        # TODO： 这是原版，只要任何一个关键点 > 0.5 m 就触发
+        # body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
+        #                            - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
         # body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
-        # TODO： 这是原版平均距离且无视 gavity axis 的版本
-        root_pos_wo_h = self.base_pos.clone() # → ℝ[num_envs, 2]
-        root_pos_wo_h[:, 0:2] = 0.0  # 去除前后位移影响
-        ref_rot_pos_wo_h = self.ref_root_pos.clone()
+        # if self.eval_mode:
+        # body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
+
+        # TODO： 这是原版平均距离且无视 gravity axis 的版本，注意现在不论是 eval 还是 train 都应用了平均逻辑（考虑到数据很 noisy)
+        root_pos_wo_h = self.base_pos.clone()
+        root_pos_wo_h[:, 0:2] = 0.0
+        ref_rot_pos_wo_h = ref_root_pos_used.clone()
         ref_rot_pos_wo_h[:, 0:2] = 0.0
-        body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id] - root_pos_wo_h.unsqueeze(1)
-                                   + ref_rot_pos_wo_h.unsqueeze(1)
-                                   - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
-        body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
-        if self.eval_mode:
-            body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
-        body_too_far *= (self.episode_length_buf > 1)
-        # --------- ③ 汇总三个条件 ----------
-        # self.reset_buf = fall | time_out | body_too_far
+        body_delta_sq = torch.sum((self.body_pos[:, self.reset_body_id] - root_pos_wo_h.unsqueeze(1)
+                                + ref_rot_pos_wo_h.unsqueeze(1) - ref_body_pos_used[:, self.reset_body_id]) ** 2, dim=2)
+
+        body_too_far_now = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
+
+        if self.eval_mode: #use_gt:
+            # 可以设置对比试验，eval 恒定用 方案 1, 训练时对比 方案 1 和 方案2 看一下区别
+            # 方案 1 ： 连续多帧达标才视为真的 early termination
+            valid_step = (self.episode_length_buf > 1)
+            inc_mask = torch.logical_and(body_too_far_now, valid_step)
+
+            # 计数累加/清零（逐 env）
+            self._too_far_count[inc_mask] += 1
+            self._too_far_count[~inc_mask] = 0
+
+            # 连续 15 帧达标才视为真的 early termination
+            body_too_far = (self._too_far_count >= 15)
+        else:
+            # 方案 2： 只要当前帧达标就视为 early termination
+            # 训练或无 GT 时，仍按“当前帧超过阈值 + 步数>1”判定
+            body_too_far = torch.logical_and(body_too_far_now, (self.episode_length_buf > 1))
+
         self.reset_buf = ref_out | body_too_far | time_out
         self.time_out_buf = time_out | ref_out
         self.early_termination_buf = body_too_far
@@ -493,6 +488,7 @@ class LeggedRobotImi(LeggedRobot):
             self.reset_buf = time_out | ref_out
             self.time_out_buf = time_out | ref_out
 
+        # Eval 模式下沿用你原先的覆盖逻辑
         if self.eval_mode:
             self.reset_buf = ref_out | body_too_far
             if not self.early_termination:
@@ -564,54 +560,23 @@ class LeggedRobotImi(LeggedRobot):
         task_obs = self.compute_mimic_observations()
 
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
+
+        if self.eval_mode and hasattr(self, '_motion_lib_gt'):
+            motion_state_gt = self._motion_lib_gt.get_motion_state(self._sampled_motion_ids, motion_times)
+
+            self.ref_root_pos_gt = motion_state_gt["root_pos"] + self.pos_offset['root']
+            self.ref_root_rot_gt = motion_state_gt["root_rot"]
+            self.ref_dof_pos_gt = motion_state_gt["dof_pos"]
+            self.ref_body_pos_gt = motion_state_gt["key_pos"] + self.pos_offset['body']
+            self.ref_body_rot_gt = motion_state_gt["key_rot"]
+            # self.ref_body_vel_gt = motion_state_gt["key_vel"]
+            # self.ref_body_ang_vel_gt = motion_state_gt["key_ang_vel"]
+
         # self.obs_buf = torch.cat((humanoid_obs, task_obs), dim=-1)
 
-        # if self.activate_amp:
-        #     key_body_pos = self.body_pos[:, self.key_body_ids, :]
-        #     self._curr_amp_obs_buf[:] = compute_amp_observations_jit(self.base_pos, self.base_quat, self.base_lin_vel,
-        #                       self.base_ang_vel, self.dof_pos, self.dof_vel, key_body_pos)
-        #     self.extras["amp_state"] = self._amp_obs_buf.clone().reshape(self.num_envs, -1)
-        #
-        #     self._update_hist_amp_obs()
     def compute_humanoid_observations(self):
         return compute_humanoid_observations_jit(self.base_pos, self.base_quat,
                                 self.body_pos, self.body_rot, self.body_vel, self.body_ang_vel)
-
-
-    def _update_hist_amp_obs(self, env_ids=None):
-        if (env_ids is None):
-            try:
-                self._hist_amp_obs_buf[:] = self._amp_obs_buf[:, 0:(self.num_amp_obs_steps - 1)]
-            except:
-                self._hist_amp_obs_buf[:] = self._amp_obs_buf[:, 0:(self.num_amp_obs_steps - 1)].clone()
-        else:
-            self._hist_amp_obs_buf[env_ids] = self._amp_obs_buf[env_ids, 0:(self.num_amp_obs_steps - 1)]
-        return
-
-    def fetch_amp_obs_demo(self, num_samples):
-        # Creates the reference motion amp obs. For discrinminiator
-
-        dt = self.dt
-        motion_ids = self._motion_lib.sample_motions(num_samples)
-        motion_times = self._motion_lib.sample_time(motion_ids)
-
-        time_steps = -dt * (torch.arange(0, self.num_amp_obs_steps, device=self.device))
-        expanded_motion_ids = torch.tile(motion_ids,(1, self.num_amp_obs_steps)).reshape(-1)
-
-        motion_times = motion_times.view(-1, 1) + time_steps.view(1, -1)
-        motion_times = motion_times.view(-1)
-
-        motion_state = self._motion_lib.get_motion_state(expanded_motion_ids, motion_times)
-
-        key_pos = motion_state["key_pos"][:, self.key_body_ids, :]
-        amp_obs_demo = compute_amp_observations_jit(motion_state["root_pos"], motion_state["root_rot"],
-                                                    motion_state["root_vel"], motion_state["root_ang_vel"],
-                                                    motion_state["dof_pos"], motion_state["dof_vel"],
-                                                    key_pos)
-
-        amp_obs_demo_flat = amp_obs_demo.view(num_samples, -1)
-
-        return amp_obs_demo_flat
 
     # def compute_humanoid_observations(self):
     #     root_h = self.base_pos[:, 2:3]
@@ -726,10 +691,100 @@ class LeggedRobotImi(LeggedRobot):
         return reward
 
 
-    # def _reward_torques(self):
-    #     # Penalize torques
-    #     return torch.log(1 + self.cfg.rewards.alpha_torques * torch.sum(torch.square(self.torques), dim=1))
+    def post_physics_step(self):
+        """ check terminations, compute observations and rewards
+            calls self._post_physics_step_callback() for common computations
+            calls self._draw_debug_vis() if needed
+        """
+        self._refresh_sim_tensors()
+        self.episode_length_buf += 1
+        self.common_step_counter += 1
 
+        # prepare quantities
+        self.base_pos[:] = self.robot_states[:, 0:3]
+        self.base_quat[:] = self.robot_states[:, 3:7]
+        self.rpy[:] = get_euler_xyz_in_tensor(self.base_quat[:])
+        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 7:10])
+        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 10:13])
+        self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+
+        self.body_pos[:] = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]
+        self.body_rot[:] = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]
+        self.body_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]
+        self.body_ang_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]
+
+        # compute observations, rewards, resets, ...
+
+        self.compute_reward()  # both reward and terminationare done with the last reference motion
+        self.check_termination()
+        env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+
+
+        if self.is_recording_data:
+            body_pos_cpu = (self.body_pos - self.pos_offset['body']).detach().cpu().numpy()
+            ref_body_pos_cpu = (self.ref_body_pos - self.pos_offset['body']).detach().cpu().numpy()
+            body_rot_cpu = self.body_rot.detach().cpu().numpy()
+            ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
+            dof_pos_cpu = self.dof_pos.detach().cpu().numpy()
+            ref_dof_pos_cpu = self.ref_dof_pos.detach().cpu().numpy()
+            done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
+
+            if hasattr(self, 'ref_body_pos_gt'):
+                ref_body_pos_gt_cpu = (self.ref_body_pos_gt - self.pos_offset['body']).detach().cpu().numpy()
+                ref_body_rot_gt_cpu = self.ref_body_rot_gt.detach().cpu().numpy()
+                ref_dof_pos_gt_cpu = self.ref_dof_pos_gt.detach().cpu().numpy()
+
+            # 取所有 still-alive 的环境索引
+            alive_ids = np.where(done_flags_cpu == False)[0]
+
+            # 批量记录，不用 for-loop 判断
+            for env_id in alive_ids:
+                self.recorded_data[env_id].append({
+                    'body_pos': body_pos_cpu[env_id].copy(),  # 以初始位置为基准
+                    'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
+                    'body_rot': body_rot_cpu[env_id].copy(),
+                    'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
+                    'dof_pos': dof_pos_cpu[env_id].copy(),
+                    'ref_dof_pos': ref_dof_pos_cpu[env_id].copy(),
+                    'ref_body_pos_gt': ref_body_pos_gt_cpu[env_id].copy() if hasattr(self, 'ref_body_pos_gt') else None,
+                    'ref_body_rot_gt': ref_body_rot_gt_cpu[env_id].copy() if hasattr(self, 'ref_body_rot_gt') else None,
+                    'ref_dof_pos_gt': ref_dof_pos_gt_cpu[env_id].copy() if hasattr(self, 'ref_dof_pos_gt') else None,
+                })
+
+        self.reset_idx(env_ids)
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
+
+        if self.cfg.domain_rand.push_robots:
+            self._push_robots()
+
+        if self.cfg.env.land_event_detect:
+            self.land_event_detection()
+
+        self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
+
+        self.last_actions[:] = self.actions[:]
+        self.last_dof_vel[:] = self.dof_vel[:]
+        self.last_root_vel[:] = self.robot_states[:, 7:13]
+
+    def export_recorded_data(self, output_dir, motion_ids):
+        os.makedirs(output_dir, exist_ok=True)
+        for env_id, motion_id in enumerate(motion_ids):
+            data = self.recorded_data[env_id]
+            body_pos = np.stack([f['body_pos'] for f in data], axis=0)
+            ref_pos = np.stack([f['ref_body_pos'] for f in data], axis=0)
+            body_rot = np.stack([f['body_rot'] for f in data], axis=0)
+            ref_rot = np.stack([f['ref_body_rot'] for f in data], axis=0)
+            dof_pos = np.stack([f['dof_pos'] for f in data], axis=0)
+            ref_dof_pos = np.stack([f['ref_dof_pos'] for f in data], axis=0)
+
+            filename = f"motion_{motion_id}_env_{env_id}.npz"
+            filepath = os.path.join(output_dir, filename)
+            np.savez_compressed(filepath,
+                                pred_pos=body_pos,
+                                gt_pos=ref_pos,
+                                pred_rot=body_rot,
+                                gt_rot=ref_rot)
 
     def reset_with_motion_ids(self, motion_ids, random = False):
         """ Reset all environments with given motion ids. (For Evaluation)
@@ -816,6 +871,17 @@ class LeggedRobotImi(LeggedRobot):
         done = (self._eval_cursor >= len(self._eval_motion_ids))
 
         return batch.to(self.device), done
+
+    def enable_data_recording(self, enable: bool = True):
+        self.is_recording_data = enable
+        if enable:
+            self.recorded_data = [[] for _ in range(self.num_envs)]
+
+    def disable_data_recording(self):
+        self.is_recording_data = False
+
+        self.recorded_data = [[] for _ in range(self.num_envs)]
+
 
     # def init_pd_from_mass_matrix(self, zeta: float = 0.8):
     #     def infer_wn(name: str) -> float:

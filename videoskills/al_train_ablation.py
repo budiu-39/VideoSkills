@@ -49,35 +49,25 @@ def train(args):
     if args.dev:
         train_cfg.runner.eval_interval = 10
 
-    samples_json_file = "dataset/motion_embeds/kungfu.json"
-    with open(samples_json_file, "r", encoding="utf-8") as f:
-        motion_embeds = json.load(f)
-    reference_json_file = "dataset/motion_embeds/AMASS.json"
-    with open(reference_json_file, "r", encoding="utf-8") as f:
-        ref_motion_embeds = json.load(f)
-    al = ActiveLearner(motion_embeds, ref_motion_embeds)
-    al.seed = 99
 
-    train_batch_dir = "dataset/smpl_motion/kungfu"
-    test_batch_dir = "dataset/smpl_motion/kungfu_test"
+    train_batch_dir = "dataset/smpl_motion/amass_al_baseline"
+    test_batch_dir = "dataset/smpl_motion/test_amass_al"
+    # subset_file = "dataset/smpl_motion/active_learning"
+    # subset = os.listdir(subset_file)
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
-        selected_keys, _ = al.random_select(n_select = 100)
-        print(al.summary())
-        motion_files = [os.path.join(train_batch_dir, f"{k}.npy") for k in selected_keys]
-        selected_success_keys, _ = al.random_select(mode='success', n_select=100)
-        if len(selected_success_keys) > 0:
-            for k in selected_success_keys:
-                motion_files.append(os.path.join(train_batch_dir, f"{k}.npy"))
-        reset_motion_lib_dir(ppo_runner, motion_files)
+        # for train_batch_dir in subset:
+        #     print(f"loading {train_batch_dir}")
+        #     train_batch_dir = os.path.join(subset_file, train_batch_dir)
+        reset_motion_lib_dir(ppo_runner, train_batch_dir)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
         result = ppo_runner.eval(log=False)
-        al.add_results(result['success_keys'], result['failed_keys'])
         reset_motion_lib_dir(ppo_runner, test_batch_dir)
         ppo_runner.eval()
+
 
 
 if __name__ == '__main__':

@@ -9,7 +9,7 @@ import numpy as np
 from tqdm import tqdm
 import argparse
 import glob
-from utils.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
+from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
@@ -17,6 +17,7 @@ import joblib
 import torch
 import mujoco
 import time
+
 
 def fix_trans_height(pose_aa, trans, betas, mesh_parser):
     with torch.no_grad():
@@ -36,7 +37,7 @@ def fix_trans_height(pose_aa, trans, betas, mesh_parser):
         trans[..., -1] -= diff_fix
         return trans, diff_fix
 
-def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
+def vis_mujoco(motion_traj, xml_path):
 
     print(mujoco.__version__)  # 应该输出 3.2.3
     print(hasattr(mujoco, "viewer"))
@@ -62,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "AMASS_valid_fixed_height"
+    output_dir = "AMASS_train_fixed_height"
 
     process_split = args.process_split
     upright_start = True
@@ -87,7 +88,7 @@ if __name__ == "__main__":
         "model": "smpl",
     }
 
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/smpl")
+    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
     if not osp.isdir(args.path):
         print("Please specify AMASS data path")
         import ipdb;
@@ -98,10 +99,11 @@ if __name__ == "__main__":
     amass_occlusion = joblib.load("data/amass_copycat_occlusion_v3.pkl")
     amass_full_motion_dict = {}
     amass_splits = {
-        'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
-        'test': ['Transitions_mocap', 'SSM_synced'],
-        'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
-                  "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
+        # 'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
+        # 'test': ['Transitions_mocap', 'SSM_synced'],
+        # 'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
+        #           "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
+        'train': ['BioMotionLab_NTroje']
     }
     process_set = amass_splits[process_split]
     length_acc = []
@@ -178,7 +180,7 @@ if __name__ == "__main__":
         # This is the root translation offset, which is the distance from the SMPL root to the skeleton root.
         # 也就是说，机器人和 smpl 的root 几乎一致。
         root_trans_offset = torch.from_numpy(root_trans) + skeleton_tree.local_translation[0]
-        smpl_parser_n = SMPL_Parser(model_path='data/smpl', gender="neutral")
+        smpl_parser_n = SMPL_Parser(model_path='data/SMPL/smpl', gender="neutral")
 
         new_sk_state = SkeletonState.from_rotation_and_root_translation(
             skeleton_tree,
@@ -237,7 +239,7 @@ if __name__ == "__main__":
         motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
         motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
         motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
-        vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
+        # vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml")
 
     fix_height_dict = {k: round(v, 5) for k, v in zip(fix_height_keys, fix_height_values)}
     os.makedirs(output_dir, exist_ok=True)

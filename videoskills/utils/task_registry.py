@@ -4,7 +4,6 @@ from datetime import datetime
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import OnPolicyRunner
 from rsl_rl.runners.runner_eval import OnPolicyRunnerEval
-from rsl_rl.runners.runner_amp import OnPolicyRunnerAMP
 from videoskills import LEGGED_GYM_ROOT_DIR
 from .helpers import get_args, update_cfg_from_args, class_to_dict, get_load_path, set_seed, parse_sim_params, \
     dict_to_class
@@ -151,10 +150,7 @@ class TaskRegistry():
 
         train_cfg_dict = class_to_dict(train_cfg)
 
-        if use_amp_runner:
-            runner = OnPolicyRunnerAMP(env, train_cfg_dict, log_dir, device=args.rl_device)
-        else:
-            runner = OnPolicyRunnerEval(env, train_cfg_dict, log_dir, device=args.rl_device)
+        runner = OnPolicyRunnerEval(env, train_cfg_dict, log_dir, device=args.rl_device)
         #save resume path before creating a new log_dir
 
         resume = train_cfg.runner.resume

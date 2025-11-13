@@ -305,13 +305,14 @@ if __name__ == "__main__":
     # source_video_path = '/home/miku/Documents/Video/kungfu_video'
     # smpl_dir = "data/SMPL"
 
-    npy_glob = "/home/miku/Documents/VideoSkills/dataset/humman_1"
-    out = "/home/miku/Documents/VideoSkills/rollout"
+    npy_glob = "dataset/MotionMillion/humman"
+    selected_file = "dataset/MotionMillion/humman_negative_samples.txt"
+    out = "output/humman_video"
     seq_files = sorted(glob.glob(os.path.join(npy_glob, '*.npy')))
-    source_video_path = '/home/miku/Downloads/humman'
+    source_video_path = '../Video/humman'
     smpl_dir = "data/SMPL"
 
-
+    os.makedirs(out, exist_ok=True)
     # 打开视频（若需要拼接）
     device = "cuda" if torch.cuda.is_available() else "cpu"
     smpl_model = smplx.create(
@@ -328,9 +329,14 @@ if __name__ == "__main__":
     K = np.load(K_npy) if K_npy else None
     Rt_seq = np.load(Rt_npy, allow_pickle=True) if Rt_npy else None
 
+    with open(selected_file, 'r') as f:
+        selected_files = f.read().splitlines()
+    selected_name = selected_files
     # ==== 每个 npy 单独输出 ====
     for f in seq_files:
         name = os.path.splitext(os.path.basename(f))[0]
+        if name not in selected_name:
+            continue
         out_path = os.path.join(out, f"{name}.mp4")
         print(f"[Render] {f} -> {out_path}")
 
@@ -342,6 +348,9 @@ if __name__ == "__main__":
 
         if source_video_path is not None:
             full_source_video_path = os.path.join(source_video_path, f"{name}.mp4")
+            if not os.path.isfile(full_source_video_path):
+                print(f"[Warn] source video not found: {full_source_video_path}, skip concat.")
+                continue
             cap = cv2.VideoCapture(full_source_video_path)
             assert cap.isOpened(), f"Cannot open video: {full_source_video_path}"
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

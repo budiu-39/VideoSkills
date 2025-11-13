@@ -14,10 +14,9 @@ from collections import deque
 
 from rsl_rl.algorithms.ppo import PPO
 from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, ActorCritic_Attention
-from rsl_rl.env import VecEnv
 
 class OnPolicyRunnerEval(OnPolicyRunner):
-    def __init__(self, env: VecEnv,
+    def __init__(self, env,
                  train_cfg,
                  log_dir=None,
                  device='cpu'):
@@ -191,6 +190,8 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         metrics_success = defaultdict(list)
         pbar = tqdm(total=eval_total, desc="Evaluating motions", dynamic_ncols=True)
         seen = 0
+
+        motion_lib = self.env._motion_lib
         while True:
             self.env.done_flags = torch.zeros(num_envs, dtype=torch.bool, device=device)
             self.env.enable_data_recording() # enable recording during evaluation
@@ -218,9 +219,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.no_grad():
                     action = self.alg.actor_critic.act_inference(obs)
-                    # if getattr(self.cfg.env, "fixed_hand", False):
-                    #     actions = torch.zeros(B, self.env.num_dofs, device=self.device, dtype=actions.dtype)
-                    #     actions[:, self.env.hand_dof_mask] = 0.0
                 obs, _, rewards, dones, extras = self.env.step(action)
                 rewards = rewards.squeeze()
                 rewards[done_flags] = 0.0
@@ -244,17 +242,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     break
 
                 alive = ~done_flags[:batch_size]
-
                 max_alive_ref_len = motion_lengths[alive].max().item()
-
-
                 failed_rate = ((reward_until_fail[:batch_size] > 0).sum().float() / batch_size).item()
-
                 pbar.set_postfix(step=step, max_alive_step=max_alive_ref_len, failed_rate = f"{failed_rate:.2%}")
-
-                if done_flags[:batch_size].all():
-                    break
-
                 self.env.done_flags = done_flags.clone().detach()
 
             pbar.update(batch_size)
@@ -286,13 +276,27 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             motion_ids_sorted = sorted(motion_id_to_data.keys())
             for motion_id in motion_ids_sorted:
                 frames = motion_id_to_data[motion_id]
-                if len(frames) == 0:
-                    continue  # skip empty
-                pred_pos_all.append(np.stack([f["body_pos"] for f in frames], axis=0))  # (T, J, 3)
-                gt_pos_all.append(np.stack([f["ref_body_pos"] for f in frames], axis=0))  # (T, J, 3)
-                pred_rot_all.append(np.stack([f["body_rot"] for f in frames], axis=0))  # (T, J, 4)
-                gt_rot_all.append(np.stack([f["ref_body_rot"] for f in frames], axis=0))  # (T, J, 4)
-                motion_id_to_data[motion_id] = None  # clear memory
+                if not frames:
+                    continue
+
+                # 是否有 GT
+                use_gt = ("gt_body_pos" in frames[0]) and ("gt_body_rot" in frames[0])
+                tgt_pos_key = "gt_body_pos" if use_gt else "ref_body_pos"
+                tgt_rot_key = "gt_body_rot" if use_gt else "ref_body_rot"
+
+                # 堆叠成 (T, J, 3)/(T, J, 4)
+                pred_pos = np.stack([f["body_pos"] for f in frames], axis=0)  # (T, J, 3)
+                pred_rot = np.stack([f["body_rot"] for f in frames], axis=0)  # (T, J, 4)
+                tgt_pos = np.stack([f[tgt_pos_key] for f in frames], axis=0)  # (T, J, 3)
+                tgt_rot = np.stack([f[tgt_rot_key] for f in frames], axis=0)  # (T, J, 4)
+
+                pred_pos_all.append(pred_pos)
+                pred_rot_all.append(pred_rot)
+                gt_pos_all.append(tgt_pos)
+                gt_rot_all.append(tgt_rot)
+
+                # 释放内存
+                motion_id_to_data[motion_id] = None
 
             # 3. 计算并打印指标
             batch_metrics, valid_mask = compute_metrics(pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all)
@@ -350,11 +354,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.eval_mode = False
         self.env._state_init = state_init
         self.env.reset()
-
-        #
-        # del pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all
-        # del cum_rewards, episode_lengths, done_flags
-        # torch.cuda.empty_cache()  # 释放可回收显存缓存
 
         if wandb.run is not None and log:
             wandb.log({

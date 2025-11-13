@@ -89,7 +89,7 @@ class MotionLib():
         self.grvs = torch.cat([m.global_root_velocity for m in motions], dim=0).float().to(device)
         self.gravs = torch.cat([m.global_root_angular_velocity for m in motions], dim=0).float().to(device)
         self.dvs = torch.cat([m.dof_vels for m in motions], dim=0).float().to(device)
-        self._termination_history = torch.zeros(len(self._motions), dtype=torch.float32, device=self._device)
+        self._termination_history = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)
         self._sampling_prob = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)/ len(self._motions)
 
         lengths = self._motion_num_frames
@@ -450,7 +450,7 @@ class MotionLib():
         """
         import os
         parts = filepath.split(os.sep)
-        if 'AMASS' in parts:
+        if 'AMASS' or 'amass' in parts:
             subset = parts[-3]
             subfolder = parts[-2]
             filename = os.path.splitext(parts[-1])[0]

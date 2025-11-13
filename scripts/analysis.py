@@ -1,48 +1,48 @@
-# import joblib
-# import os
-# import re
-# import glob
-# log_dir = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/kungfu_local'
-# eval_dir = os.path.join(log_dir, "eval_outputs")
+import joblib
+import os
+import re
+import glob
+
+log_dir = '/home/miku/Documents/VideoSkills/logs/smpl_ppo/humman'
+eval_dir = os.path.join(log_dir, "eval_outputs")
+
+# 查找所有以 failed_keys_iter 开头的文件
+all_failed_files = [f for f in os.listdir(eval_dir) if f.startswith("failed_keys_iter") and f.endswith(".pkl")]
+
+# 使用正则表达式提取 iteration 数字
+def extract_iter(f):
+    match = re.search(r"iter(\d+)", f)
+    return int(match.group(1)) if match else -1
+
+# 找到最大的 iteration 文件
+latest_failed_file = max(all_failed_files, key=extract_iter)
+
+# 加载最新的 failed_key 文件
+failed_key = joblib.load(os.path.join(eval_dir, latest_failed_file))
+
+# 加载 motion sampling 状态
+motion_sampling_status = joblib.load(os.path.join(log_dir, "motion_sampling_state.pkl"))
+
+
+negative_samples = []
+for key, value in motion_sampling_status.items():
+    if value['termination_count'] > 10:
+        negative_samples.append(key)
+        # parts = key.split("-")
+        # if len(parts) >= 2:
+        #     dataset = parts[0]
+        #     subset = parts[1]
+        #     filename ="-".join(parts[2:])   # 保留中间所有 - 的名字
+        #     rel_path = os.path.join(amass_root, dataset, subset , filename + ".npy")
+        #     npy_paths.append(rel_path)
+            # motion = SkeletonMotion.from_file(rel_path)
+
+output_path =  os.path.join(log_dir, "negative_samples.txt")
+with open(output_path, "w", encoding="utf-8") as f:
+    for item in negative_samples:
+        f.write(str(item) + "\n")
 #
-# # 查找所有以 failed_keys_iter 开头的文件
-# all_failed_files = [f for f in os.listdir(eval_dir) if f.startswith("failed_keys_iter") and f.endswith(".pkl")]
-#
-# # 使用正则表达式提取 iteration 数字
-# def extract_iter(f):
-#     match = re.search(r"iter(\d+)", f)
-#     return int(match.group(1)) if match else -1
-#
-# # 找到最大的 iteration 文件
-# latest_failed_file = max(all_failed_files, key=extract_iter)
-#
-# # 加载最新的 failed_key 文件
-# failed_key = joblib.load(os.path.join(eval_dir, latest_failed_file))
-#
-# # 加载 motion sampling 状态
-# motion_sampling_status = joblib.load(os.path.join(log_dir, "motion_sampling_state.pkl"))
-#
-# amass_root = "AMASS_split"
-#
-# negative_samples = []
-# for key, value in motion_sampling_status.items():
-#     if value['termination_count'] > 13:
-#         negative_samples.append(key)
-#         # parts = key.split("-")
-#         # if len(parts) >= 2:
-#         #     dataset = parts[0]
-#         #     subset = parts[1]
-#         #     filename ="-".join(parts[2:])   # 保留中间所有 - 的名字
-#         #     rel_path = os.path.join(amass_root, dataset, subset , filename + ".npy")
-#         #     npy_paths.append(rel_path)
-#             # motion = SkeletonMotion.from_file(rel_path)
-#
-# output_path =  os.path.join(log_dir, "negative_samples.txt")
-# with open(output_path, "w", encoding="utf-8") as f:
-#     for item in negative_samples:
-#         f.write(str(item) + "\n")
-#
-# # fix_height_dict_load = joblib.load(os.path.join("AMASS_fixed_height", "fixed_height_keys.pkl"))
+
 #
 # dataset_path = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionX++/kungfu"
 # dataset_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionX++"
@@ -144,44 +144,44 @@
 #             f.write(name + "\n")
 #
 #     print(f"[Saved] {len(filenames)} files -> {output_txt}")
-
-import os
-import shutil
-
-base_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionMillion"
-
-# 定义输入输出
-src_dir = os.path.join(base_dir, "kungfu")  # 原始全集
-lists = {
-    "kungfu_clean_list.txt": "kungfu_clean_train",
-    "kungfu_noisy_train_list.txt": "kungfu_noisy_train",
-    "kungfu_clean_test_list.txt": "kungfu_clean_test"
-}
-
-# 创建输出文件夹并执行复制
-for list_file, out_folder in lists.items():
-    out_dir = os.path.join(base_dir, out_folder)
-    os.makedirs(out_dir, exist_ok=True)
-
-    list_path = os.path.join(base_dir, list_file)
-    if not os.path.exists(list_path):
-        print(f"[Skip] 找不到 {list_path}")
-        continue
-
-    # 读取文件名列表
-    with open(list_path, "r", encoding="utf-8") as f:
-        names = [line.strip() for line in f if line.strip()]
-
-    print(f"[Copying] {len(names)} files from {src_dir} → {out_dir}")
-
-    for name in names:
-        src_file = os.path.join(src_dir, name)
-        dst_file = os.path.join(out_dir, name)
-        if os.path.exists(src_file):
-            shutil.copy2(src_file, dst_file)
-        else:
-            print(f"[Warning] {src_file} 不存在，跳过")
-
-    print(f"[Done] {out_folder} ✅")
-
-print("\n✅ 所有文件已复制完成。")
+#
+# import os
+# import shutil
+#
+# base_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionMillion"
+#
+# # 定义输入输出
+# src_dir = os.path.join(base_dir, "kungfu")  # 原始全集
+# lists = {
+#     "kungfu_clean_list.txt": "kungfu_clean_train",
+#     "kungfu_noisy_train_list.txt": "kungfu_noisy_train",
+#     "kungfu_clean_test_list.txt": "kungfu_clean_test"
+# }
+#
+# # 创建输出文件夹并执行复制
+# for list_file, out_folder in lists.items():
+#     out_dir = os.path.join(base_dir, out_folder)
+#     os.makedirs(out_dir, exist_ok=True)
+#
+#     list_path = os.path.join(base_dir, list_file)
+#     if not os.path.exists(list_path):
+#         print(f"[Skip] 找不到 {list_path}")
+#         continue
+#
+#     # 读取文件名列表
+#     with open(list_path, "r", encoding="utf-8") as f:
+#         names = [line.strip() for line in f if line.strip()]
+#
+#     print(f"[Copying] {len(names)} files from {src_dir} → {out_dir}")
+#
+#     for name in names:
+#         src_file = os.path.join(src_dir, name)
+#         dst_file = os.path.join(out_dir, name)
+#         if os.path.exists(src_file):
+#             shutil.copy2(src_file, dst_file)
+#         else:
+#             print(f"[Warning] {src_file} 不存在，跳过")
+#
+#     print(f"[Done] {out_folder} ✅")
+#
+# print("\n✅ 所有文件已复制完成。")

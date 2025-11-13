@@ -1,116 +1,140 @@
-# SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: BSD-3-Clause
-# 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-# list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-#
-# Copyright (c) 2021 ETH Zurich, Nikita Rudin
-
-import numpy as np
-
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from torch.nn.modules import rnn
-from .actor_critic import ActorCritic, get_activation
-from rsl_rl.utils import unpad_trajectories
+from rsl_rl.modules import ActorCritic  # 导入基类
+from rsl_rl.utils.running_mean_std import RunningMeanStd
 
-class ActorCriticRecurrent(ActorCritic):
-    is_recurrent = True
-    def __init__(self,  num_actor_obs,
-                        num_critic_obs,
-                        num_actions,
-                        actor_hidden_dims=[256, 256, 256],
-                        critic_hidden_dims=[256, 256, 256],
-                        activation='elu',
-                        rnn_type='lstm',
-                        rnn_hidden_size=256,
-                        rnn_num_layers=1,
-                        init_noise_std=1.0,
-                        **kwargs):
-        if kwargs:
-            print("ActorCriticRecurrent.__init__ got unexpected arguments, which will be ignored: " + str(kwargs.keys()),)
+# 方案二：循环学生 (Recurrent Student for Windowed Z)
+class ActorCritic_Recurrent_Z(ActorCritic):
+    is_recurrent = True  # 关键：告诉 PPO 这是一个循环模型
 
-        super().__init__(num_actor_obs=rnn_hidden_size,
-                         num_critic_obs=rnn_hidden_size,
-                         num_actions=num_actions,
-                         actor_hidden_dims=actor_hidden_dims,
-                         critic_hidden_dims=critic_hidden_dims,
-                         activation=activation,
-                         init_noise_std=init_noise_std)
+    def __init__(self, num_actor_obs,
+                 num_critic_obs,
+                 num_actions,
+                 num_state_obs,  # s_t 的维度
+                 num_latent_z,  # z 的维度
+                 rnn_hidden_size=256,
+                 activation='elu',
+                 init_noise_std=1.0,
+                 **kwargs):
 
-        activation = get_activation(activation)
+        # 不要调用 super().__init__()，因为它会构建 MLP
+        nn.Module.__init__(self)
 
-        self.memory_a = Memory(num_actor_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_size)
-        self.memory_c = Memory(num_critic_obs, type=rnn_type, num_layers=rnn_num_layers, hidden_size=rnn_hidden_size)
+        # 验证输入维度
+        assert num_actor_obs == num_state_obs + num_latent_z
+        assert num_critic_obs == num_state_obs + num_latent_z
 
-        print(f"Actor RNN: {self.memory_a}")
-        print(f"Critic RNN: {self.memory_c}")
+        self.num_actor_obs = num_actor_obs
+        self.num_critic_obs = num_critic_obs
+        self.num_actions = num_actions
+        self.rnn_hidden_size = rnn_hidden_size
+        act = self.get_activation(activation)  #
+
+        # --- Actor ---
+        # 1. 编码器 (MLP pre-processor)
+        self.actor_encoder = nn.Sequential(
+            nn.Linear(num_actor_obs, rnn_hidden_size), act,
+            nn.Linear(rnn_hidden_size, rnn_hidden_size), act
+        )
+        # 2. 循环核心 (GRU)
+        self.actor_gru = nn.GRU(rnn_hidden_size, rnn_hidden_size)
+        # 3. 动作头 (MLP head)
+        self.actor_head = nn.Linear(rnn_hidden_size, num_actions)
+
+        # --- Critic ---
+        self.critic_encoder = nn.Sequential(
+            nn.Linear(num_critic_obs, rnn_hidden_size), act,
+            nn.Linear(rnn_hidden_size, rnn_hidden_size), act
+        )
+        self.critic_gru = nn.GRU(rnn_hidden_size, rnn_hidden_size)
+        self.critic_head = nn.Linear(rnn_hidden_size, 1)
+
+        # --- 动作分布 (与 actor_critic.py 一致) ---
+        fixed_std = kwargs.get("fixed_std", False)
+        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions), requires_grad=not fixed_std)
+        self.distribution = None
+        Normal.set_default_validate_args = False
+
+        # --- 隐藏状态 (用于 PPO  rollout) ---
+        # ppo.py 会调用 get_hidden_states()
+        self.actor_hidden_states = None
+        self.critic_hidden_states = None
+
+        # RMS (可选, 但推荐)
+        self.actor_obs_rms = RunningMeanStd((num_actor_obs,))
+        self.critic_obs_rms = RunningMeanStd((num_critic_obs,))
+        self._update_rms = True
+
+    def set_update_rms(self, flag: bool):
+        self._update_rms = flag
+        if self.actor_obs_rms: self.actor_obs_rms.train(flag)
+        if self.critic_obs_rms: self.critic_obs_rms.train(flag)
 
     def reset(self, dones=None):
-        self.memory_a.reset(dones)
-        self.memory_c.reset(dones)
+        # PPO 在 dones 时调用 reset
+        if dones is None: return
+        if self.actor_hidden_states is not None:
+            self.actor_hidden_states[dones] = 0.
+        if self.critic_hidden_states is not None:
+            self.critic_hidden_states[dones] = 0.
 
-    def act(self, observations, masks=None, hidden_states=None):
-        input_a = self.memory_a(observations, masks, hidden_states)
-        return super().act(input_a.squeeze(0))
-
-    def act_inference(self, observations):
-        input_a = self.memory_a(observations)
-        return super().act_inference(input_a.squeeze(0))
-
-    def evaluate(self, critic_observations, masks=None, hidden_states=None):
-        input_c = self.memory_c(critic_observations, masks, hidden_states)
-        return super().evaluate(input_c.squeeze(0))
-    
     def get_hidden_states(self):
-        return self.memory_a.hidden_states, self.memory_c.hidden_states
+        # PPO 在 act 之前调用
+        return self.actor_hidden_states, self.critic_hidden_states
 
+    def _norm_actor_obs(self, obs):
+        if self._update_rms: _ = self.actor_obs_rms(obs)
+        return self.actor_obs_rms(obs)
 
-class Memory(torch.nn.Module):
-    def __init__(self, input_size, type='lstm', num_layers=1, hidden_size=256):
-        super().__init__()
-        # RNN
-        rnn_cls = nn.GRU if type.lower() == 'gru' else nn.LSTM
-        self.rnn = rnn_cls(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
-        self.hidden_states = None
-    
-    def forward(self, input, masks=None, hidden_states=None):
-        batch_mode = masks is not None
-        if batch_mode:
-            # batch mode (policy update): need saved hidden states
-            if hidden_states is None:
-                raise ValueError("Hidden states not passed to memory module during policy update")
-            out, _ = self.rnn(input, hidden_states)
-            out = unpad_trajectories(out, masks)
-        else:
-            # inference mode (collection): use hidden states of last step
-            out, self.hidden_states = self.rnn(input.unsqueeze(0), self.hidden_states)
-        return out
+    def _norm_critic_obs(self, obs):
+        if self._update_rms: _ = self.critic_obs_rms(obs)
+        return self.critic_obs_rms(obs)
 
-    def reset(self, dones=None):
-        # When the RNN is an LSTM, self.hidden_states_a is a list with hidden_state and cell_state
-        for hidden_state in self.hidden_states:
-            hidden_state[..., dones, :] = 0.0
+    def _run_gru(self, x, gru_layer, hidden_states):
+        # GRU 需要 (seq_len, batch, input_size)
+        x = x.unsqueeze(0)
+        if hidden_states is None:
+            # 第一次初始化
+            hidden_states = torch.zeros((1, x.shape[1], self.rnn_hidden_size), device=x.device, dtype=x.dtype)
+
+        # hidden_states 需要 (num_layers, batch, hidden_size)
+        gru_out, new_hidden_states = gru_layer(x, hidden_states)
+
+        # 输出 (batch, hidden_size) 和 (num_layers, batch, hidden_size)
+        return gru_out.squeeze(0), new_hidden_states
+
+    def update_distribution(self, observations, **kwargs):
+        # PPO 在 update 循环中会传入 'hidden_states' kwarg
+        hidden_states = kwargs.get('hidden_states')
+        if hidden_states is None:
+            # 如果在 rollout (act) 期间调用，使用缓冲区
+            hidden_states = self.actor_hidden_states
+
+        obs_norm = self._norm_actor_obs(observations)
+        x_encoded = self.actor_encoder(obs_norm)
+
+        gru_out, new_hidden = self._run_gru(x_encoded, self.actor_gru, hidden_states)
+
+        # 更新 rollout 缓冲区（分离梯度）
+        self.actor_hidden_states = new_hidden.detach()
+
+        mean = self.actor_head(gru_out)
+        self.distribution = Normal(mean, mean * 0. + self.std)
+
+    def evaluate(self, critic_observations, **kwargs):
+        # PPO 在 update 循环中会传入 'hidden_states' kwarg
+        hidden_states = kwargs.get('hidden_states')
+        if hidden_states is None:
+            # 如果在 rollout (act) 期间调用，使用缓冲区
+            hidden_states = self.critic_hidden_states
+
+        obs_norm = self._norm_critic_obs(critic_observations)
+        x_encoded = self.critic_encoder(obs_norm)
+
+        gru_out, new_hidden = self._run_gru(x_encoded, self.critic_gru, hidden_states)
+
+        # 更新 rollout 缓冲区（分离梯度）
+        self.critic_hidden_states = new_hidden.detach()
+
+        return self.critic_head(gru_out)

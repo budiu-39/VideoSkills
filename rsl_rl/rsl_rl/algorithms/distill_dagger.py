@@ -91,7 +91,10 @@ def load_teacher(train_cfg, ckpt_path, env, device):
     for p in teacher.parameters():
         p.requires_grad = False
 
+    teacher.obs_dim = num_actor_obs
+    teacher.critic_obs_dim = num_critic_obs
     return teacher
+
 
 def build_student(env, train_cfg, device):
     policy_cfg = class_to_dict(train_cfg.policy)

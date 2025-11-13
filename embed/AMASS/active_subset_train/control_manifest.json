@@ -1,0 +1,13 @@
+{
+  "N_total": 11272,
+  "test_ratio": 0.1,
+  "test_budget": 1127,
+  "active_ratio_on_remaining": 0.01,
+  "active_budget": 101,
+  "controls_each_budget": 101,
+  "notes": [
+    "Test is sampled first (10% of all, without replacement).",
+    "Active is k-medoids on the remaining (1% of remaining).",
+    "Controls are sampled WITH replacement from all-not-in-test (can overlap with active/each other; never include test)."
+  ]
+}

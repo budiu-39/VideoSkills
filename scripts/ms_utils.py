@@ -3,10 +3,15 @@ import torch
 import torch.nn.functional as F
 from scipy.spatial.transform import Rotation as sRot
 
-smpl2sim_rot_mat = torch.from_numpy(sRot.from_euler('xyz', np.array([-np.pi / 2, 0, 0]), degrees=False).as_matrix()).cuda().float()
-x90rot = torch.from_numpy(sRot.from_euler('xyz', np.array([np.pi / 2, 0, 0]), degrees=False).as_matrix()).cuda().float()
-y180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, -np.pi, 0]), degrees=False).as_matrix()).cuda().float()
-z180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, 0, np.pi]), degrees=False).as_matrix()).cuda().float()
+# smpl2sim_rot_mat = torch.from_numpy(sRot.from_euler('xyz', np.array([-np.pi / 2, 0, 0]), degrees=False).as_matrix()).cuda().float()
+# x90rot = torch.from_numpy(sRot.from_euler('xyz', np.array([np.pi / 2, 0, 0]), degrees=False).as_matrix()).cuda().float()
+# y180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, -np.pi, 0]), degrees=False).as_matrix()).cuda().float()
+# z180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, 0, np.pi]), degrees=False).as_matrix()).cuda().float()
+
+smpl2sim_rot_mat = torch.from_numpy(sRot.from_euler('xyz', np.array([-np.pi / 2, 0, 0]), degrees=False).as_matrix()).float()
+x90rot = torch.from_numpy(sRot.from_euler('xyz', np.array([np.pi / 2, 0, 0]), degrees=False).as_matrix()).float()
+y180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, -np.pi, 0]), degrees=False).as_matrix()).float()
+z180_rot = torch.from_numpy(sRot.from_euler('xyz', np.array([0, 0, np.pi]), degrees=False).as_matrix()).float()
 
 def mat_to_quat(R):
     """Convert a single 3x3 rotation matrix to a unit quaternion (w,x,y,z)."""

@@ -136,105 +136,111 @@ if __name__ == "__main__":
     }
 
     smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smpl")
-    folder_path = "/home/miku/Documents/VideoSkills/dataset/MotionMillion/kungfu"
+    folder_path = "MotionMillion/motion_272rpr/MotionUnion"
     # folder_path = "/home/miku/Documents/VideoSkills/dataset/motionx++_272/kungfu"
     # folder_path = "dataset/humanml3d"
-    output_dir = "/home/miku/Documents/VideoSkills/dataset/smpl_motion/MotionMillion/kungfu"
-    npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
-    # npy_files = sorted(glob.glob(os.path.join(folder_path, '**', '*.npy'), recursive=True))
-
-    for fpath in tqdm(npy_files):
-        rel_path = os.path.relpath(fpath, folder_path)  # 例如 "recording_20210907_S02_S01_01/body_idx_0/000.npy"
-        # # 去掉扩展名
-        rel_noext = os.path.splitext(rel_path)[0]
-        # 把路径分隔符改成短横线
-        motion_key = rel_noext.replace(os.sep, "-")
-        # 构建保存路径
-        save_path = osp.join(output_dir, f"{motion_key}.npy")
-        # save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
-        motion = np.load(fpath, allow_pickle=True)
-
-        N = motion.shape[0]
-
-        root_trans, pose_aa = pose_272_to_smpl(motion)
-        # 加入降采样代码
+    subset_list = ["idea400", "music", "perform", "haa500", "game_motion"]
+    subset_dir = "MotionMillion/motion_272rpr/MotionUnion"
+    output_dir = "dataset/smpl_motion/MotionMillion"
+    # npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
+    for subset in subset_list:
+        folder_path = os.path.join(subset_dir, subset)
+        output_dir = os.path.join(output_dir, subset)
+        npy_files = sorted(glob.glob(os.path.join(folder_path, '**', '*.npy'), recursive=True))
 
 
-        # 经典字段划分
-        pose_aa_smpl = np.zeros((N, 24, 3), dtype=pose_aa.dtype)
-        pose_aa_smpl[:, :22, :] = pose_aa
-        # ------- 组装成 24 关节（缺失补单位四元数）-------
+        for fpath in tqdm(npy_files):
+            rel_path = os.path.relpath(fpath, folder_path)  # 例如 "recording_20210907_S02_S01_01/body_idx_0/000.npy"
+            # # 去掉扩展名
+            rel_noext = os.path.splitext(rel_path)[0]
+            # 把路径分隔符改成短横线
+            motion_key = rel_noext.replace(os.sep, "-")
+            # 构建保存路径
+            save_path = osp.join(output_dir, f"{motion_key}.npy")
+            # save_path = osp.join(output_dir, rel_path).replace(".npz", ".npy")
+            motion = np.load(fpath, allow_pickle=True)
 
-        smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
-        R_cam2world = [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]]
+            N = motion.shape[0]
 
-        skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
-        root_trans_offset = root_trans + skeleton_tree.local_translation[0].numpy()
-        pose_aa_smpl[:, 0], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_smpl[:, 0], root_trans_offset, R_cam2world)
-        root_trans_offset = torch.from_numpy(root_trans_offset)
-        pose_aa_mj = pose_aa_smpl[:, smpl_2_mujoco]
-        pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
-
-        beta = np.zeros(16)
-        gender_number, beta[:], gender = [0], 0, "neutral"
+            root_trans, pose_aa = pose_272_to_smpl(motion)
+            # 加入降采样代码
 
 
+            # 经典字段划分
+            pose_aa_smpl = np.zeros((N, 24, 3), dtype=pose_aa.dtype)
+            pose_aa_smpl[:, :22, :] = pose_aa
+            # ------- 组装成 24 关节（缺失补单位四元数）-------
 
-        smpl_parser_n = SMPL_Parser(model_path='data/SMPL/smpl', gender="neutral")
-        pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
-        new_sk_state = SkeletonState.from_rotation_and_root_translation(
-            skeleton_tree,
-            # This is the wrong skeleton tree (location wise) here, but it's fine since we only use the parent relationship here.
-            torch.from_numpy(pose_quat),
-            root_trans_offset,
-            is_local=True)
+            smpl_2_mujoco = [SMPL_BONE_ORDER_NAMES.index(q) for q in SMPL_MUJOCO_NAMES if q in SMPL_BONE_ORDER_NAMES]
+            R_cam2world = [[1., 0., 0.], [0., 0., -1.], [0., 1., 0.]]
 
-        frame_check = 100
-        height_tolorance = 0
-        fix_height = True
-        if fix_height:
-            with torch.no_grad():
-                frame_check = min(frame_check, N)
-                pose_t = torch.from_numpy(pose_aa_smpl[:frame_check])
-                beta_t = torch.from_numpy(beta[None,])
-                trans_t = root_trans_offset[:frame_check]
+            skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/{robot_cfg['model']}_humanoid.xml")
+            root_trans_offset = root_trans + skeleton_tree.local_translation[0].numpy()
+            pose_aa_smpl[:, 0], root_trans_offset = apply_cam2world_rotvec_trans(pose_aa_smpl[:, 0], root_trans_offset, R_cam2world)
+            root_trans_offset = torch.from_numpy(root_trans_offset)
+            pose_aa_mj = pose_aa_smpl[:, smpl_2_mujoco]
+            pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
 
-                verts, joints = smpl_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
-                offset = joints[:, 0] - trans_t # offset is the difference between the smpl root joint and the mujoco root joint
-                feet_z = (verts - offset[:, None])[..., -1]  # Z 轴  # feet_z is the mujoco lower point of each frame
-                diff_fix = feet_z.min().item() # diff_fix is the lowest frame of lowest point in each frame
-
-                root_trans_offset[..., -1] -= diff_fix
-                # we move the mujoco root joint down by the lowest point of the smpl feet, so that the feet are on the ground.
+            beta = np.zeros(16)
+            gender_number, beta[:], gender = [0], 0, "neutral"
 
 
-        if robot_cfg['upright_start']:
-            pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
-                                sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
 
-            new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
-                                                                            torch.from_numpy(pose_quat_global),
-                                                                            root_trans_offset, is_local=False)
+            smpl_parser_n = SMPL_Parser(model_path='data/SMPL/smpl', gender="neutral")
+            pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 24, 4)
+            new_sk_state = SkeletonState.from_rotation_and_root_translation(
+                skeleton_tree,
+                # This is the wrong skeleton tree (location wise) here, but it's fine since we only use the parent relationship here.
+                torch.from_numpy(pose_quat),
+                root_trans_offset,
+                is_local=True)
 
-        fps = 45
+            frame_check = 100
+            height_tolorance = 0
+            fix_height = True
+            if fix_height:
+                with torch.no_grad():
+                    frame_check = min(frame_check, N)
+                    pose_t = torch.from_numpy(pose_aa_smpl[:frame_check])
+                    beta_t = torch.from_numpy(beta[None,])
+                    trans_t = root_trans_offset[:frame_check]
 
-        padding = 0  # 或者改成参数传入
-        new_sk_state = pad_skeleton_state(new_sk_state, padding)
-        motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+                    verts, joints = smpl_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
+                    offset = joints[:, 0] - trans_t # offset is the difference between the smpl root joint and the mujoco root joint
+                    feet_z = (verts - offset[:, None])[..., -1]  # Z 轴  # feet_z is the mujoco lower point of each frame
+                    diff_fix = feet_z.min().item() # diff_fix is the lowest frame of lowest point in each frame
 
-        # 构建保存路径
-
-        os.makedirs(osp.dirname(save_path), exist_ok=True)
-        # 保存 motion 对象为 numpy 文件
-        motion_obj.to_file(save_path)
-        motion_traj = {}
-        motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
-        motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
-        motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N + padding, -1, 3)
-        # vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
+                    root_trans_offset[..., -1] -= diff_fix
+                    # we move the mujoco root joint down by the lowest point of the smpl feet, so that the feet are on the ground.
 
 
-    print("Done")
+            if robot_cfg['upright_start']:
+                pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
+                                    sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
+
+                new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
+                                                                                torch.from_numpy(pose_quat_global),
+                                                                                root_trans_offset, is_local=False)
+
+            fps = 45
+
+            padding = 0  # 或者改成参数传入
+            new_sk_state = pad_skeleton_state(new_sk_state, padding)
+            motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
+
+            # 构建保存路径
+
+            os.makedirs(osp.dirname(save_path), exist_ok=True)
+            # 保存 motion 对象为 numpy 文件
+            motion_obj.to_file(save_path)
+            motion_traj = {}
+            motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
+            motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
+            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:,1:].reshape(-1, 4)).as_rotvec().reshape(N + padding, -1, 3)
+            # vis_mujoco(motion_traj, f"data/robots/smpl/smpl_humanoid.xml", humanoid_type=robot_cfg['model'])
+
+
+        print("Done")
 
 
 

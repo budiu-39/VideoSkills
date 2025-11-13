@@ -124,32 +124,7 @@ class LeggedRobot(BaseTask):
         # compute observations, rewards, resets, ...
 
         self.compute_reward()  # both reward and terminationare done with the last reference motion
-        self.check_termination()
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-
-        if self.is_recording_data:
-            body_pos_cpu = (self.body_pos - self.pos_offset['body']).detach().cpu().numpy()
-            ref_body_pos_cpu = (self.ref_body_pos - self.pos_offset['body']).detach().cpu().numpy()
-            body_rot_cpu = self.body_rot.detach().cpu().numpy()
-            ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
-            dof_pos_cpu = self.dof_pos.detach().cpu().numpy()
-            ref_dof_pos_cpu = self.ref_dof_pos.detach().cpu().numpy()
-            done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
-
-
-            # 取所有 still-alive 的环境索引
-            alive_ids = np.where(done_flags_cpu == False)[0]
-
-            # 批量记录，不用 for-loop 判断
-            for env_id in alive_ids:
-                self.recorded_data[env_id].append({
-                    'body_pos': body_pos_cpu[env_id].copy(),  # 以初始位置为基准
-                    'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
-                    'body_rot': body_rot_cpu[env_id].copy(),
-                    'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
-                    'dof_pos': dof_pos_cpu[env_id].copy(),
-                    'ref_dof_pos': ref_dof_pos_cpu[env_id].copy(),
-                })
 
         self.reset_idx(env_ids)
         if self.cfg.env.send_timeouts:
@@ -157,9 +132,6 @@ class LeggedRobot(BaseTask):
 
         if self.cfg.domain_rand.push_robots:
             self._push_robots()
-
-        if self.cfg.env.land_event_detect:
-            self.land_event_detection()
 
         self.compute_observations() # in some cases a simulation step might be required to refresh some obs (for example body positions)
 
@@ -782,35 +754,6 @@ class LeggedRobot(BaseTask):
     def _reward_feet_contact_forces(self):
         # penalize high contact forces
         return torch.sum((torch.norm(self.contact_forces[:, self.feet_indices, :], dim=-1) -  self.cfg.rewards.max_contact_force).clip(min=0.), dim=1)
-
-    def enable_data_recording(self, enable: bool = True):
-        self.is_recording_data = enable
-        if enable:
-            self.recorded_data = [[] for _ in range(self.num_envs)]
-
-    def disable_data_recording(self):
-        self.is_recording_data = False
-
-        self.recorded_data = [[] for _ in range(self.num_envs)]
-
-    def export_recorded_data(self, output_dir, motion_ids):
-        os.makedirs(output_dir, exist_ok=True)
-        for env_id, motion_id in enumerate(motion_ids):
-            data = self.recorded_data[env_id]
-            body_pos = np.stack([f['body_pos'] for f in data], axis=0)
-            ref_pos = np.stack([f['ref_body_pos'] for f in data], axis=0)
-            body_rot = np.stack([f['body_rot'] for f in data], axis=0)
-            ref_rot = np.stack([f['ref_body_rot'] for f in data], axis=0)
-            dof_pos = np.stack([f['dof_pos'] for f in data], axis=0)
-            ref_dof_pos = np.stack([f['ref_dof_pos'] for f in data], axis=0)
-
-            filename = f"motion_{motion_id}_env_{env_id}.npz"
-            filepath = os.path.join(output_dir, filename)
-            np.savez_compressed(filepath,
-                                pred_pos=body_pos,
-                                gt_pos=ref_pos,
-                                pred_rot=body_rot,
-                                gt_rot=ref_rot)
 
     def _initialize_motion_offsets(self):
         """

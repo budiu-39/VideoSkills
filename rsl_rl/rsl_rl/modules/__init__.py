@@ -30,4 +30,4 @@
 
 from .actor_critic import ActorCritic
 from .actor_critic_attention import ActorCritic_Attention
-from .actor_critic_recurrent import ActorCriticRecurrent
+from .actor_critic_recurrent_old import ActorCriticRecurrent

@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.distributions import Normal
 from rsl_rl.modules import ActorCritic
-from rsl_rl.utils.body_graph import BodyGraphBackbone
+from rsl_rl.backbone.body_graph import BodyGraphBackbone
 
 # 关键点：模仿 MLP ActorCritic 的风格（distribution + properties）
 class ActorCritic_Attention(ActorCritic):
@@ -81,7 +80,6 @@ class ActorCritic_Attention(ActorCritic):
     def act(self, observations, **_):
         self.update_distribution(observations)
         a = self.distribution.sample()
-        # 保险起见再裁剪一次
         return a
 
     def get_actions_log_prob(self, actions):
