@@ -87,24 +87,31 @@ class EpisodeEncoder(nn.Module):
         z = mu + eps * std
         return z, mu, logvar
 
-
-# ---- 条件先验：基于“简短统计”给出 p(z|stats)（可选，开始可不用）----
-class PriorNet(nn.Module):
+class FrameEncoder(nn.Module):
     """
-    输入: stats 向量 [B, S]（例如：初始本体状态统计 + 片段的速度/转向统计）
-    输出: prior 的 (mu_p, logvar_p)
+    Frame-level encoder:
+      输入: x [B, F]，F = stats + task_stats 维度
+      输出: z, mu, logvar  (每帧一个 latent)
     """
-    def __init__(self, in_dim: int, d_z: int = 32, hidden: int = 128):
+    def __init__(self, in_dim: int, d_z: int = 32, hidden: int = 256, depth: int = 2):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden), nn.ReLU(inplace=True),
-            nn.Linear(hidden, hidden), nn.ReLU(inplace=True)
-        )
+        layers = []
+        dim = in_dim
+        for _ in range(depth):
+            layers += [nn.Linear(dim, hidden), nn.ReLU(inplace=True)]
+            dim = hidden
+        self.mlp = nn.Sequential(*layers)
         self.head_mu = nn.Linear(hidden, d_z)
         self.head_lv = nn.Linear(hidden, d_z)
 
-    def forward(self, stats):
-        h = self.mlp(stats)
-        mu_p = self.head_mu(h)
-        logvar_p = torch.clamp(self.head_lv(h), min=-8.0, max=8.0)
-        return mu_p, logvar_p
+    def forward(self, x: torch.Tensor):
+        # x: [B, F]
+        h = self.mlp(x)
+        mu = self.head_mu(h)
+        logvar = torch.clamp(self.head_lv(h), min=-8.0, max=8.0)
+        std = (0.5 * logvar).exp()
+        eps = torch.randn_like(std)
+        z = mu + eps * std
+        return z, mu, logvar
+
+

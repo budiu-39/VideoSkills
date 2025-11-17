@@ -53,18 +53,20 @@ class RunningMeanStd(nn.Module):
         self.diff = diff
 
 
-    def _update_mean_var_count_from_moments(self, mean, var, count, batch_mean,
-                                            batch_var, batch_count):
-        delta = batch_mean - mean
-        tot_count = count + batch_count
+    def _update_mean_var_count_from_moments(self, mean, var, batch_count):
+        running_mean = self.running_mean
+        running_var = self.running_var
+        count = self.count
 
-        new_mean = mean + delta * batch_count / tot_count
-        m_a = var * count
-        m_b = batch_var * batch_count
+        delta = mean - running_mean
+        tot_count = count + batch_count
+        new_mean = running_mean + delta * batch_count / tot_count
+        m_a = running_var * count
+        m_b = var * batch_count
         M2 = m_a + m_b + delta**2 * count * batch_count / tot_count
         new_var = M2 / tot_count
-        new_count = tot_count
-        return new_mean, new_var, new_count
+
+        return new_mean, new_var, tot_count
 
     def forward(self, input, unnorm=False):
         # change shape
@@ -97,32 +99,24 @@ class RunningMeanStd(nn.Module):
 
         # update After normalization, so that the values used for training and testing are the same.
         if self.training and not self.forzen:
-            mean = input.mean(self.axis)  # along channel axis
-            var = input.var(self.axis)
-            new_mean, new_var, new_count = self._update_mean_var_count_from_moments(self.running_mean, self.running_var, self.count, mean, var, input.size()[0])
-            if self.forzen_partial:
-                # Only update the last bit (futures)
-                self.running_mean[-self.diff:], self.running_var[-self.diff:], self.count = new_mean[-self.diff:], new_var[-self.diff:], new_count
-            else:
-                self.running_mean, self.running_var, self.count = new_mean, new_var, new_count
+            # ★ 用 no_grad + detach 更新统计量，避免进 autograd 图
+            with torch.no_grad():
+                x = input.detach()
+                mean = x.mean(self.axis)  # along channel axis
+                var = x.var(self.axis)
+
+                new_mean, new_var, new_count = self._update_mean_var_count_from_moments(
+                    mean, var, x.size()[0]
+                )
+
+                if self.forzen_partial:
+                    # Only update the last bit (futures)
+                    self.running_mean[-self.diff:].copy_(new_mean[-self.diff:])
+                    self.running_var[-self.diff:].copy_(new_var[-self.diff:])
+                    self.count.copy_(new_count)
+                else:
+                    self.running_mean.copy_(new_mean)
+                    self.running_var.copy_(new_var)
+                    self.count.copy_(new_count)
 
         return y
-
-
-class RunningMeanStdObs(nn.Module):
-
-    def __init__(self,
-                 insize,
-                 epsilon=1e-05,
-                 per_channel=False,
-                 norm_only=False):
-        assert (insize is dict)
-        super(RunningMeanStdObs, self).__init__()
-        self.running_mean_std = nn.ModuleDict({
-            k: RunningMeanStd(v, epsilon, per_channel, norm_only)
-            for k, v in insize.items()
-        })
-
-    def forward(self, input, unnorm=False):
-        res = {k: self.running_mean_std(v, unnorm) for k, v in input.items()}
-        return res

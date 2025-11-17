@@ -34,10 +34,10 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 from torch.nn.modules import rnn
-from .actor_critic import ActorCritic
+from .actor_critic_mlp import ActorCriticMLP
 from rsl_rl.utils import unpad_trajectories
 
-class ActorCriticRecurrent(ActorCritic):
+class ActorCriticRecurrent(ActorCriticMLP):
     is_recurrent = True
     def __init__(self,  num_actor_obs,
                         num_critic_obs,

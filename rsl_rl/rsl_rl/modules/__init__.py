@@ -28,6 +28,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic
+from .actor_critic_mlp import ActorCriticMLP
 from .actor_critic_attention import ActorCritic_Attention
 from .actor_critic_recurrent_old import ActorCriticRecurrent
+from .actor_critic import ActorCritic

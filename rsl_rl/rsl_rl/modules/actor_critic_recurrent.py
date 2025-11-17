@@ -50,7 +50,7 @@ class ActorCritic_Recurrent_Z(ActorCritic):
         self.critic_gru = nn.GRU(rnn_hidden_size, rnn_hidden_size)
         self.critic_head = nn.Linear(rnn_hidden_size, 1)
 
-        # --- 动作分布 (与 actor_critic.py 一致) ---
+        # --- 动作分布 (与 actor_critic_mlp.py 一致) ---
         fixed_std = kwargs.get("fixed_std", False)
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions), requires_grad=not fixed_std)
         self.distribution = None

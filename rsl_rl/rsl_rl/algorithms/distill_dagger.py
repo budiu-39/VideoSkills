@@ -38,9 +38,9 @@ class DAggerCfg:
     beta_exp_k: float = 0.002       # exp: beta = beta_end + (beta_start-beta_end)*exp(-k*t)
 
     # 数据集与优化
-    replay_capacity: int = 2_000_000      # 样本上限（T*B 级别）
-    batch_size: int = 8192               # 每次优化的样本数（越大越稳定，但显存占用高）
-    epochs_per_iter: int = 1
+    replay_capacity: int = 2_000_00      # 样本上限（T*B 级别）
+    batch_size: int = 8192             # 每次优化的样本数（越大越稳定，但显存占用高）
+    epochs_per_iter: int = 5
     lr: float = 3e-4
     weight_decay: float = 0.01
     betas = (0.9, 0.95)
@@ -114,86 +114,6 @@ def build_student(env, train_cfg, device):
     return student
 
 
-class ReplayBuf:
-    """
-    聚合缓冲（DAgger）：数据常驻 CPU，随机抽样时才搬到 GPU。
-    避免每次训练把所有块 cat 到一个超大 GPU 张量导致 OOM。
-    """
-    def __init__(self, capacity, device, dtype=torch.float32, pin_memory=True):
-        self.device = device
-        self.capacity = capacity
-        self.pin_memory = pin_memory
-        self.dtype = dtype
-
-        self.obs_chunks = []
-        self.mu_chunks  = []
-        self.std_chunks = []
-        self.val_chunks = []
-        self.size = 0  # 样本总数
-
-    def _to_cpu(self, x):
-        x = x.detach().to('cpu', dtype=self.dtype, non_blocking=False)
-        if self.pin_memory:
-            try:
-                x = x.pin_memory()
-            except:
-                pass
-        return x
-
-    def add(self, obs, mu, std, val):
-        # 所有新数据搬到 CPU 存（避免 GPU 长驻）
-        self.obs_chunks.append(self._to_cpu(obs))
-        self.mu_chunks.append(self._to_cpu(mu))
-        self.std_chunks.append(self._to_cpu(std))
-        self.val_chunks.append(self._to_cpu(val))
-        self.size += obs.shape[0]
-
-        # 截断容量：从最早的块开始删
-        while self.size > self.capacity and len(self.obs_chunks) > 0:
-            popped_n = self.obs_chunks[0].shape[0]
-            self.obs_chunks.pop(0); self.mu_chunks.pop(0); self.std_chunks.pop(0); self.val_chunks.pop(0)
-            self.size -= popped_n
-
-    def __len__(self):
-        return self.size
-
-    def sample_batches(self, batch_size):
-        """
-        随机索引而不是全量 cat。
-        思路：先给每个块一个 “范围映射”，然后在全局范围内采样索引，再落到具体块与偏移。
-        """
-        if self.size == 0:
-            return
-        # 构建累计长度前缀（仅整数列表，CPU 轻量）
-        lens = [t.shape[0] for t in self.obs_chunks]
-        import numpy as np
-        cumsum = np.cumsum([0] + lens)  # len = n_chunks+1
-        N = cumsum[-1]
-
-        # 随机打乱全局索引并按 batch 切分
-        idx_global = torch.randperm(N)  # 在 CPU
-        for s in range(0, N, batch_size):
-            t = min(s + batch_size, N)
-            sel = idx_global[s:t].numpy()
-
-            # 将全局索引映射到 (chunk_id, offset)
-            # 二分定位：np.searchsorted(cumsum, i, side='right')-1
-            import bisect
-            obs_list = []; mu_list = []; std_list = []; val_list = []
-            for g in sel:
-                cid = bisect.bisect_right(cumsum, g) - 1
-                off = g - cumsum[cid]
-                obs_list.append(self.obs_chunks[cid][off:off+1])
-                mu_list.append(self.mu_chunks[cid][off:off+1])
-                std_list.append(self.std_chunks[cid][off:off+1])
-                val_list.append(self.val_chunks[cid][off:off+1])
-
-            # 小批拼接（仍在 CPU），然后一次性搬到 GPU
-            obs_mb  = torch.cat(obs_list, dim=0).to(self.device, non_blocking=True)
-            mu_mb   = torch.cat(mu_list,  dim=0).to(self.device, non_blocking=True)
-            std_mb  = torch.cat(std_list, dim=0).to(self.device, non_blocking=True)
-            val_mb  = torch.cat(val_list, dim=0).to(self.device, non_blocking=True)
-            yield obs_mb, mu_mb, std_mb, val_mb
 
 
 

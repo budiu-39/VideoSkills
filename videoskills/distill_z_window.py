@@ -1,11 +1,11 @@
 import os, time
 from videoskills.utils import get_args
-from rsl_rl.algorithms.distill_dagger_z import (
-    rollout_dagger, train_step, beta_schedule,
+from rsl_rl.algorithms.distill_dagger_window_z import (
+    rollout_dagger, train_step, beta_schedule, ReplayBuf,
     build_student, load_teacher, build_env_and_cfg, DAggerCfg,
+    EpisodeCtxBuf  # 若在此文件内
 )
-from rsl_rl.storage.rollout_buffer import ReplayBuf
-from rsl_rl.network.frame_encoder import FrameEncoderMLP, PriorMLP
+from rsl_rl.network.episode_encoder import EpisodeEncoder
 from videoskills.utils.helpers import class_to_dict
 import yaml
 import torch
@@ -19,7 +19,6 @@ try:
     torch.set_float32_matmul_precision('high')
 except Exception:
     pass
-
 
 # 导入策略
 def main():
@@ -46,40 +45,36 @@ def main():
 
     @torch.no_grad()
     def z_provider(env, env_ids):
-        # 推理阶段：无需梯度
         enc.eval()
-        prior.eval()
-
-        # 取本批次观测（整帧 obs_buf）
-        enc_obs = env.obs_buf[env_ids,:student.encoder_obs_dim]  # [B, num_obs]
-
-        # 直接依据 student.proprioception_dim 切 humanoid_obs（最简、最稳）
-        hum_dim = getattr(env, "humanoid_obs_dim", None)
-        if hum_dim is None:
-            hum_dim = getattr(student, "proprioception_dim", None)
-            # 缓存回 env，后续复用
-            setattr(env, "humanoid_obs_dim", hum_dim)
-
-        prior_obs = enc_obs[:, :hum_dim]  # 先验只吃 humanoid/proprio 段
-        # PULSE：q(z|obs_full) 与 p(z|humanoid_obs)
-        z, mu_q, lv_q = enc(enc_obs)
-        mu_p, lv_p = prior(prior_obs)
-
-        # rollout 只需要 z；KL 放到训练步去算
-        return z, {"mu_q": mu_q, "lv_q": lv_q, "mu_p": mu_p, "lv_p": lv_p}
+        prior.eval() if prior is not None else None
+        ctx, pstats, mids, mask = env.build_context_tensor(env_ids)
+        ctx_keys = ctx_buf.add(ctx, pstats, mids, mask)
+        z, mu_q, lv_q = enc(ctx, mask=mask)
+        # 维护 EMA 原型
+        for i, mid in enumerate(mids):
+            z_i = z[i].detach()
+            if mid not in proto_ema:
+                proto_ema[mid] = z_i
+            else:
+                proto_ema[mid] = 0.98 * proto_ema[mid] + 0.02 * z_i
+        aux = {"ctx_keys": ctx_keys}
+        return z, aux
 
     env.set_z_provider(z_provider)
 
     # encoder
     # TODO: d_model 是 dimension 中间层的维度
     #  （这里好像弄错了！）
-
-    enc = FrameEncoderMLP(student.encoder_obs_dim, d_z=32, hidden=(2048, 1024, 512)).to(device)  # C_ctx=上下文通道数
-    prior = PriorMLP(student.proprioception_dim, d_z=32, hidden=(2048, 1024, 512)).to(device)
+    enc = EpisodeEncoder(in_channels=train_cfg.policy.context_dim, d_model=256, d_z=64).to(device)  # C_ctx=上下文通道数
+    prior = None  # 先不用先验，稳了再开：prior = PriorNet(in_dim=S_prior, d_z=32).to(device)
     optimizer_enc = torch.optim.AdamW(
         list(enc.parameters()) + ([] if prior is None else list(prior.parameters())),
-        lr=5e-4, betas=(0.9, 0.95), weight_decay=0
+        lr=5e-4, betas=(0.9, 0.95), weight_decay=1e-4
     )
+    ctx_buf = EpisodeCtxBuf()
+    proto_ema = {}
+    beta_kl = 0.0  # KL 退火：先 0，稳定后慢慢升
+    alpha_proto = 0.0  # 原型一致性：先 0，稳定后 0.01
 
     # 优化器：先只训 actor/backbone；如需蒸馏 value 再加 critic
     optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters())
@@ -107,73 +102,53 @@ def main():
                    dir=log_dir,
                    config={**vars(args), **class_to_dict(train_cfg), ** class_to_dict(env_cfg)})
 
-        wandb.define_metric("iteration")
-        wandb.define_metric("*", step_metric="iteration")
-
     for it in range(1, cfg.max_iters + 1):
         beta = beta_schedule(it, cfg)
 
         # 1) 学生主导 rollout，老师打标签
         # TODO: 要补充一个config!
+        obs, mu_t, std_t, v_t, ctx_key_step, phase  = rollout_dagger(env, teacher, student, cfg.steps_per_env, beta, device)
+        rb.add(obs, mu_t, std_t, v_t, ctx_key_step, phase)
 
-        t0 = time.perf_counter()
-        obs, mu_t, std_t, v_t = rollout_dagger(env, teacher, student, enc, prior, cfg.steps_per_env, beta, device)
-        t_rollout = time.perf_counter()
+        # 2) 在聚合数据上训练学生若干 epoch
+        if it > 50:  beta_kl = min(0.01, beta_kl + 0.0002)
 
-        rb.add(obs, mu_t, std_t, v_t)
-        t_buffer = time.perf_counter()
+        if it > 50:
+            alpha_proto = min(0.01, alpha_proto + 0.0005)
+
+        if it > 400: beta_kl = max(0.001, beta_kl * 0.99)
 
         out = train_step(
             student, optimizer, rb, cfg,
             enc=enc, prior=prior, optimizer_enc=optimizer_enc,
+            ctx_buf=ctx_buf, beta_kl=beta_kl, alpha_proto=alpha_proto, proto_ema=proto_ema
         )
-        t_train = time.perf_counter()
-
-        dt_rollout = t_rollout - t0
-        dt_buffer = t_buffer - t_rollout
-        dt_train = t_train - t_buffer
-        dt_total = t_train - t0
-
-        print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s, train={dt_train:.3f}s, total={dt_total:.3f}s")
-
-        loss = out["total"]
-        klv = out.get("beh_kl", 0.0)
-        kl_lat = out.get("kl_lat", 0.0)
-
+        loss, klv, msev, vls, enc_loss, proto_loss = (
+            out["total"], out["beh_kl"], out["beh_mse"], out["v"], out["kl_lat"], out["proto"]
+        )
         # 3) 日志/保存
         if it % cfg.log_interval == 0 or it == 1:
             dt = time.time() - t_last
-            fps = cfg.steps_per_env * env.num_envs / (cfg.log_interval * dt)
-            print(f"[DAgger] it={it:05d} | β={beta:.3f} "
-                  f"| loss={loss:.3f} (beh={klv:.3f}, lat={kl_lat:.3f}) "
-                  f"| buffer={rb.size:>7d} | fps≈{fps:.1f}")
+            steps_per_iter = cfg.steps_per_env * env.num_envs
+            print(f"[DAgger] it={it:05d}  beta={beta:.3f}  |  loss={loss:.4f} (kl={klv:.4f}, mse={msev:.4f}, v={vls:.4f})"
+                  f"  |  data={rb.size}  |  fps≈{int(steps_per_iter/cfg.log_interval/dt)}")
             t_last = time.time()
 
-        if args.use_wandb:
-            wandb.log({
-                "iteration": it,
-                "loss/total": loss,
-                "loss/behavior_KL": klv,
-                "loss/latent_KL": kl_lat,
-                "beta": beta,
-                "replay/size": rb.size,
-                "fps": cfg.steps_per_env * env.num_envs / (time.time() - t_last + 1e-6)
-            }, step=it)
-
         if it % cfg.save_interval == 0 or it == cfg.max_iters:
-            ckpt_name = f"dagger_student_{it}.pt"
-            path = os.path.join(log_dir, ckpt_name)
-
+            path = os.path.join(log_dir, f"dagger_student_{it}.pt")
             torch.save({
                 "model_state_dict": student.state_dict(),
                 "encoder_state_dict": enc.state_dict(),
-                "prior_state_dict": prior.state_dict(),  # ← 补上 prior
                 "optimizer_state_dict": optimizer.state_dict(),
-                "optimizer_enc_state_dict": optimizer_enc.state_dict(),  # (enc+prior 的优化器)
+                "optimizer_enc_state_dict": optimizer_enc.state_dict(),
                 "iter": it,
                 "cfg": cfg.__dict__,
             }, path)
             print(f"[DAgger] saved => {path}")
+
+        # 监控一下聚合的上下文数量/原型数量
+        if it % 50 == 0:
+            print(f"[Z_Provider] ctx_buf.size={len(ctx_buf._ctx)}, proto_ema={len(proto_ema)}")
 
         if it % 100 == 0:
             print(f"\n[DAgger] Eval at iteration {it} ...")

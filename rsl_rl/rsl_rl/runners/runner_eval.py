@@ -11,9 +11,13 @@ from collections import defaultdict
 from videoskills.utils.metrics import compute_metrics, physical_metrics
 from collections import deque
 # from torch.utils.tensorboard import SummaryWriter
+from rsl_rl.algorithms.distill_dagger_z import build_student as build_actor_critic_with_z
+from videoskills.utils.helpers import dict_to_class
 
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.modules import ActorCritic, ActorCriticRecurrent, ActorCritic_Attention
+from rsl_rl.modules import ActorCriticMLP, ActorCriticRecurrent, ActorCritic_Attention, ActorCritic
+from rsl_rl.backbone import BodyGraphBackbone
+from rsl_rl.network import FiLMNetwork, MLPBackbone
 
 class OnPolicyRunnerEval(OnPolicyRunner):
     def __init__(self, env,
@@ -30,11 +34,19 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             num_critic_obs = self.env.num_privileged_obs
         else:
             num_critic_obs = self.env.num_obs
-        actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
-        actor_critic = actor_critic_class(self.env.num_obs,
-                                               num_critic_obs,
-                                               self.env.num_actions,
-                                               **self.policy_cfg).to(self.device)
+
+        # 旧版
+        if self.policy_cfg['use_z']:
+            train_cfg=  dict_to_class(train_cfg)
+            actor_critic = build_actor_critic_with_z(env, train_cfg, self.device)
+
+        else:
+            actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
+            actor_critic = actor_critic_class(self.env.num_obs,
+                                                   num_critic_obs,
+                                                   self.env.num_actions,
+                                                   **self.policy_cfg).to(self.device)
+
 
         self.alg_cfg['num_obs'] = self.env.num_obs
         self.alg_cfg['num_critic_obs'] = num_critic_obs
@@ -97,7 +109,17 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             # self.alg.actor_critic.refresh_temp_rms()
             for i in range(self.num_steps_per_env):
                 with torch.no_grad():
-                    actions = self.alg.act(obs, critic_obs)
+                    if self.policy_cfg['use_z']:
+                        env_ids = torch.arange(self.env.num_envs, device=self.device)
+                        z_step, _ = self.env._z_provider(self.env, env_ids)
+                        proprio_dim = getattr(self.alg.actor_critic, "proprioception_dim",
+                                              self.policy_cfg.get("proprioception_dim"))
+                        proprio = obs[:, :proprio_dim]
+                        obs_student = torch.cat([z_step, proprio], dim=-1)  # [B, z_dim + proprio_dim]
+                        actions = self.alg.act(obs_student, obs_student)
+
+                    else:
+                        actions = self.alg.act(obs, critic_obs)
                 obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                 obs = obs.to(self.device)
                 rewards = rewards.to(self.device)
@@ -218,7 +240,17 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.no_grad():
-                    action = self.alg.actor_critic.act_inference(obs)
+                    if self.policy_cfg['use_z']:
+                        env_ids = torch.arange(self.env.num_envs, device=self.device)
+                        _, extra = self.env._z_provider(self.env, env_ids)  # [B, z_dim]
+                        z_step = extra['mu_q']
+                        proprio_dim = getattr(self.alg.actor_critic, "proprioception_dim",
+                                              self.policy_cfg.get("proprioception_dim"))
+                        proprio = obs[:, :proprio_dim]
+                        obs_student = torch.cat([z_step, proprio], dim=-1)
+                        action = self.alg.actor_critic.act_inference(obs_student)
+                    else:
+                        action = self.alg.actor_critic.act_inference(obs)
                 obs, _, rewards, dones, extras = self.env.step(action)
                 rewards = rewards.squeeze()
                 rewards[done_flags] = 0.0
@@ -357,13 +389,14 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         if wandb.run is not None and log:
             wandb.log({
+                "iteration": self.current_learning_iteration,
                 "Eval/mean_reward": mean_rew,
                 "Eval/success_rate": success_rate,
                 "Eval/reward_until_fail_mean_failed": np.mean(
                     reward_until_fail_list) if reward_until_fail_list else 0.0,
                 "Eval/num_success": num_success,
                 "Eval/num_total": num_total,
-            })
+            }, step=self.current_learning_iteration)
 
             wandb_metric_dict = {}
             for k, v in global_metrics.items():
@@ -684,90 +717,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         summary += ep_info_str
         print(summary)
 
-    # def log(self, locs, width=80, pad=35):
-    #     it = locs['it']
-    #     self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
-    #     self.tot_time += locs['collection_time'] + locs['learn_time']
-    #
-    #     # ========== 构建 wandb metrics ==========
-    #     wandb_metrics = {
-    #         "Loss/value_function": locs['mean_value_loss'],
-    #         "Loss/surrogate": locs['mean_surrogate_loss'],
-    #         "Loss/learning_rate": self.alg.learning_rate,
-    #         "Perf/collection_time": locs['collection_time'],
-    #         "Perf/learning_time": locs['learn_time'],
-    #         "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
-    #                     locs['collection_time'] + locs['learn_time']),
-    #         "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
-    #         "Imitation/ET_rate": locs['ET_rate']
-    #     }
-    #
-    #     rb = locs.get('rewbuffer', getattr(self, 'rewbuffer', None))
-    #     lb = locs.get('lenbuffer', getattr(self, 'lenbuffer', None))
-    #     # 训练指标
-    #     if len(rb) > 0:
-    #         mean_rew = statistics.mean(rb)
-    #         mean_len = statistics.mean(lb)
-    #         wandb_metrics.update({
-    #             "Train/mean_reward": mean_rew,
-    #             "Train/mean_episode_length": mean_len,
-    #         })
-    #
-    #     # imitation rewards
-    #     for key, val in locs['infos'].items():
-    #         if key.startswith("reward"):
-    #             wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-    #                 np.mean(val))
-    #
-    #     # imitation errors
-    #     for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
-    #         if key in locs['infos']:
-    #             val = locs['infos'][key]
-    #             wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-    #                 np.mean(val))
-    #
-    #     if self.log_dir is not None:
-    #         if len(ep_infos) > 0:
-    #             merged = {}
-    #             for ep in ep_infos:
-    #                 for k, v in ep.items():
-    #                     if k.startswith("rew_") or k.startswith("rew_sub/"):
-    #                         merged.setdefault(k, []).append(v.item() if torch.is_tensor(v) else float(v))
-    #
-    #             for k, vals in merged.items():
-    #                 # 用完整英文路径名；把 'rew_sub/' 或 'rew_' 映射到更清晰的 WandB 路径
-    #                 if k.startswith("rew_sub/"):
-    #                     wandb_key = f"Rewards/{k[len('rew_sub/'):]}"  # e.g. Rewards/Humanoid/PositionTerm
-    #                 elif k.startswith("rew_"):
-    #                     wandb_key = f"Rewards/{k[len('rew_'):]}"  # e.g. Rewards/reward_humanoid
-    #                 else:
-    #                     wandb_key = f"Rewards/{k}"
-    #
-    #                 wandb.log({wandb_key: float(np.mean(vals))}, step=it)
-    #     # ========== wandb 记录 ==========
-    #     if wandb.run is not None:
-    #         wandb.log(wandb_metrics, step=it)
-    #
-    #     ep_info_str = ""
-    #     if locs['ep_infos']:
-    #         for key in locs['ep_infos'][0]:
-    #             vals = [ep[key].item() if isinstance(ep[key], torch.Tensor) else ep[key] for ep in locs['ep_infos']]
-    #             ep_mean = sum(vals) / len(vals)
-    #             wandb_metrics[f"Episode/{key}"] = ep_mean
-    #             if key in ["rew_imitation", "rew_dof_force", "rew_torques"]:
-    #                 ep_info_str += f"  {key}: {ep_mean:.4f}"
-    #
-    #     summary = f"[{self.cfg['run_name']} it {it:05d}]"
-    #     if len(rb) > 0:
-    #         if mean_rew is not None and mean_len is not None:
-    #             summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
-    #     else:
-    #         summary += " Reward: ---- | EpLen: ----"
-    #     # summary += f" | Collect: {locs['collection_time']:.2f}s  Learn: {locs['learn_time']:.2f}s |"
-    #     summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
-    #     summary += ep_info_str
-    #     print(summary)
-
     def save(self, path=None, infos=None):
         if path is None:
             os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration))
@@ -787,11 +736,14 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
 
         if load_optimizer:
-            self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+            try:
+                self.alg.optimizer.load_state_dict(loaded_dict['optimizer_state_dict'])
+            except Exception as e:
+                print("[runner_eval.load] skip optimizer due to error:", repr(e))
         if load_iteration:
             self.current_learning_iteration = loaded_dict['iter']
 
-        return loaded_dict['infos']
+        # return loaded_dict['infos']
 
     def pop_recent_mean_rewards(self):
         """取出自上次调用以来新结束的所有 episode return，并清空临时缓存。"""

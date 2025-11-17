@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from rsl_rl.modules import ActorCritic  # 直接替换默认 ActorCritic
 # 如果后续做时序状态，可从 rsl_rl.modules import ActorCriticRecurrent
 
 # -------- utils: Multi-Head Graph Attention (mask 邻接可选) --------
@@ -73,49 +72,3 @@ class BodyGraphBackbone(nn.Module):
         global_feat = x[:, 0]  # [B,D]
         return global_feat
 
-# -------- Actor-Critic 封装：保持接口兼容 OnPolicyRunner --------
-class ActorCritic_BodyGraph(ActorCritic):
-    def __init__(self, num_obs, num_actions, **kwargs):
-        # 忽略父类 MLP 构造，自己搭头
-        nn.Module.__init__(self)
-        self.num_obs = num_obs
-        self.num_actions = num_actions
-
-        # 这些超参可来自 cfg["policy"].extra_xxx
-        d_model   = kwargs.get("d_model", 256)
-        depth     = kwargs.get("depth", 4)
-        n_heads   = kwargs.get("n_heads", 4)
-        num_bodies= kwargs.get("num_bodies", 24)
-
-        self.backbone = BodyGraphBackbone(
-            obs_dim=num_obs, num_bodies=num_bodies,
-            d_model=d_model, n_heads=n_heads, depth=depth
-        )
-
-        # Actor / Critic 头
-        self.actor_head  = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, num_actions))
-        self.critic_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 1))
-
-        # 动作标准差（若 fixed_std=True）
-        self.log_std = nn.Parameter(torch.zeros(num_actions), requires_grad=True)
-
-    # --- 对齐 rsl_rl ActorCritic 接口 ---
-    def act(self, obs):
-        feat = self.backbone(obs)                # [B,D]
-        mu   = self.actor_head(feat)             # [B,A]
-        std  = self.log_std.exp().expand_as(mu)  # [B,A]
-        return mu, std
-
-    def evaluate(self, obs, actions):
-        feat = self.backbone(obs)
-        mu   = self.actor_head(feat)
-        std  = self.log_std.exp().expand_as(mu)
-        dist = torch.distributions.Normal(mu, std)
-        log_prob = dist.log_prob(actions).sum(dim=-1, keepdim=True)
-        entropy  = dist.entropy().sum(dim=-1, keepdim=True)
-        value    = self.critic_head(feat)
-        return value, log_prob, entropy
-
-    def get_value(self, obs):
-        feat = self.backbone(obs)
-        return self.critic_head(feat)

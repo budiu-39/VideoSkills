@@ -447,21 +447,21 @@ class LeggedRobotImi(LeggedRobot):
             ref_root_pos_used = self.ref_root_pos
 
         # TODO： 这是原版，只要任何一个关键点 > 0.5 m 就触发
-        # body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
-        #                            - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
-        # body_too_far = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
-        # if self.eval_mode:
-        # body_too_far = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
+        body_delta_sq = torch.sum((self.body_pos[:,self.reset_body_id]
+                                   - self.ref_body_pos[:, self.reset_body_id]) ** 2, dim=2)  # → ℝ[num_envs, K]
+        body_too_far_now = torch.any(body_delta_sq > self.early_termination_distance[self.reset_body_id], dim=1)
+        if self.eval_mode:
+            body_too_far_now = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])  # → ℝ[num_envs]
 
         # TODO： 这是原版平均距离且无视 gravity axis 的版本，注意现在不论是 eval 还是 train 都应用了平均逻辑（考虑到数据很 noisy)
-        root_pos_wo_h = self.base_pos.clone()
-        root_pos_wo_h[:, 0:2] = 0.0
-        ref_rot_pos_wo_h = ref_root_pos_used.clone()
-        ref_rot_pos_wo_h[:, 0:2] = 0.0
-        body_delta_sq = torch.sum((self.body_pos[:, self.reset_body_id] - root_pos_wo_h.unsqueeze(1)
-                                + ref_rot_pos_wo_h.unsqueeze(1) - ref_body_pos_used[:, self.reset_body_id]) ** 2, dim=2)
-
-        body_too_far_now = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
+        # root_pos_wo_h = self.base_pos.clone()
+        # root_pos_wo_h[:, 0:2] = 0.0
+        # ref_rot_pos_wo_h = ref_root_pos_used.clone()
+        # ref_rot_pos_wo_h[:, 0:2] = 0.0
+        # body_delta_sq = torch.sum((self.body_pos[:, self.reset_body_id] - root_pos_wo_h.unsqueeze(1)
+        #                         + ref_rot_pos_wo_h.unsqueeze(1) - ref_body_pos_used[:, self.reset_body_id]) ** 2, dim=2)
+        #
+        # body_too_far_now = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
 
         if self.eval_mode: #use_gt:
             # 可以设置对比试验，eval 恒定用 方案 1, 训练时对比 方案 1 和 方案2 看一下区别

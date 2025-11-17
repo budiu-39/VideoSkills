@@ -9,14 +9,17 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
 
+        use_z = True
         # FiLM 相关配置
         d_model = 512
         depth_actor = 4
         depth_critic = 4
 
+        # Transformer backbone 配置
         proprioception_dim = 358
+        task_dim = 576
         phase_dim = 2
-        z_dim = 64
+        z_dim = 32
         context_dim = 289
         depth_film = 3
 
@@ -30,7 +33,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        run_name = 'amass_al_baseline'
+        run_name = 'PULSE'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 40000  # number of policy updates
@@ -66,7 +69,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
-        distance = [0.5] * 24
+        distance = [0.25] * 24
 
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -76,9 +79,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 

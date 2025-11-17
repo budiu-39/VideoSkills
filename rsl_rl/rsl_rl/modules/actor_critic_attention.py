@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-from rsl_rl.modules import ActorCritic
+from rsl_rl.modules import ActorCriticMLP
 from rsl_rl.backbone.body_graph import BodyGraphBackbone
 
 # 关键点：模仿 MLP ActorCritic 的风格（distribution + properties）
-class ActorCritic_Attention(ActorCritic):
+class ActorCritic_Attention(ActorCriticMLP):
     is_recurrent = False
 
     def __init__(self, num_obs, num_critic_obs, num_actions, **kwargs):
