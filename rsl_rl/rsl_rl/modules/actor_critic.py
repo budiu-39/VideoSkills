@@ -66,18 +66,26 @@ class ActorCritic(nn.Module):
             self.actor_obs_rms = self.critic_obs_rms = None
 
         # Policy
-        self.actor_head  = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, num_actions))
+        self.actor_head  = nn.Linear(d_model, num_actions)
+        self.logvar_head = nn.Linear(d_model, num_actions)
         self.critic_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 1))
-        nn.init.uniform_(self.actor_head[-1].weight, a=-1e-3, b=1e-3)
-        nn.init.zeros_(self.actor_head[-1].bias)
+
+        nn.init.uniform_(self.actor_head.weight, a=-1e-3, b=1e-3)
+        nn.init.zeros_(self.actor_head.bias)
         nn.init.uniform_(self.critic_head[-1].weight, a=-1e-3, b=1e-3)
         nn.init.zeros_(self.critic_head[-1].bias)
+        nn.init.uniform_(self.logvar_head.weight, a=-1e-3, b=1e-3)
+        nn.init.zeros_(self.logvar_head.bias)
 
-        self.std = nn.Parameter(init_noise_std * torch.ones(num_actions),
-                                requires_grad=not fixed_std)
+        self.policy_std = nn.Parameter(
+            init_noise_std * torch.ones(num_actions),
+            requires_grad=not fixed_std
+        )
+
         self.distribution = None
+        self._latent_mu = None            # μ_q
+        self._latent_lv = None            # logvar_q
         Normal.set_default_validate_args = False
-
         self.is_recurrent = False
 
     # ---------- 公共工具 ----------
@@ -101,24 +109,42 @@ class ActorCritic(nn.Module):
             _ = self.critic_obs_rms(obs)
         return self.critic_obs_rms(obs)
 
-    def update_distribution(self, observations):
+    def update_policy_distribution(self, observations):
+        """PPO 用的动作分布：Normal(mu_policy, policy_std)"""
         obs  = self._norm_actor_obs(observations)
-        feat = self.actor_network(obs)                  # [B,d_model]
-        pre  = self.actor_head(feat)                     # [B,A]
-        mean = torch.tanh(pre)                           # 与注意力版一致
-        std  = torch.clamp(self.std, 1e-4, 1.0)
-        self.distribution = Normal(mean, mean*0. + std)
+        feat = self.actor_network(obs)
+        mu_policy  = self.actor_head(feat)
+        # mu_policy = torch.tanh(pre)                       # PPO 动作均值
+        std_policy = torch.clamp(self.policy_std, 1e-4, 1.0)
+
+        self.distribution = Normal(mu_policy, std_policy)
+        return mu_policy, std_policy
+
+    def update_latent_distribution(self, observations):
+        """latent q(z|obs) 的分布：Normal(mu_q, std_q) —— 用于 KL_lat / 采样 z"""
+        obs  = self._norm_actor_obs(observations)
+        feat = self.actor_network(obs)
+        mu_q  = self.actor_head(feat)
+        # mu_q = torch.tanh(pre)
+
+        lv_q = self.logvar_head(feat).clamp(min=-10.0, max=2.0)
+        std_q = torch.exp(0.5 * lv_q)
+
+        self._latent_mu = mu_q
+        self._latent_lv = lv_q
+        return mu_q, lv_q, std_q
 
     def act(self, observations, **kwargs):
-        self.update_distribution(observations)
+        self.update_policy_distribution(observations)
         return self.distribution.sample()
 
     @torch.no_grad()
     def act_inference(self, observations):
         obs  = self._norm_actor_obs(observations)
         feat = self.actor_network(obs)
-        pre  = self.actor_head(feat)
-        return torch.tanh(pre)
+        act  = self.actor_head(feat)
+        return act
+        # return torch.tanh(pre)
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
@@ -133,11 +159,22 @@ class ActorCritic(nn.Module):
 
     @property
     def action_mean(self):
+        # 这是 PPO 动作 mean
         return self.distribution.mean if self.distribution is not None else None
 
     @property
     def action_std(self):
+        # 这是 PPO 动作 std
         return self.distribution.stddev if self.distribution is not None else None
+
+    # === latent 相关接口：给 distill / KL_lat 用 ===
+    @property
+    def latent_mu(self):
+        return self._latent_mu
+
+    @property
+    def latent_logvar(self):
+        return self._latent_lv
 
     @property
     def entropy(self):

@@ -12,8 +12,9 @@ from videoskills.utils import get_args as get_train_args
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict, parse_motion_file_path, dict_to_class
 import torch
 from typing import Dict, Iterable
-from rsl_rl.network.frame_encoder import FrameEncoderMLP, PriorMLP
+from rsl_rl.network.frame_z import FrameEncoderMLP, FramePrior, FrameDecoder
 from rsl_rl.storage.rollout_buffer import ReplayBuf
+from rsl_rl.backbone.mlp import MLPBackbone
 
 
 # A100 友好设置
@@ -28,8 +29,9 @@ except Exception:
 from rsl_rl.modules.actor_critic_mlp import ActorCriticMLP                   # 老师：PHC/MLP
 from rsl_rl.modules.actor_critic import ActorCritic                     # 老师：PHC/MLP
 from rsl_rl.modules.actor_critic_attention import ActorCritic_Attention  # 学生：Transformer
-from rsl_rl.network.film import FiLMNetwork, MLPBackbone
+from rsl_rl.network.film import FiLMNetwork
 from rsl_rl.backbone.body_graph_z import BodyGraphZ
+from rsl_rl.backbone.mlp import MLPBackbone
 
 
 # torch.autograd.set_detect_anomaly(True)
@@ -48,7 +50,7 @@ class DAggerCfg:
     beta_exp_k: float = 0.002       # exp: beta = beta_end + (beta_start-beta_end)*exp(-k*t)
 
     # 数据集与优化
-    replay_capacity: int = 200000      # 样本上限（T*B 级别）
+    replay_capacity: int = 50000      # 样本上限（T*B 级别）
     batch_size: int = 8192               # 每次优化的样本数（越大越稳定，但显存占用高）
     epochs_per_iter: int = 5
     lr: float = 5e-4
@@ -130,28 +132,17 @@ def build_student(env, train_cfg, device):
     z_dim       = cfg.z_dim
     encoder_obs_dim = proprio_dim + task_dim
 
-    num_critic_obs = proprio_dim + z_dim
-
-    # 3) 构建 actor/critic 网络后端
-    actor_backbone = BodyGraphZ(
-        obs_dim=proprio_dim,
-        z_dim=z_dim,
-        num_bodies=24,
-        d_model=d_model,
-        n_heads=4,
-        depth=4,
-    )
-
-    critic_backbone = MLPBackbone(in_dim=num_critic_obs, hid=d_model, depth=depth_critic)
+    enc_backbone= MLPBackbone(in_dim=encoder_obs_dim, hidden=(2048, 1024, 512)).to(device)  # C_ctx=上下文通道数
+    critic_backbone = MLPBackbone(in_dim=encoder_obs_dim, hidden=(512,512)).to(device)
 
     # 4) 实例化新版 ActorCritic（它会在内部做 obs RMS、actor_head/critic_head 与分布）
     student = ActorCritic(
-        num_actor_obs=proprio_dim + z_dim,  # 保持兼容
-        num_critic_obs=proprio_dim + z_dim,
-        num_actions=action_dim,
-        actor_network=actor_backbone,
+        num_actor_obs=encoder_obs_dim,  # 保持兼容
+        num_critic_obs=encoder_obs_dim,
+        num_actions=z_dim,
+        actor_network=enc_backbone,
         critic_network=critic_backbone,
-        d_model=d_model,
+        d_model=512,
         init_noise_std=init_std,
         fixed_std=fixed_std,
     ).to(device)
@@ -164,6 +155,26 @@ def build_student(env, train_cfg, device):
     student.task_dim = task_dim
 
     return student
+
+def build_decoder_and_prior(train_cfg, device):
+    cfg = train_cfg.policy
+    proprio_dim = cfg.proprioception_dim
+    action_dim  = cfg.num_actions
+    z_dim       = cfg.z_dim
+
+    decoder_backbone = BodyGraphZ(
+        obs_dim=proprio_dim,
+        z_dim=z_dim,
+        num_bodies=24,
+        d_model=256,
+        n_heads=4,
+        depth=4,
+    )
+    decoder = FrameDecoder(decoder_backbone, d_model=256, action_dim=action_dim).to(device)
+    prior = FramePrior(proprio_dim, d_z=z_dim, hidden=(2048, 1024, 512)).to(device)
+    return decoder, prior
+
+
 
 @torch.no_grad()
 def teacher_outputs(teacher, obs, critic_obs):
@@ -186,12 +197,14 @@ def kl_gaussians(mu_t, std_t, mu_s, std_s, eps=1e-8):
 
 
 @torch.no_grad()
-def rollout_dagger(env, teacher, student, enc, prior, steps_per_env, beta, device):
+def rollout_dagger(env, teacher, student, decoder, prior, steps_per_env, beta, device):
     obs = env.get_observations().to(device)
     priv = env.get_privileged_observations()
     critic_obs = (priv if priv is not None else obs).to(device)
-    student.eval(); student.set_update_rms(False)
-    enc.eval(); prior.eval()
+    student.eval()
+    student.set_update_rms(False)
+    decoder.eval()
+    prior.eval()
 
     obs_list, mu_list, std_list, val_list = [], [], [], []
 
@@ -200,13 +213,15 @@ def rollout_dagger(env, teacher, student, enc, prior, steps_per_env, beta, devic
 
         # === PULSE: 计算 z ===
         enc_obs = obs[:, :student.encoder_obs_dim]  # encoder 输入去掉 act_tail
-        z, mu_q, lv_q = enc(enc_obs)  # q(z|obs)
+        z = student.act(enc_obs)  # q(z|obs)
         proprio = obs[:, :student.proprioception_dim]
-        x_student = torch.cat([z, proprio], dim=-1)
 
-        # === 学生预测动作 ===
-        student.update_distribution(x_student)
-        a_student = student.act(x_student)
+        # === 生成学生动作 ===
+        decoder_obs = torch.cat([proprio, z], dim=-1)
+        mu_s, log_std_s = decoder(decoder_obs)
+        std_s = log_std_s.exp()
+        eps = torch.randn_like(std_s)
+        a_student = mu_s + eps * std_s
         a_teacher = teacher.act(obs)
         mask = (torch.rand(obs.shape[0], 1, device=device) < beta)
         act = torch.where(mask, a_teacher, a_student)
@@ -238,9 +253,10 @@ def kl_normal(mu_q, lv_q, mu_p, lv_p):
     return 0.5 * ((lv_p - lv_q) + (var_q + (mu_q - mu_p)**2) / var_p - 1.0).sum(dim=-1)
 
 def train_step(student, optimizer, rb, cfg,
-               enc: FrameEncoderMLP, prior: PriorMLP, optimizer_enc,
+               decoder , prior,
                ):
-    student.train(); enc.train(); prior.train()
+    student.train(); decoder.train(); prior.train()
+    student.set_update_rms(True)
     scaler = torch.cuda.amp.GradScaler(enabled=cfg.use_mixed_precision)
     autocast = torch.cuda.amp.autocast
     tot_loss = tot_act_loss = tot_kl_lat = 0.0
@@ -249,41 +265,41 @@ def train_step(student, optimizer, rb, cfg,
     for _ in range(cfg.epochs_per_iter):
         for obs_b, mu_t, std_t, v_t, *_ in rb.sample_batches(cfg.batch_size):
             optimizer.zero_grad(set_to_none=True)
-            optimizer_enc.zero_grad(set_to_none=True)
             with autocast(enabled=cfg.use_mixed_precision, dtype=cfg.amp_dtype):
                 # === PULSE: 计算 q(z|obs), p(z|humanoid_obs) ===
-                z, mu_q, lv_q = enc(obs_b[:, :-student.action_dim])  # encoder 输入去掉 act_tail
-                hum_obs = obs_b[:, :student.proprioception_dim]  # humanoid_obs
-                mu_p, lv_p = prior(hum_obs)
+                enc_obs = obs_b[:, :student.encoder_obs_dim]
+                mu_q, lv_q, std_q = student.update_latent_distribution(enc_obs)
+                eps = torch.randn_like(std_q)
+                z = mu_q + eps * std_q
+
+                prior_obs = obs_b[:, :student.proprioception_dim]  # humanoid_obs
+                mu_p, lv_p = prior(prior_obs)
 
                 kl_lat = kl_normal(mu_q, lv_q, mu_p, lv_p).mean()
-
-                # === 学生输入 = [z, proprio] ===
-
+                # === 学生输入 = [proprio, z] ===
                 proprio = obs_b[:, :student.proprioception_dim]
-                x_student = torch.cat([z, proprio], dim=-1)
-                student.update_distribution(x_student)
-                mu_s, std_s = student.action_mean, student.action_std
+                decoder_obs = torch.cat([proprio, mu_q], dim=-1)
+                mu_s, log_std = decoder(decoder_obs)
+                std_s = log_std.exp()
 
                 # === 蒸馏损失 ===
                 # 方案A ：mode-covering loss
-                var_t, var_s = std_t**2, std_s**2
-                kl_beh = torch.log(std_s/std_t) + (var_t + (mu_t - mu_s)**2) / (2*var_s) - 0.5
-                act_loss = kl_beh.sum(dim=-1).mean()
+                # var_t, var_s = std_t**2, std_s**2
+                # kl_beh = torch.log(std_s/std_t) + (var_t + (mu_t - mu_s)**2) / (2*var_s) - 0.5
+                # act_loss = kl_beh.sum(dim=-1).mean()
 
                 # 方案B ：RMSE
-                # act_loss = torch.norm(mu_s - mu_t, dim=-1).mean()
+                act_loss = torch.norm(mu_s - mu_t, dim=-1).mean()
 
                 loss = cfg.act_coef * act_loss + cfg.prior_coef * kl_lat
 
+            # 需要大改！
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
-            scaler.unscale_(optimizer_enc)
-            torch.nn.utils.clip_grad_norm_(enc.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(decoder.parameters(), 1.0)
             torch.nn.utils.clip_grad_norm_(prior.parameters(), 1.0)
             scaler.step(optimizer)
-            scaler.step(optimizer_enc)
             scaler.update()
 
             tot_loss += loss.item()

@@ -3,9 +3,9 @@ from videoskills.utils import get_args
 from rsl_rl.algorithms.distill_dagger_z import (
     rollout_dagger, train_step, beta_schedule,
     build_student, load_teacher, build_env_and_cfg, DAggerCfg,
+    build_decoder_and_prior
 )
 from rsl_rl.storage.rollout_buffer import ReplayBuf
-from rsl_rl.network.frame_encoder import FrameEncoderMLP, PriorMLP
 from videoskills.utils.helpers import class_to_dict
 import yaml
 import torch
@@ -40,50 +40,17 @@ def main():
         cfg = yaml.safe_load(f)
     teacher_config = cfg.get('train_cfg', {})
 
-    # 老师/学生
+    # 老师/学生, decoder, prior, optimizer
     teacher = load_teacher(teacher_config, teacher_ckpt, env, device)
     student = build_student(env, train_cfg, device)
+    decoder, prior = build_decoder_and_prior(train_cfg, device)
+    env.set_z_prior(prior)
+    env.set_z_decoder(decoder)
 
-    @torch.no_grad()
-    def z_provider(env, env_ids):
-        # 推理阶段：无需梯度
-        enc.eval()
-        prior.eval()
-
-        # 取本批次观测（整帧 obs_buf）
-        enc_obs = env.obs_buf[env_ids,:student.encoder_obs_dim]  # [B, num_obs]
-
-        # 直接依据 student.proprioception_dim 切 humanoid_obs（最简、最稳）
-        hum_dim = getattr(env, "humanoid_obs_dim", None)
-        if hum_dim is None:
-            hum_dim = getattr(student, "proprioception_dim", None)
-            # 缓存回 env，后续复用
-            setattr(env, "humanoid_obs_dim", hum_dim)
-
-        prior_obs = enc_obs[:, :hum_dim]  # 先验只吃 humanoid/proprio 段
-        # PULSE：q(z|obs_full) 与 p(z|humanoid_obs)
-        z, mu_q, lv_q = enc(enc_obs)
-        mu_p, lv_p = prior(prior_obs)
-
-        # rollout 只需要 z；KL 放到训练步去算
-        return z, {"mu_q": mu_q, "lv_q": lv_q, "mu_p": mu_p, "lv_p": lv_p}
-
-    env.set_z_provider(z_provider)
-
-    # encoder
-    # TODO: d_model 是 dimension 中间层的维度
-    #  （这里好像弄错了！）
-
-    enc = FrameEncoderMLP(student.encoder_obs_dim, d_z=32, hidden=(2048, 1024, 512)).to(device)  # C_ctx=上下文通道数
-    prior = PriorMLP(student.proprioception_dim, d_z=32, hidden=(2048, 1024, 512)).to(device)
-    optimizer_enc = torch.optim.AdamW(
-        list(enc.parameters()) + ([] if prior is None else list(prior.parameters())),
-        lr=5e-4, betas=(0.9, 0.95), weight_decay=0
-    )
-
-    # 优化器：先只训 actor/backbone；如需蒸馏 value 再加 critic
-    optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters())
-    if args.distill_value:
+    optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters()) +   \
+        list(decoder.parameters()) + ([] if prior is None else list(prior.parameters()))
+    distill_value = False
+    if distill_value:
         optim_params += list(student.critic_network.parameters()) + list(student.critic_head.parameters())
     optimizer = torch.optim.AdamW(optim_params, lr=DAggerCfg.lr, betas=DAggerCfg.betas, weight_decay=DAggerCfg.weight_decay)
 
@@ -117,7 +84,8 @@ def main():
         # TODO: 要补充一个config!
 
         t0 = time.perf_counter()
-        obs, mu_t, std_t, v_t = rollout_dagger(env, teacher, student, enc, prior, cfg.steps_per_env, beta, device)
+
+        obs, mu_t, std_t, v_t = rollout_dagger(env, teacher, student, decoder, prior, cfg.steps_per_env, beta, device)
         t_rollout = time.perf_counter()
 
         rb.add(obs, mu_t, std_t, v_t)
@@ -125,7 +93,7 @@ def main():
 
         out = train_step(
             student, optimizer, rb, cfg,
-            enc=enc, prior=prior, optimizer_enc=optimizer_enc,
+            decoder=decoder, prior=prior
         )
         t_train = time.perf_counter()
 
@@ -134,7 +102,7 @@ def main():
         dt_train = t_train - t_buffer
         dt_total = t_train - t0
 
-        print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s, train={dt_train:.3f}s, total={dt_total:.3f}s")
+        # print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s, train={dt_train:.3f}s, total={dt_total:.3f}s")
 
         loss = out["total"]
         klv = out.get("beh_kl", 0.0)
@@ -166,10 +134,9 @@ def main():
 
             torch.save({
                 "model_state_dict": student.state_dict(),
-                "encoder_state_dict": enc.state_dict(),
+                "decoder_state_dict": decoder.state_dict(),
                 "prior_state_dict": prior.state_dict(),  # ← 补上 prior
                 "optimizer_state_dict": optimizer.state_dict(),
-                "optimizer_enc_state_dict": optimizer_enc.state_dict(),  # (enc+prior 的优化器)
                 "iter": it,
                 "cfg": cfg.__dict__,
             }, path)
@@ -192,7 +159,9 @@ def main():
                 print("[DAgger] Created new eval_runner")
             eval_runner.current_learning_iteration = it
             eval_runner.alg.actor_critic.load_state_dict(student.state_dict(), strict=False)
+            decoder.eval() # 主要是为了 rms
             eval_runner.eval()
+            decoder.train()
 
     print("[DAgger] done.")
 

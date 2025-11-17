@@ -110,14 +110,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for i in range(self.num_steps_per_env):
                 with torch.no_grad():
                     if self.policy_cfg['use_z']:
-                        env_ids = torch.arange(self.env.num_envs, device=self.device)
-                        z_step, _ = self.env._z_provider(self.env, env_ids)
-                        proprio_dim = getattr(self.alg.actor_critic, "proprioception_dim",
-                                              self.policy_cfg.get("proprioception_dim"))
-                        proprio = obs[:, :proprio_dim]
-                        obs_student = torch.cat([z_step, proprio], dim=-1)  # [B, z_dim + proprio_dim]
-                        actions = self.alg.act(obs_student, obs_student)
-
+                        obs = obs[:, :-self.env.num_actions]
+                        critic_obs = obs
+                        actions_z = self.alg.act(obs, critic_obs)
+                        actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=True)
                     else:
                         actions = self.alg.act(obs, critic_obs)
                 obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
@@ -241,17 +237,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.no_grad():
                     if self.policy_cfg['use_z']:
-                        env_ids = torch.arange(self.env.num_envs, device=self.device)
-                        _, extra = self.env._z_provider(self.env, env_ids)  # [B, z_dim]
-                        z_step = extra['mu_q']
-                        proprio_dim = getattr(self.alg.actor_critic, "proprioception_dim",
-                                              self.policy_cfg.get("proprioception_dim"))
-                        proprio = obs[:, :proprio_dim]
-                        obs_student = torch.cat([z_step, proprio], dim=-1)
-                        action = self.alg.actor_critic.act_inference(obs_student)
+                        obs = obs[:, :-self.env.num_actions]
+                        actions_z = self.alg.actor_critic.act_inference(obs)
+                        actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=False)
                     else:
-                        action = self.alg.actor_critic.act_inference(obs)
-                obs, _, rewards, dones, extras = self.env.step(action)
+                        actions = self.alg.actor_critic.act_inference(obs)
+                obs, _, rewards, dones, extras = self.env.step(actions)
                 rewards = rewards.squeeze()
                 rewards[done_flags] = 0.0
                 cum_rewards += rewards
