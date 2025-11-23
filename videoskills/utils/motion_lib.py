@@ -406,31 +406,6 @@ class MotionLib():
 
         return new_motion
 
-    def fix_motion_heights(motion, skeleton_tree):
-        if skeleton_tree is None:
-            if hasattr(motion, "skeleton_tree"):
-                skeleton_tree = motion.skeleton_tree
-        body_heights = motion.global_translation[..., 2]
-        min_height = body_heights.min()
-
-        if skeleton_tree is None:
-            motion.global_translation[..., 2] -= min_height
-            return motion
-
-        root_translation = motion.root_translation
-        root_translation[:, 2] -= min_height
-
-        new_sk_state = SkeletonState.from_rotation_and_root_translation(
-            skeleton_tree,
-            motion.global_rotation,
-            root_translation,
-            is_local=False,
-        )
-
-        new_motion = SkeletonMotion.from_skeleton_state(new_sk_state, fps=motion.fps)
-
-        return new_motion
-
     def _sort_motions_by_length(self):
         sorted_indices = torch.argsort(torch.tensor(self._motion_lengths))  # on CPU first
 

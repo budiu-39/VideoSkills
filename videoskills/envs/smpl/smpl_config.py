@@ -31,7 +31,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        run_name = 'amass_al_baseline'
+        run_name = 'amass_rollout'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 40000  # number of policy updates
@@ -78,8 +78,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 
@@ -116,7 +116,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 256
+        num_envs = 2048
         num_actions = 69
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =

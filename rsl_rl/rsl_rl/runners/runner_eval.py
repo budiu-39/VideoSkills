@@ -35,6 +35,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
 
+        if 'use_z' not in self.policy_cfg:
+            self.policy_cfg['use_z'] = False
+
         # 旧版
         if self.policy_cfg['use_z']:
             train_cfg=  dict_to_class(train_cfg)
@@ -177,7 +180,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.current_learning_iteration += num_learning_iterations
         # self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
-    def eval(self, motion_ids=None, log = True):
+    def eval(self, motion_ids=None, log = True, rollout = False):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
         state_init = self.env._state_init
@@ -191,6 +194,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         num_envs = self.env.num_envs
         motion_lib = self.env._motion_lib
         device = self.device
+        saved_count = 0
 
         if motion_ids is not None:
             eval_total = len(motion_ids)
@@ -299,6 +303,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             motion_ids_sorted = sorted(motion_id_to_data.keys())
             for motion_id in motion_ids_sorted:
                 frames = motion_id_to_data[motion_id]
+                key = motion_lib._motion_keys[motion_id]
                 if not frames:
                     continue
 
@@ -310,8 +315,26 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 # 堆叠成 (T, J, 3)/(T, J, 4)
                 pred_pos = np.stack([f["body_pos"] for f in frames], axis=0)  # (T, J, 3)
                 pred_rot = np.stack([f["body_rot"] for f in frames], axis=0)  # (T, J, 4)
+                pred_dof = np.stack([f["dof_pos"] for f in frames], axis=0)  # (T, D)
                 tgt_pos = np.stack([f[tgt_pos_key] for f in frames], axis=0)  # (T, J, 3)
                 tgt_rot = np.stack([f[tgt_rot_key] for f in frames], axis=0)  # (T, J, 4)
+                tgt_dof = np.stack([f["ref_dof_pos"] for f in frames], axis=0)  # (T, D)
+                action = np.stack([f["actions"] for f in frames], axis=0)  # (T, A)
+
+                if rollout and key in success_keys:
+                    rollout_length = len(frames)
+                    rollout = {
+                        "pred_pos": pred_pos[:rollout_length],
+                        # "gt_pos": tgt_pos[:rollout_length],
+                        "pred_rot": pred_rot[:rollout_length],
+                        "action": action
+                        # "gt_rot": tgt_rot[:rollout_length],
+                        # "pred_dof_pos": pred_dof[:rollout_length],
+                        # "gt_dof_pos": tgt_dof[:rollout_length],
+                    }
+                    out_path = os.path.join(self.rollouts_succeed_path, f"{key}.pkl")
+                    joblib.dump(rollout, out_path, compress=True)
+                    saved_count += 1
 
                 pred_pos_all.append(pred_pos)
                 pred_rot_all.append(pred_rot)
@@ -354,6 +377,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         print("\n[Eval] Metrics for Successful Motions:")
         for k, v in metrics_success.items():
             print(f"   {k}: {np.mean(v):.3f}")
+
+        if rollout:
+            print(f"[Eval] Saved {saved_count} rollouts to {self.rollouts_succeed_path}.")
 
         num_success = sum(success_flags)
         num_total = len(success_flags)
@@ -539,7 +565,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
             frames = self.env.recorded_data[env_id]
             if not frames:
-                # 没有记录到帧就跳过（极少见，通常是未开启/提前 reset）
                 continue
 
             pred_pos = np.stack([f["body_pos"] for f in frames], axis=0)

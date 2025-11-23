@@ -34,7 +34,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        run_name = 'PULSE_rms_init_zero'
+        run_name = 'PULSE_tranformer_decoder_ra1'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 40000  # number of policy updates

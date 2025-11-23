@@ -3,9 +3,10 @@ from videoskills.utils import get_args
 from rsl_rl.algorithms.distill_dagger_z import (
     rollout_dagger, train_step, beta_schedule,
     build_student, load_teacher, build_env_and_cfg, DAggerCfg,
-    build_decoder_and_prior
+    build_decoder_and_prior, train_on_batch, train_step_segment
 )
 from rsl_rl.storage.rollout_buffer import ReplayBuf
+from rsl_rl.storage.rollout_clip_buffer import SegmentReplayBuf
 from videoskills.utils.helpers import class_to_dict
 import yaml
 import torch
@@ -23,7 +24,6 @@ except Exception:
 
 # 导入策略
 def main():
-
     # 复用训练参数解析
     args = get_args()
     device = args.rl_device
@@ -55,6 +55,9 @@ def main():
     optimizer = torch.optim.AdamW(optim_params, lr=DAggerCfg.lr, betas=DAggerCfg.betas, weight_decay=DAggerCfg.weight_decay)
 
     cfg = DAggerCfg()
+    cfg.num_envs = env.num_envs
+    cfg.steps_per_env = cfg.steps_per_env
+
     if max_iters is not None:
         cfg.max_iters = int(max_iters)
 
@@ -63,8 +66,16 @@ def main():
         env.reset()
 
     # 聚合缓冲
-    rb = ReplayBuf(cfg.replay_capacity, device)
+    # seg_buf = SegmentReplayBuf(
+    #     capacity_segments=cfg.replay_capacity // cfg.steps_per_env,
+    #     steps_per_env=cfg.steps_per_env,
+    #     device=device,
+    # )
 
+    rb = ReplayBuf(
+        capacity=cfg.replay_capacity,
+        device=device,
+    )
     t_last = time.time()
 
     if args.use_wandb:  # and not args.dev:
@@ -85,16 +96,20 @@ def main():
 
         t0 = time.perf_counter()
 
-        obs, mu_t, std_t, v_t = rollout_dagger(env, teacher, student, decoder, prior, cfg.steps_per_env, beta, device)
+        obs_flat, mu_flat, std_flat, v_flat, reset_flat = rollout_dagger(env, teacher, student, decoder,
+                                                                         prior, cfg.steps_per_env, beta, device)
         t_rollout = time.perf_counter()
 
-        rb.add(obs, mu_t, std_t, v_t)
+        # seg_buf.add_rollout(obs_flat, mu_flat, std_flat, v_flat, reset_flat, num_envs=env.num_envs)
+        rb.add(obs_flat, mu_flat, std_flat, v_flat)
         t_buffer = time.perf_counter()
 
-        out = train_step(
+
+        stats = train_step(
             student, optimizer, rb, cfg,
             decoder=decoder, prior=prior
         )
+        # stats = train_step_segment(student, optimizer, seg_buf, cfg, decoder, prior)
         t_train = time.perf_counter()
 
         dt_rollout = t_rollout - t0
@@ -102,19 +117,21 @@ def main():
         dt_train = t_train - t_buffer
         dt_total = t_train - t0
 
-        # print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s, train={dt_train:.3f}s, total={dt_total:.3f}s")
+        print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s,"
+              f"train={dt_train:.3f}s, total={dt_total:.3f}s, replay_buf_size:{len(rb):.3f}")
 
-        loss = out["total"]
-        klv = out.get("beh_kl", 0.0)
-        kl_lat = out.get("kl_lat", 0.0)
+        loss = stats["total"]
+        klv = stats.get("beh_kl", 0.0)
+        kl_lat = stats.get("kl_lat", 0.0)
+        ar1 = stats.get("ar1", 0.0)
 
         # 3) 日志/保存
         if it % cfg.log_interval == 0 or it == 1:
             dt = time.time() - t_last
             fps = cfg.steps_per_env * env.num_envs / (cfg.log_interval * dt)
             print(f"[DAgger] it={it:05d} | β={beta:.3f} "
-                  f"| loss={loss:.3f} (beh={klv:.3f}, lat={kl_lat:.3f}) "
-                  f"| buffer={rb.size:>7d} | fps≈{fps:.1f}")
+                  f"| loss={loss:.3f} (beh={klv:.3f}, lat={kl_lat:.3f}, ar1={ar1: .3f}) "
+                  f"| fps≈{fps:.1f}")
             t_last = time.time()
 
         if args.use_wandb:
@@ -123,8 +140,8 @@ def main():
                 "loss/total": loss,
                 "loss/behavior_KL": klv,
                 "loss/latent_KL": kl_lat,
+                "loss/ar1": ar1,
                 "beta": beta,
-                "replay/size": rb.size,
                 "fps": cfg.steps_per_env * env.num_envs / (time.time() - t_last + 1e-6)
             }, step=it)
 

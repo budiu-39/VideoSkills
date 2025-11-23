@@ -463,22 +463,22 @@ class LeggedRobotImi(LeggedRobot):
         #
         # body_too_far_now = (body_delta_sq.mean(dim=1) > self.early_termination_distance[0])
 
-        if self.eval_mode: #use_gt:
-            # 可以设置对比试验，eval 恒定用 方案 1, 训练时对比 方案 1 和 方案2 看一下区别
-            # 方案 1 ： 连续多帧达标才视为真的 early termination
-            valid_step = (self.episode_length_buf > 1)
-            inc_mask = torch.logical_and(body_too_far_now, valid_step)
-
-            # 计数累加/清零（逐 env）
-            self._too_far_count[inc_mask] += 1
-            self._too_far_count[~inc_mask] = 0
-
-            # 连续 15 帧达标才视为真的 early termination
-            body_too_far = (self._too_far_count >= 15)
-        else:
+        # if self.eval_mode: #use_gt:
+        #     # 可以设置对比试验，eval 恒定用 方案 1, 训练时对比 方案 1 和 方案2 看一下区别
+        #     # 方案 1 ： 连续多帧达标才视为真的 early termination
+        #     valid_step = (self.episode_length_buf > 1)
+        #     inc_mask = torch.logical_and(body_too_far_now, valid_step)
+        #
+        #     # 计数累加/清零（逐 env）
+        #     self._too_far_count[inc_mask] += 1
+        #     self._too_far_count[~inc_mask] = 0
+        #
+        #     # 连续 15 帧达标才视为真的 early termination
+        #     body_too_far = (self._too_far_count >= 15)
+        # else:
             # 方案 2： 只要当前帧达标就视为 early termination
             # 训练或无 GT 时，仍按“当前帧超过阈值 + 步数>1”判定
-            body_too_far = torch.logical_and(body_too_far_now, (self.episode_length_buf > 1))
+        body_too_far = torch.logical_and(body_too_far_now, (self.episode_length_buf > 1))
 
         self.reset_buf = ref_out | body_too_far | time_out
         self.time_out_buf = time_out | ref_out
@@ -729,6 +729,8 @@ class LeggedRobotImi(LeggedRobot):
             ref_dof_pos_cpu = self.ref_dof_pos.detach().cpu().numpy()
             done_flags_cpu = self.done_flags.detach().cpu().numpy()  # 先转为 CPU 上的 bool 数组
 
+            actions_cpu = self.actions.detach().cpu().numpy()
+
             if hasattr(self, 'ref_body_pos_gt'):
                 ref_body_pos_gt_cpu = (self.ref_body_pos_gt - self.pos_offset['body']).detach().cpu().numpy()
                 ref_body_rot_gt_cpu = self.ref_body_rot_gt.detach().cpu().numpy()
@@ -746,6 +748,7 @@ class LeggedRobotImi(LeggedRobot):
                     'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
                     'dof_pos': dof_pos_cpu[env_id].copy(),
                     'ref_dof_pos': ref_dof_pos_cpu[env_id].copy(),
+                    'actions': actions_cpu[env_id].copy(),
                     'ref_body_pos_gt': ref_body_pos_gt_cpu[env_id].copy() if hasattr(self, 'ref_body_pos_gt') else None,
                     'ref_body_rot_gt': ref_body_rot_gt_cpu[env_id].copy() if hasattr(self, 'ref_body_rot_gt') else None,
                     'ref_dof_pos_gt': ref_dof_pos_gt_cpu[env_id].copy() if hasattr(self, 'ref_dof_pos_gt') else None,

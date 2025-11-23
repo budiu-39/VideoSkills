@@ -86,3 +86,4 @@ class ReplayBuf:
             std_mb = torch.cat(std_mb_list, dim=0).to(self.device, non_blocking=True)
             val_mb = torch.cat(val_mb_list, dim=0).to(self.device, non_blocking=True)
             yield obs_mb, mu_mb, std_mb, val_mb
+

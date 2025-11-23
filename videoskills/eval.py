@@ -34,7 +34,7 @@ def eval(args):
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
     # policy = ppo_runner.get_inference_policy(device=env.device)
 
-    result = ppo_runner.eval()
+    result = ppo_runner.eval(rollout=True)
     print('Evaluation result: ', result)
 
     success_keys = result.get("success_keys", [])
