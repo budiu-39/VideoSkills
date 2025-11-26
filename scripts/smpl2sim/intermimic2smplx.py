@@ -23,17 +23,17 @@ import os
 import argparse
 import pathlib
 from scipy.spatial.transform import Rotation as sRot
-from typing import List, Dict, Tuple
+from typing import List, Dict
 import os.path as osp
 import numpy as np
 import torch
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 import trimesh
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.retarget.smpl_humanoid_tool import  humanoid2smpl
+from scripts.utils.smpl_humanoid_tool import  humanoid2smpl
 from scripts.preprocess.mujoco_contact_inference import penetration_depth_sequence_ig
 from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body
-from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
+from scripts.preprocess.mujoco_contact_inference import build_sk2mj_index
 # ---------------------- slicing spec inferred from user's code ----------------------
 SLICE_SPEC = {
     "root_pos":       (0, 3),      # (T,3)

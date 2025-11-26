@@ -1,25 +1,11 @@
 import os
 import sys
-import os.path as osp
 
 sys.path.append(os.getcwd())
 
-from scipy.spatial.transform import Rotation as sRot
-import numpy as np
-from tqdm import tqdm
-import argparse
-import glob
-from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
-from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
-from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-from smpl_sim.smpllib.smpl_parser import SMPL_Parser
-from scripts.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
+from scripts.utils.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
 import smplx
-import joblib
 import torch
-import mujoco
-import time
-from scripts.preprocess.padding import pad_skeleton_state
 
 import os
 # 若没有图形界面，则切换到 EGL 离屏
@@ -79,7 +65,7 @@ def pose_272_to_smpl(data_272):
     trans = trans.reshape(-1, 3)
     return trans, root_and_body
 
-import os, glob, cv2, time, joblib, numpy as np
+import os, glob, cv2, numpy as np
 import pyrender, trimesh
 from scipy.spatial.transform import Rotation as sRot
 
@@ -164,7 +150,7 @@ def add_ground_plane(scene, y=0.0, size=10.0, thickness=0.02):
 # ---------------- 渲染单段序列（可拼接视频） ----------------
 def render_sequence(verts_seq, faces, out_writer, width, height,
                     concat=False, video_reader=None, K=None, Rt_seq=None,
-                    fps_data=45.0, fps_video=None, video_time_offset=0.0):
+                    fps_data=30, fps_video=30, video_time_offset=0.0):
     scene = pyrender.Scene(bg_color=[0,0,0,0], ambient_light=[0.3,0.3,0.3])
     if K is not None and Rt_seq is not None:
         if Rt_seq.shape[-1] == 4:
@@ -279,6 +265,35 @@ def kinematic_acceleration(root_trans, fps=30, smooth=True):
     acc[-1]   = (pos[-1] - 2*pos[-2] + pos[-3]) / (dt*dt) if T > 2 else acc[-1]
 
     return vel, acc
+
+def smpl_visualize_and_render(trans, pose_aa, out_path):
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    width = 720
+    height = 720
+    out_size = (width, height)
+    writer = cv2.VideoWriter(out_path, fourcc, 30, out_size)
+    # 渲染视频看看 smpl 是否正确
+
+    T, J, C = pose_aa.shape
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    smpl_model = smplx.create(
+        model_path="data/SMPL",
+        model_type='smpl',
+        gender='neutral',
+        use_pca=False
+    ).to(device)
+    faces = smpl_model.faces
+
+    verts_seq = smpl_forward_vertices(smpl_model, trans, pose_aa, device=device)
+    render_sequence(
+        verts_seq=verts_seq,
+        faces=faces,
+        out_writer=writer,
+        width=width,
+        height=height,
+        fps_video=30
+    )
+
 
 if __name__ == "__main__":
     # ap = argparse.ArgumentParser()

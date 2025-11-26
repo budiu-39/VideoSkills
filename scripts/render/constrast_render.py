@@ -8,17 +8,13 @@ from scripts.render.viz.utils import smpl_connections
 
 from smplx import SMPL
 import joblib
-import cv2
-import pyrender
 from datetime import datetime
 import os
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 import argparse
-from scipy.spatial.transform import Rotation as sRot
 import torch
-from scripts.retarget.smpl_humanoid_tool import humanoid2smpl
+from scripts.utils.smpl_humanoid_tool import humanoid2smpl
 
 import tempfile, shutil
 import subprocess

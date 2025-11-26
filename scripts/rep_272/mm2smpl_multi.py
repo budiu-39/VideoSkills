@@ -10,13 +10,11 @@ sys.path.append(os.getcwd())
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
 from tqdm import tqdm
-import argparse
 import glob
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
-from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
-from scripts.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
+from scripts.utils.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
 import torch
 # import mujoco  # 并行时不建议打开 viewer
 from scripts.preprocess.padding import pad_skeleton_state

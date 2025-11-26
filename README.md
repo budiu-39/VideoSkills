@@ -134,7 +134,7 @@ project_root/
 ├── logs/                         # 训练日志、检查点、rollout 与渲染结果
 │
 ├── scripts/                      # 数据预处理与工具代码（与主代码分开）
-│   ├── preprocess/               # 数据转换与预处理工具
+│   ├── smpl2sim/               # 数据转换与预处理工具
 │   ├── retarget/                 # 重定向工具
 │   ├── render/                   # 渲染与结果可视化
 │   └── poselib/                  # 动作与骨架操作工具

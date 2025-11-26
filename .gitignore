@@ -178,3 +178,4 @@ GVHMR/outputs
 rollout/
 demo/results
 demo/gym_11
+vae_checkpoint/

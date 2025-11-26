@@ -1,0 +1,479 @@
+import os
+import glob
+import math
+import numpy as np
+from typing import List, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+
+
+# =========================
+# 1. 基础 TCN 模块
+# =========================
+
+class Chomp1d(nn.Module):
+    """去掉 padding 末尾的时间步，保持卷积前后的时间长度一致（用在 causal TCN 时）"""
+    def __init__(self, chomp_size: int):
+        super().__init__()
+        self.chomp_size = chomp_size
+
+    def forward(self, x):
+        if self.chomp_size == 0:
+            return x
+        return x[..., :-self.chomp_size]
+
+
+class TemporalBlock(nn.Module):
+    """标准 TCN residual block"""
+    def __init__(self, in_channels, out_channels, kernel_size, dilation, dropout=0.0, causal=False):
+        super().__init__()
+        padding = (kernel_size - 1) * dilation
+        if causal:
+            # causal: 右侧 padding，之后用 Chomp1d 删掉
+            self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size,
+                                   padding=padding, dilation=dilation)
+            self.chomp1 = Chomp1d(padding)
+        else:
+            # non-causal: 双侧 padding，使用 same padding
+            padding = (kernel_size - 1) * dilation // 2
+            self.conv1 = nn.Conv1d(in_channels, out_channels, kernel_size,
+                                   padding=padding, dilation=dilation)
+            self.chomp1 = nn.Identity()
+
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(dropout)
+
+        if causal:
+            self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size,
+                                   padding=padding * 2, dilation=dilation)
+            self.chomp2 = Chomp1d(padding * 2)
+        else:
+            self.conv2 = nn.Conv1d(out_channels, out_channels, kernel_size,
+                                   padding=padding, dilation=dilation)
+            self.chomp2 = nn.Identity()
+
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.downsample = nn.Conv1d(in_channels, out_channels, 1) \
+            if in_channels != out_channels else nn.Identity()
+        self.final_relu = nn.ReLU()
+
+    def forward(self, x):
+        # x: [B, C_in, T]
+        out = self.conv1(x)
+        out = self.chomp1(out)
+        out = self.relu1(out)
+        out = self.dropout1(out)
+
+        out = self.conv2(out)
+        out = self.chomp2(out)
+        out = self.relu2(out)
+        out = self.dropout2(out)
+
+        res = self.downsample(x)
+        return self.final_relu(out + res)
+
+
+class TCN(nn.Module):
+    """简单的多层 TCN"""
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        num_layers: int,
+        kernel_size: int = 3,
+        dropout: float = 0.0,
+        causal: bool = False,
+    ):
+        super().__init__()
+        layers = []
+        in_ch = input_dim
+        for i in range(num_layers):
+            out_ch = hidden_dim
+            dilation = 2 ** i
+            layers.append(
+                TemporalBlock(
+                    in_channels=in_ch,
+                    out_channels=out_ch,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    dropout=dropout,
+                    causal=causal,
+                )
+            )
+            in_ch = out_ch
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x):
+        # x: [B, C_in, T]
+        return self.network(x)  # [B, hidden_dim, T]
+
+
+# =========================
+# 2. Encoder / Decoder / VAE
+# =========================
+
+class TCNEncoder(nn.Module):
+    """
+    Encoder:
+      输入: state_seq [B, T, D_state]
+      输出: latent μ, logvar [B, latent_dim]
+    """
+    def __init__(
+        self,
+        state_dim: int,
+        latent_dim: int,
+        hidden_dim: int = 256,
+        num_layers: int = 4,
+        kernel_size: int = 3,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.tcn = TCN(
+            input_dim=state_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            kernel_size=kernel_size,
+            dropout=dropout,
+            causal=False,
+        )
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
+        self.fc_logvar = nn.Linear(hidden_dim, latent_dim)
+
+    def forward(self, state_seq):
+        # state_seq: [B, T, D_state]
+        x = state_seq.transpose(1, 2)  # [B, D_state, T]
+        h = self.tcn(x)                # [B, H, T]
+
+        # global pooling over time (average)
+        h_global = h.mean(dim=-1)      # [B, H]
+
+        mu = self.fc_mu(h_global)      # [B, latent_dim]
+        logvar = self.fc_logvar(h_global)
+        return mu, logvar
+
+
+class TCNDecoder(nn.Module):
+    """
+    Decoder:
+      输入: latent z [B, latent_dim]
+      输出: state_hat [B, T, D_state], action_hat [B, T, D_action]
+    使用一个 TCN backbone + 两个输出头
+    """
+    def __init__(
+        self,
+        latent_dim: int,
+        state_dim: int,
+        action_dim: int,
+        window_size: int,
+        hidden_dim: int = 256,
+        num_layers: int = 4,
+        kernel_size: int = 3,
+        dropout: float = 0.1,
+        use_pos_encoding: bool = True,
+    ):
+        super().__init__()
+        self.window_size = window_size
+        self.latent_dim = latent_dim
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.use_pos_encoding = use_pos_encoding
+
+        # 我们先把 z 映射到 hidden_dim，再展开到每个时间步
+        self.fc_z = nn.Linear(latent_dim, hidden_dim)
+
+        # 可选: 简单的 1D 位置编码（线性坐标）
+        if use_pos_encoding:
+            self.pos_embed = nn.Parameter(torch.randn(window_size, hidden_dim))
+        else:
+            self.pos_embed = None
+
+        # TCN backbone
+        # 输入维度就是 hidden_dim
+        self.tcn = TCN(
+            input_dim=hidden_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            kernel_size=kernel_size,
+            dropout=dropout,
+            causal=False,
+        )
+
+        # 两个输出头
+        self.state_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, state_dim),
+        )
+        self.action_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim),
+        )
+
+    def forward(self, z):
+        # z: [B, latent_dim]
+        B = z.size(0)
+        T = self.window_size
+
+        # [B, H]
+        h0 = self.fc_z(z)
+
+        # 扩展到每个时间步: [B, H, T]
+        h = h0.unsqueeze(-1).expand(B, h0.size(1), T)
+
+        # 加位置编码 (broadcast) -> 依然 [B, H, T]
+        if self.pos_embed is not None:
+            # pos_embed: [T, H] -> [1, H, T]
+            pos = self.pos_embed.transpose(0, 1).unsqueeze(0)  # [1, H, T]
+            h = h + pos
+
+        # TCN 处理
+        h_dec = self.tcn(h)  # [B, H, T]
+
+        # 转回 [B, T, H]
+        h_dec = h_dec.transpose(1, 2)  # [B, T, H]
+
+        state_hat = self.state_head(h_dec)   # [B, T, D_state]
+        action_hat = self.action_head(h_dec) # [B, T, D_action]
+        return state_hat, action_hat
+
+
+class MotionVAE(nn.Module):
+    """
+    整体 VAE:
+      输入: 状态序列 state_seq [B, T, D_state]
+      输出: 重建的 state_hat, action_hat 以及 latent μ, logvar
+    """
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        latent_dim: int,
+        window_size: int,
+        hidden_dim: int = 256,
+        num_layers: int = 4,
+        kernel_size: int = 3,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.encoder = TCNEncoder(
+            state_dim=state_dim,
+            latent_dim=latent_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            kernel_size=kernel_size,
+            dropout=dropout,
+        )
+        self.decoder = TCNDecoder(
+            latent_dim=latent_dim,
+            state_dim=state_dim,
+            action_dim=action_dim,
+            window_size=window_size,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            kernel_size=kernel_size,
+            dropout=dropout,
+            use_pos_encoding=True,
+        )
+
+    @staticmethod
+    def reparameterize(mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def forward(self, state_seq):
+        mu, logvar = self.encoder(state_seq)
+        z = self.reparameterize(mu, logvar)
+        state_hat, action_hat = self.decoder(z)
+        return state_hat, action_hat, mu, logvar
+
+
+# =========================
+# 3. 数据集: 读取 .npy 并切 window
+# =========================
+
+class MotionWindowDataset(Dataset):
+    """
+    假设每个 .npy 是 [T, D_total]，
+    其中最后 D_action 维是 action，其余是 state。
+    """
+    def __init__(
+        self,
+        root_dir: str,
+        window_size: int,
+        stride: int,
+        action_dim: int,
+    ):
+        super().__init__()
+        self.root_dir = root_dir
+        self.window_size = window_size
+        self.stride = stride
+        self.action_dim = action_dim
+
+        self.files = sorted(glob.glob(os.path.join(root_dir, "*.npy")))
+        if len(self.files) == 0:
+            raise ValueError(f"No .npy files found in {root_dir}")
+
+        # 为了更快，这里可以只缓存 shape，不全量读进来
+        self.index: List[Tuple[int, int]] = []  # (file_idx, start_t)
+
+        for file_idx, fpath in enumerate(self.files):
+            arr = np.load(fpath)  # [T, D_total]
+            T = arr.shape[0]
+            # 切 window
+            for start in range(0, T - window_size + 1, stride):
+                self.index.append((file_idx, start))
+
+        print(f"Found {len(self.files)} files, total {len(self.index)} windows.")
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, idx):
+        file_idx, start = self.index[idx]
+        fpath = self.files[file_idx]
+        arr = np.load(fpath)  # [T, D_total]
+        T, D_total = arr.shape
+        D_action = self.action_dim
+        D_state = D_total - D_action
+
+        window = arr[start:start + self.window_size]   # [W, D_total]
+        state = window[:, :D_state]                    # [W, D_state]
+        action = window[:, D_state:]                   # [W, D_action]
+
+        state = torch.from_numpy(state).float()
+        action = torch.from_numpy(action).float()
+
+        return {
+            "state": state,     # [W, D_state]
+            "action": action,   # [W, D_action]
+        }
+
+
+# =========================
+# 4. 训练代码示例
+# =========================
+
+def kl_divergence(mu, logvar):
+    # KL(N(mu, sigma) || N(0, I))
+    return -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1).mean()
+
+
+def train_vae(
+    data_root: str,
+    action_dim: int,
+    window_size: int = 64,
+    stride: int = 32,
+    latent_dim: int = 64,
+    hidden_dim: int = 256,
+    num_layers: int = 4,
+    kernel_size: int = 3,
+    dropout: float = 0.1,
+    batch_size: int = 32,
+    num_epochs: int = 50,
+    lr: float = 1e-3,
+    lambda_state: float = 1.0,
+    lambda_action: float = 2.0,
+    beta_kl: float = 1.0,
+    device: str = "cuda",
+):
+
+    # 先用一个文件探测 state_dim
+    probe_file = sorted(glob.glob(os.path.join(data_root, "*.npy")))[0]
+    arr = np.load(probe_file)
+    D_total = arr.shape[1]
+    state_dim = D_total - action_dim
+
+    dataset = MotionWindowDataset(
+        root_dir=data_root,
+        window_size=window_size,
+        stride=stride,
+        action_dim=action_dim,
+    )
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, drop_last=True)
+
+    model = MotionVAE(
+        state_dim=state_dim,
+        action_dim=action_dim,
+        latent_dim=latent_dim,
+        window_size=window_size,
+        hidden_dim=hidden_dim,
+        num_layers=num_layers,
+        kernel_size=kernel_size,
+        dropout=dropout,
+    ).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    for epoch in range(1, num_epochs + 1):
+        model.train()
+        total_loss = 0.0
+        total_rec_state = 0.0
+        total_rec_action = 0.0
+        total_kl = 0.0
+        n_batches = 0
+
+        for batch in dataloader:
+            state = batch["state"].to(device)   # [B, W, D_state]
+            action = batch["action"].to(device) # [B, W, D_action]
+
+            state_hat, action_hat, mu, logvar = model(state)
+
+            # reconstruction losses
+            rec_state = F.mse_loss(state_hat, state)
+            rec_action = F.mse_loss(action_hat, action)
+            kl = kl_divergence(mu, logvar)
+
+            loss = lambda_state * rec_state + lambda_action * rec_action + beta_kl * kl
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            total_rec_state += rec_state.item()
+            total_rec_action += rec_action.item()
+            total_kl += kl.item()
+            n_batches += 1
+
+        print(
+            f"Epoch {epoch:03d} | "
+            f"Loss {total_loss / n_batches:.4f} | "
+            f"RecS {total_rec_state / n_batches:.4f} | "
+            f"RecA {total_rec_action / n_batches:.4f} | "
+            f"KL {total_kl / n_batches:.4f}"
+        )
+
+    return model
+
+
+if __name__ == "__main__":
+    # 使用示例
+    DATA_ROOT = "/path/to/your/npy_folder"  # TODO: 改成你自己的路径
+    ACTION_DIM = 37  # TODO: 改成你的 action 维度
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    _ = train_vae(
+        data_root=DATA_ROOT,
+        action_dim=ACTION_DIM,
+        window_size=64,
+        stride=32,
+        latent_dim=64,
+        hidden_dim=256,
+        num_layers=4,
+        kernel_size=3,
+        dropout=0.1,
+        batch_size=32,
+        num_epochs=50,
+        lr=1e-3,
+        lambda_state=1.0,
+        lambda_action=2.0,   # action 更重要一点
+        beta_kl=1.0,
+        device=device,
+    )

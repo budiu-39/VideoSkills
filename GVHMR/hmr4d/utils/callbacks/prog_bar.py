@@ -38,7 +38,7 @@ def convert_kwargs_to_str(**kwargs):
         # Else for any other type, try to get the string conversion
         elif not isinstance(postfix[key], str):
             postfix[key] = str(postfix[key])
-        # Else if it's a string, don't need to preprocess anything
+        # Else if it's a string, don't need to smpl2sim anything
     # Stitch together to get the final postfix
     postfix = ", ".join(key + "=" + postfix[key].strip() for key in postfix.keys())
     return postfix

@@ -7,14 +7,12 @@ sys.path.append(os.getcwd())
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
 from tqdm import tqdm
-import argparse
 import glob
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPL_MUJOCO_NAMES, SMPL_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPL_Parser
-from scripts.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
-import joblib
+from scripts.utils.ms_utils import recover_from_local_rotation, smpl85_2_smpl322
 import torch
 import mujoco
 import time
@@ -58,7 +56,6 @@ def vis_mujoco(motion_traj, xml_path, humanoid_type='g1'):
             time.sleep(1 / 30)
 
 def rot6d_to_rotmat(x):  # x: (..., 6)
-    # Zhou et al. CVPR'19 的常见实现
     a1 = x[..., 0:3]
     a2 = x[..., 3:6]
     b1 = a1 / (np.linalg.norm(a1, axis=-1, keepdims=True) + 1e-8)

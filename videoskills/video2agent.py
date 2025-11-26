@@ -260,7 +260,7 @@ if __name__ == '__main__':
             print(f"[WARN] GVHMR failed on {mp4_path} (rc={e.returncode}). Skip this clip.")
             continue
 
-    # 2.preprocess (smpl) or retarget (gvhmr)
+    # 2.smpl2sim (smpl) or retarget (gvhmr)
 
     if args.task == 'smpl':
         motion_data_dir = os.path.join(log_dir, 'preprocessed_data')

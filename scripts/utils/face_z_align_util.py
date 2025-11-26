@@ -188,6 +188,35 @@ def euler2quat(e, order, deg=True):
     return result.view(original_shape)
 
 
+def my_quat_rotate(q, v):
+    shape = q.shape
+    q_w = q[:, -1]
+    q_vec = q[:, :3]
+    a = v * (2.0 * q_w ** 2 - 1.0).unsqueeze(-1)
+    b = torch.cross(q_vec, v, dim=-1) * q_w.unsqueeze(-1) * 2.0
+    c = q_vec * \
+        torch.bmm(q_vec.view(shape[0], 1, 3), v.view(
+            shape[0], 3, 1)).squeeze(-1) * 2.0
+    return a + b + c
+
+def rot_yaw(yaw):
+    cs = np.cos(yaw)
+    sn = np.sin(yaw)
+    return np.array([[cs, 0, sn], [0, 1, 0], [-sn, 0, cs]])
+
+def calc_heading(q):
+    ref_dir = torch.zeros_like(q[..., 0:3])
+    ref_dir[..., 2] = 1
+    rot_dir = my_quat_rotate(q, ref_dir)
+    heading = torch.atan2(rot_dir[..., 0], rot_dir[..., 2])
+    return heading
+
+def calc_heading_quat_inv(q):
+    heading = calc_heading(q)
+    axis = torch.zeros_like(q[..., 0:3])
+    axis[..., 1] = 1
+    return -heading, axis
+
 def expmap_to_quaternion(e):
     '''
     Convert axis-angle rotations (aka exponential maps) to quaternions.

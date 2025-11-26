@@ -16,7 +16,7 @@ from scripts.render.utils.torch import copy2cpu as c2c
 from scripts.render.viz.mesh_viewer import MeshViewer
 from scripts.render.viz.utils import create_video
 from scripts.render.viz.utils import smpl_connections
-from scripts.retarget.smpl_humanoid_tool import humanoid2smpl
+from scripts.utils.smpl_humanoid_tool import humanoid2smpl
 from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonTree
 
 
@@ -26,7 +26,7 @@ class Body:
         self.v = torch.tensor(vertices)
         self.jtr = torch.tensor(jtr)
 
-def viz_contrast_smpl_seq(sim_body, imw=1080, imh=1080, fps=30, contacts=None,
+def viz_smpl_seq(sim_body, imw=1080, imh=1080, fps=30, contacts=None,
                 render_body=True, render_joints=False, render_skeleton=False, render_ground=True, ground_plane=None,
                 use_offscreen=False, out_path=None, wireframe=False, RGBA=False,
                 joints_seq=None, joints_vel=None, follow_camera=False, vtx_list=None, points_seq=None, points_vel=None,
@@ -129,18 +129,18 @@ def viz_contrast_smpl_seq(sim_body, imw=1080, imh=1080, fps=30, contacts=None,
     del mv
 
 
-def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = None):
+def render(sim_data_path, output_path, use_offscreen, raw_video_path: str = None):
     MODEL_PATH = 'data/SMPL/smpl'
     smpl = SMPL(MODEL_PATH, gender='MALE', batch_size=1)
     # 判断输入是文件还是目录
-    if os.path.isfile(ref_sim_data_path):
-        pkl_files = [ref_sim_data_path]
-    elif os.path.isdir(ref_sim_data_path):
-        pkl_files = [os.path.join(ref_sim_data_path, f) for f in os.listdir(ref_sim_data_path) if f.endswith(".pkl")]
+    if os.path.isfile(sim_data_path):
+        pkl_files = [sim_data_path]
+    elif os.path.isdir(sim_data_path):
+        pkl_files = [os.path.join(sim_data_path, f) for f in os.listdir(sim_data_path) if f.endswith(".pkl")]
         pkl_files.sort()  # 保证顺序一致
-        dir_name = ref_sim_data_path.split('/')[-1]
+        dir_name = sim_data_path.split('/')[-1]
     else:
-        raise ValueError(f"Invalid path: {ref_sim_data_path}")
+        raise ValueError(f"Invalid path: {sim_data_path}")
 
     for pkl_file in pkl_files:
         ref_sim_data = joblib.load(pkl_file)
@@ -183,7 +183,7 @@ def render(ref_sim_data_path, output_path, use_offscreen, raw_video_path: str = 
         combo_video_file  = os.path.join(video_path, key_name + '_with_raw.mp4')  # 左右拼接后的最终视频
 
         mat = np.load(os.path.join(os.getcwd(), "scripts", "render", "camera_pos.npy"))
-        viz_contrast_smpl_seq(
+        viz_smpl_seq(
             sim_body, imw=1080, imh=1080, fps=30, contacts=None,
             render_body=True, render_joints=False, render_skeleton=False, render_ground=True,
             ground_plane=None,

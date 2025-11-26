@@ -7,24 +7,19 @@ from scripts.render.viz.utils import create_video
 from scripts.render.viz.utils import smpl_connections
 
 from smplx import SMPL
-import joblib
-import cv2
-import pyrender
 from datetime import datetime
 import os
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 import argparse
-from scipy.spatial.transform import Rotation as sRot
 import torch
-from scripts.retarget.smpl_humanoid_tool import humanoid2smpl
+from scripts.utils.smpl_humanoid_tool import humanoid2smpl
 
 import tempfile, shutil
 import subprocess
 from pathlib import Path
 import glob
-from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
+from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonMotion
 from videoskills.utils import torch_utils
 
 from videoskills.utils.torch_utils import exp_map_to_quat, quat_to_exp_map  # 可直接用你项目里那套

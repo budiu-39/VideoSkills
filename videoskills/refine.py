@@ -303,7 +303,7 @@ if __name__ == '__main__':
         render(args.render_run)
         sys.exit(0)
 
-    # 1.preprocess (smpl) or retarget (gvhmr)
+    # 1.smpl2sim (smpl) or retarget (gvhmr)
     # motion_data_dir = os.path.join(log_dir, 'preprocessed_data')
     # result = process_folder(gvhmr_output_dir, motion_data_dir)
 
