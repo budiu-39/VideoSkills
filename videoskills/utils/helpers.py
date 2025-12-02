@@ -287,8 +287,8 @@ def print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml"):
                                       flow_style=True)
     )
     cfg = {"env_cfg": env_cfg_dict, "train_cfg": train_cfg_dict}
-    print(yaml.dump(cfg, Dumper=SmartListDumper,
-                    sort_keys=False, allow_unicode=True, width=120))
+    # print(yaml.dump(cfg, Dumper=SmartListDumper,
+    #                 sort_keys=False, allow_unicode=True, width=120))
 
     def sanitize(o):
         if isinstance(o, (np.ndarray,)):

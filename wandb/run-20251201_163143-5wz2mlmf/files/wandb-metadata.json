@@ -1,0 +1,16 @@
+{
+  "os": "Linux-5.15.0-139-generic-x86_64-with-glibc2.17",
+  "python": "CPython 3.8.20",
+  "startedAt": "2025-12-01T15:31:43.955088Z",
+  "program": "/home/miku/Documents/VideoSkills/motor_vae/MotorVAE.py",
+  "codePath": "motor_vae/MotorVAE.py",
+  "git": {
+    "remote": "git@github.com:budiu-39/VideoSkills.git",
+    "commit": "334a838e0f289a52e6ee60c7058f4e4e20149c2a"
+  },
+  "email": "13113138785@163.com",
+  "root": "/home/miku/Documents/VideoSkills",
+  "host": "miku",
+  "executable": "/home/miku/anaconda3/envs/isaac/bin/python",
+  "codePathLocal": "motor_vae/MotorVAE.py"
+}

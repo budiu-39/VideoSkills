@@ -20,9 +20,39 @@ def make_symlink_batch_dir(files: List[str], base_tmp: str) -> str:
             pass
     return batch_dir
 
-def reset_motion_lib_dir(runner, dir_path: str):
+def reset_motion_lib_dir(runner, dir_path):
     """
     假定 runner.reset_motion_lib 接受“目录路径”，并会加载目录中所有 .npy 文件。
     若你的实现是 `reset_motion_lib(file_or_dir)`, 直接传目录即可。
     """
     runner.reset_motion_lib(dir_path)
+
+def build_key_from_path(path: str, root: str) -> str:
+    """
+    根据 amass_root 下某个文件的 path，生成 key_name_dump。
+    兼容 .npz / .npy 等扩展名。
+    """
+    rel = os.path.relpath(path, root)          # 例如 'CMU/sub1/file_001.npz'
+    parts = rel.split(os.sep)                  # ['CMU', 'sub1', 'file_001.npz']
+    stem, _ = os.path.splitext(parts[-1])      # 'file_001'
+    parts[-1] = stem                           # ['CMU', 'sub1', 'file_001']
+    key_name_dump = "-".join(parts)     # '0-CMU_sub1_file_001'
+    return key_name_dump
+
+def build_key_to_path_index(amass_root: str,
+                            exts=(".npy", ".npz")) -> dict:
+    """
+    扫描 amass_root 下所有文件，建立:
+        key_name_dump -> 文件绝对路径
+    只保留指定扩展名的文件（默认 .npy & .npz）
+    """
+    key_to_path = {}
+
+    for dirpath, dirnames, filenames in os.walk(amass_root):
+        for fname in filenames:
+            full_path = os.path.join(dirpath, fname)
+            key = build_key_from_path(full_path, amass_root)
+            key_to_path[key] = full_path
+
+    print(f"[INFO] Indexed {len(key_to_path)} motions from {amass_root}")
+    return key_to_path

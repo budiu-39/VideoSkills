@@ -2,7 +2,7 @@
 This file is used to transform all smpl to z+ direction.
 '''
 
-from scripts.utils.face_z_align_util import *
+from scripts.rep_272.face_z_align_util import *
 import os
 from tqdm import tqdm
 import argparse

@@ -2,7 +2,7 @@
 This file is used to transform all smpl to z+ direction.
 '''
 
-from scripts.utils.face_z_align_util import *
+from scripts.rep_272.face_z_align_util import *
 import os
 import torch
 from tqdm import tqdm
@@ -37,9 +37,9 @@ def my_quat_rotate(q, v):
 
 
 if __name__ == '__main__':
-    folder_path = "/logs/smpl_ppo/amass_rollout/refine_results/succeed"
+    folder_path = "logs/smpl_ppo/amass_rollout/refine_results/succeed"
     # folder_path = "dataset/humanml3d"
-    output_dir = "/logs/smpl_ppo/amass_rollout/292_w_action"
+    output_dir = "logs/smpl_ppo/amass_rollout/272_w_action"
     # npy_files = sorted(glob.glob(os.path.join(folder_path,'*.npy')))
     pkl_files = sorted(glob.glob(os.path.join(folder_path, '*.pkl'), recursive=True))
     os.makedirs(output_dir, exist_ok=True)
@@ -128,7 +128,7 @@ if __name__ == '__main__':
         output_path = os.path.join(output_dir, save_path)
         np.save(output_path, x272_action)
     print(f"bad_cnt: {bad_cnt}")
-    print(f"Processed files are saved in 292 dim representation.")
+    print(f"Processed files are saved in 272 + action dim representation.")
 
 
 

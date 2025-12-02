@@ -7,7 +7,7 @@ import isaacgym
 from videoskills.utils import get_args, task_registry
 import wandb
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict
-from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked
+from utils.refine_utils import make_symlink_batch_dir, reset_motion_lib_dir, chunked, build_key_to_path_index
 from videoskills.utils.helpers import parse_motion_file_path
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.al.active_learner import ActiveLearner
@@ -26,6 +26,7 @@ try:
     torch.set_float32_matmul_precision('high')
 except Exception:
     pass
+
 
 def train(args):
     env_cfg, train_cfg = task_registry.get_cfgs(args)
@@ -49,23 +50,39 @@ def train(args):
     if args.dev:
         train_cfg.runner.eval_interval = 10
 
+    train_keys_txt = "../MotionStreamer/data/AMASS_new/active_subset_train_kmedoids/control1_names.txt"
+    test_keys_txt = "../MotionStreamer/data/AMASS_new/active_subset_test/test_names.txt"
+    motion_root = "dataset/smpl_motion/AMASS_train_fixed_height"
 
-    train_batch_dir = "dataset/smpl_motion/amass_al_baseline"
-    test_batch_dir = "dataset/smpl_motion/test_amass_al"
-    # subset_file = "dataset/smpl_motion/active_learning"
-    # subset = os.listdir(subset_file)
+    key_to_path = build_key_to_path_index(
+        amass_root=motion_root,
+        exts=(".npy",)  # 如果你训练用的是 npy，就只保留 npy
+    )
+
+    train_motion_paths = []
+    with open(train_keys_txt, "r") as f:
+        for line in f:
+            key = line.strip()
+            train_motion_paths.append(key_to_path[key])
+
+    test_motion_paths = []
+    with open(test_keys_txt, "r") as f:
+        for line in f:
+            key = line.strip()
+            test_motion_paths.append(key_to_path[key])
+
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
         # for train_batch_dir in subset:
         #     print(f"loading {train_batch_dir}")
         #     train_batch_dir = os.path.join(subset_file, train_batch_dir)
-        reset_motion_lib_dir(ppo_runner, train_batch_dir)
+        reset_motion_lib_dir(ppo_runner, train_motion_paths)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
         result = ppo_runner.eval(log=False)
-        reset_motion_lib_dir(ppo_runner, test_batch_dir)
+        reset_motion_lib_dir(ppo_runner, test_motion_paths)
         ppo_runner.eval()
 
 

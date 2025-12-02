@@ -10,16 +10,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
 
         # FiLM 相关配置
-        use_z = True
-        d_model = 512
-        depth_actor = 4
-        depth_critic = 4
-
-        proprioception_dim = 358
-        phase_dim = 2
-        z_dim = 64
-        context_dim = 289
-        depth_film = 3
+        use_z = False
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -31,7 +22,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        run_name = 'amass_rollout'
+        policy_class_name = 'ActorCriticMLP'
+        run_name = 'amass_valid'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 40000  # number of policy updates
@@ -42,8 +34,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 2000  # check for potential saves every this many iterations
-        eval_interval = 2000
+        save_interval = 50  # check for potential saves every this many iterations
+        eval_interval = 50
 
         num_steps_per_env = 32  # per iteration
 
@@ -78,7 +70,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_valid')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
@@ -116,7 +108,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 2048
+        num_envs = 1024
         num_actions = 69
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =

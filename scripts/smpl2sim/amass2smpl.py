@@ -63,7 +63,7 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     args = parser.parse_args()
-    output_dir = "AMASS_train_fixed_height"
+    output_dir = "AMASS_valid"
 
     process_split = args.process_split
     upright_start = True
@@ -99,11 +99,10 @@ if __name__ == "__main__":
     amass_occlusion = joblib.load("data/amass_copycat_occlusion_v3.pkl")
     amass_full_motion_dict = {}
     amass_splits = {
-        # 'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
-        # 'test': ['Transitions_mocap', 'SSM_synced'],
-        # 'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
-        #           "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
-        'train': ['BioMotionLab_NTroje']
+        'valid': ['HumanEva', 'MPI_HDM05', 'SFU', 'MPI_mosh'],
+        'test': ['Transitions_mocap', 'SSM_synced'],
+        'train': ['CMU', 'MPI_Limits', 'TotalCapture', 'KIT', 'EKUT', 'TCD_handMocap', "BMLhandball", "DanceDB",
+                  "ACCAD", "BMLmovi", "BioMotionLab_NTroje", "Eyes_Japan_Dataset", "DFaust_67"]  # Adding ACCAD
     }
     process_set = amass_splits[process_split]
     length_acc = []

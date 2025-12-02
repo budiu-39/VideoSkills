@@ -1,5 +1,5 @@
 from pytorch3d.transforms import axis_angle_to_matrix, matrix_to_axis_angle, matrix_to_rotation_6d
-from scripts.utils.face_z_align_util import *
+from scripts.rep_272.face_z_align_util import *
 import copy
 
 import torch

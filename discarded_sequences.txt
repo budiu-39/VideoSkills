@@ -1,0 +1,1 @@
+/home/miku/Documents/Dataset/AMASS_part/CMU/CMU/15/15_05_poses.npz	seq_len=5737

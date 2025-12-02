@@ -31,7 +31,7 @@ from rsl_rl.modules.actor_critic import ActorCritic                     # 老师
 from rsl_rl.modules.actor_critic_attention import ActorCritic_Attention  # 学生：Transformer
 from rsl_rl.network.film import FiLMNetwork
 from rsl_rl.backbone.body_graph_z import BodyGraphZ as BodyGraphZ_enc
-from rsl_rl.backbone.body_graph_z_decoder import BodyGraphZ
+from rsl_rl.backbone.body_graph_z_decoder_only import BodyGraphZ
 
 # torch.autograd.set_detect_anomaly(True)
 

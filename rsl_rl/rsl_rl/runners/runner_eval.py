@@ -205,6 +205,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         total_rewards = []
         success_flags = []
+        failed_details = [] # (key, frame)
         reward_until_fail_list = []
         failed_keys = []
         success_keys = []
@@ -290,6 +291,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 else:
                     reward_until_fail_list.append(reward_until_fail[env_id].item())
                     failed_keys.append(key)
+                    failed_details.append((key, ep_len))
 
             motion_id_to_data = defaultdict(list)
             pred_pos_all, gt_pos_all, pred_rot_all, gt_rot_all = [], [], [], []
@@ -435,7 +437,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             "num_success": num_success,
             "num_total": num_total,
             "success_keys": success_keys_unique,  # <<< 新增
-            "failed_keys": failed_keys_unique,  # <<< 已有但这里也返回（去重）
+            "failed_keys": failed_details,
         }
         return result
 
