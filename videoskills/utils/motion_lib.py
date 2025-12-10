@@ -223,6 +223,19 @@ class MotionLib():
 
         motion_files = self._fetch_motion_files(motion_file)
 
+        try:
+            mp.set_sharing_strategy('file_system')
+        except RuntimeError:
+            # 这一行必须在任何 tensor 及其多进程操作之前运行
+            pass
+
+        try:
+            # os.sched_getaffinity(0) 返回当前进程被允许使用的 CPU 集合
+            num_workers = len(os.sched_getaffinity(0))
+        except AttributeError:
+            # 如果在 Windows 或非 Linux 环境下回退
+            num_workers = os.cpu_count()
+
         # 准备传给 Worker 的参数
         # 必须确保 dof_body_ids 和 offsets 在 CPU 上，否则多进程会报错或变慢
         cpu_dof_body_ids = self._dof_body_ids.cpu() if isinstance(self._dof_body_ids, torch.Tensor) else torch.tensor(
@@ -240,9 +253,6 @@ class MotionLib():
                 self._num_dof
             ))
 
-        # 使用多进程加载
-        # 根据 CPU 核数设定进程数，一般 os.cpu_count() 或稍微少一点
-        num_workers = min(16, os.cpu_count())
         print(f"Loading {len(motion_files)} motions using {num_workers} processes...")
 
         # 1. 并行处理 (CPU 密集型 + IO)
@@ -256,8 +266,8 @@ class MotionLib():
 
         # 2. 串行后处理 (GPU 传输)
         # 将数据从 CPU 转移到 GPU 并存入列表
-        print("Moving data to GPU...")
-        for res in tqdm(results, desc="Uploading to GPU"):
+        # print("Moving data to GPU...")
+        for res in tqdm(results, desc="concating motions"):
             curr_motion = res["motion"]
 
             # 计算剩余元数据
