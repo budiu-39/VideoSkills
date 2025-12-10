@@ -7,8 +7,9 @@ class PolicySkillTreeVAE(nn.Module):
                  state_dim=272,
                  action_dim=12,
                  window_size=32,
-                 hidden_dim=512,
-                 latent_dim=32):
+                 hidden_dim=768,
+                 latent_dim=32,
+                 down_t=4):
         super().__init__()
 
         # 1. 输入维度修正：直接使用 state_dim
@@ -21,10 +22,10 @@ class PolicySkillTreeVAE(nn.Module):
         self.output_dim = state_dim + action_dim
 
         # Encoder
-        self.encoder = WindowEncoder(self.input_dim, window_size, hidden_dim, latent_dim)
+        self.encoder = WindowEncoder(self.input_dim, window_size, hidden_dim, latent_dim, down_t=down_t)
 
         # Decoder
-        self.decoder = WindowDecoder(self.output_dim, window_size, hidden_dim, latent_dim)
+        self.decoder = WindowDecoder(self.output_dim, window_size, hidden_dim, latent_dim, down_t=down_t)
 
     def preprocess(self, x_state):
         """

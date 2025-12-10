@@ -36,7 +36,7 @@ def build_key_from_path(path: str, root: str) -> str:
     parts = rel.split(os.sep)                  # ['CMU', 'sub1', 'file_001.npz']
     stem, _ = os.path.splitext(parts[-1])      # 'file_001'
     parts[-1] = stem                           # ['CMU', 'sub1', 'file_001']
-    key_name_dump = "-".join(parts)     # '0-CMU_sub1_file_001'
+    key_name_dump = '0-' + "_".join(parts)     # '0-CMU_sub1_file_001'
     return key_name_dump
 
 def build_key_to_path_index(amass_root: str,

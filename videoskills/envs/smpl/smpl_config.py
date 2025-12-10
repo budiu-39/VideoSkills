@@ -3,6 +3,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobo
 class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class policy:
         init_noise_std = 0.055
+        # init_noise_std = 1.0
         fixed_std = True
         # init_noise_std = 0.15
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
@@ -11,6 +12,7 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
         # FiLM 相关配置
         use_z = False
+        use_gsde = False
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -22,11 +24,11 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
 
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
-        policy_class_name = 'ActorCriticMLP'
-        run_name = 'amass_valid'
+        policy_class_name = 'ActorCritic'
+        run_name = 'phc_mp'  # 'phc_progress'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
-        max_iterations = 40000  # number of policy updates
+        max_iterations = 80000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
@@ -34,8 +36,8 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 50  # check for potential saves every this many iterations
-        eval_interval = 50
+        save_interval = 2000 # check for potential saves every this many iterations
+        eval_interval = 2000
 
         num_steps_per_env = 32  # per iteration
 
@@ -70,8 +72,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_valid')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 
@@ -108,7 +110,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 1024
+        num_envs = 4096
         num_actions = 69
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =

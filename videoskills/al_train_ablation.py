@@ -50,7 +50,7 @@ def train(args):
     if args.dev:
         train_cfg.runner.eval_interval = 10
 
-    train_keys_txt = "../MotionStreamer/data/AMASS_new/active_subset_train_kmedoids/control1_names.txt"
+    train_keys_txt = "../MotionStreamer/data/AMASS_new/active_subset_train_kmeans/picked_names_origin.txt"
     test_keys_txt = "../MotionStreamer/data/AMASS_new/active_subset_test/test_names.txt"
     motion_root = "dataset/smpl_motion/AMASS_train_fixed_height"
 
@@ -76,14 +76,46 @@ def train(args):
         # for train_batch_dir in subset:
         #     print(f"loading {train_batch_dir}")
         #     train_batch_dir = os.path.join(subset_file, train_batch_dir)
+        # reset_motion_lib_dir(ppo_runner, env_cfg.motion.file)
         reset_motion_lib_dir(ppo_runner, train_motion_paths)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
         # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
         result = ppo_runner.eval(log=False)
+        print('Evaluation result: ', result)
+
+        success_keys = result.get("success_keys", [])
+        failed_keys = result.get("failed_keys", [])
+
+        with open(f"{ppo_runner.log_dir}/failed_keys_it{it}_train.txt", "w", encoding="utf-8") as f:
+            for item in failed_keys:
+                key, frame = item
+                f.write(f"{key},{frame}\n")  # 写入 Key,Frame
+
+
+        with open(f"{ppo_runner.log_dir}/success_keys_it{it}_train.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(map(str, success_keys)))
+
+        print(f"Saved {len(success_keys)} success keys and {len(failed_keys)} failed keys to TXT files.")
         reset_motion_lib_dir(ppo_runner, test_motion_paths)
-        ppo_runner.eval()
+        result = ppo_runner.eval()
+        print('Evaluation result: ', result)
+
+        success_keys = result.get("success_keys", [])
+        failed_keys = result.get("failed_keys", [])
+
+        with open(f"{ppo_runner.log_dir}/failed_keys_it{it}_test.txt", "w", encoding="utf-8") as f:
+            for item in failed_keys:
+                key, frame = item
+                f.write(f"{key},{frame}\n")  # 写入 Key,Frame
+
+
+        with open(f"{ppo_runner.log_dir}/success_keys_it{it}_test.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(map(str, success_keys)))
+
+        print(f"Saved {len(success_keys)} success keys and {len(failed_keys)} failed keys to TXT files.")
+
 
 
 

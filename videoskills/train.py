@@ -58,7 +58,23 @@ def train(args):
         #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
         #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
         # reset_motion_lib_dir(ppo_runner, test_batch_dir)
-        ppo_runner.eval()
+
+        result = ppo_runner.eval()
+        print('Evaluation result: ', result)
+
+        success_keys = result.get("success_keys", [])
+        failed_keys = result.get("failed_keys", [])
+
+        with open(f"{ppo_runner.log_dir}/failed_keys_it{it}.txt", "w", encoding="utf-8") as f:
+            for item in failed_keys:
+                key, frame = item
+                f.write(f"{key},{frame}\n")  # 写入 Key,Frame
+
+
+        with open(f"{ppo_runner.log_dir}/success_keys_it{it}.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(map(str, success_keys)))
+
+        print(f"Saved {len(success_keys)} success keys and {len(failed_keys)} failed keys to TXT files.")
 
 
 if __name__ == '__main__':

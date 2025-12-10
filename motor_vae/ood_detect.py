@@ -4,14 +4,18 @@ import seaborn as sns  # 需要 pip install seaborn
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import roc_auc_score
 
-emb_path = "logs/motor_vae/train_test_embeddings_new.npz"
+emb_path = "vae_checkpoint/96w_96d_512dim_baseline_1203-1802/embeddings_result/embeddings.npz"
+# emb_train_path = "logs/motor_vae/train_test_embeddings_new.npz"
+
 
 print(f"Loading {emb_path}...")
 data = np.load(emb_path)
+# data_supplement = np.load(emb_train_path)
 emb_train   = data["train"]
 emb_success = data["success"]
 emb_failed  = data["failed"]
-
+# emb_failed_train = data_supplement["failed"]
+# emb_failed  = np.concatenate([emb_failed, emb_failed_train], axis=0)
 print(f"Original Shapes -> Train: {emb_train.shape}, Success: {emb_success.shape}, Failed: {emb_failed.shape}")
 
 # ==========================================
@@ -96,7 +100,7 @@ plt.ylabel("Density")
 plt.legend()
 plt.grid(True, alpha=0.3)
 
-out_file = "logs/motor_vae/knn_density_analysis.png"
+out_file = "logs/motor_vae/knn_density_analysis_valid.png"
 plt.savefig(out_file, dpi=300)
 print(f"Saved plot to {out_file}")
 plt.show()

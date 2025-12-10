@@ -86,6 +86,19 @@ class Resnet1D(nn.Module):
     def forward(self, x):
         return self.model(x)
 
+def init_weights(m):
+    """
+    Kaiming Initialization，用于控制初始方差。
+    """
+    if isinstance(m, (nn.Conv1d, nn.Linear)):
+        # 使用 fan_out 模式保持前向传播的方差稳定
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, (nn.BatchNorm1d, nn.LayerNorm)):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+
 
 # --- 核心网络 ---
 class WindowEncoder(nn.Module):
@@ -136,7 +149,7 @@ class WindowEncoder(nn.Module):
 
 class WindowDecoder(nn.Module):
     def __init__(self, output_dim=272, window_size=32, hidden_size=1024, latent_dim=16,
-                 down_t=2, stride=2, depth=3, dilation_growth_rate=3, activation='relu', norm='BN'):
+                 down_t=3, stride=2, depth=3, dilation_growth_rate=3, activation='relu', norm='BN'):
         super().__init__()
 
         self.hidden_size = hidden_size
@@ -163,6 +176,13 @@ class WindowDecoder(nn.Module):
         blocks.append(nn.Conv1d(hidden_size, output_dim, kernel_size=3, padding=1))
 
         self.reconstructor = nn.Sequential(*blocks)
+
+        # self.apply(init_weights)
+        #
+        # # ★★★ 关键：极小化投影层，防止初始爆炸 ★★★
+        # # 这一层是 96 -> 4608，必须把权重初始化得非常小
+        # nn.init.normal_(self.fc_proj.weight, mean=0.0, std=0.001)
+        # nn.init.constant_(self.fc_proj.bias, 0)
 
     def forward(self, z):
         # z: [B, Latent]

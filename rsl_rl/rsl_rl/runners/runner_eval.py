@@ -45,9 +45,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         else:
             actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
+            actor = self.build_mlp(self.env.num_obs, self.policy_cfg['actor_hidden_dims'], self.env.num_actions)
+            critic = self.build_mlp(num_critic_obs, self.policy_cfg['critic_hidden_dims'], 1)
             actor_critic = actor_critic_class(self.env.num_obs,
                                                    num_critic_obs,
                                                    self.env.num_actions,
+                                                   actor, critic, self.policy_cfg['actor_hidden_dims'][-1],
                                                    **self.policy_cfg).to(self.device)
 
 
@@ -658,7 +661,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             "Perf/learning_time": locs['learn_time'],
             "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
                         locs['collection_time'] + locs['learn_time']),
-            "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
+            # "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
             "Imitation/ET_rate": locs['ET_rate']
         }
 
@@ -787,3 +790,14 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.reset_with_motion_ids(init_ids)
 
 
+    def build_mlp(self, mlp_input_dim, mlp_hidden_dims, num_outputs):
+        import torch.nn as nn
+        activation = nn.SiLU()
+        layers = []
+        layers.append(nn.Linear(mlp_input_dim, mlp_hidden_dims[0]))
+        layers.append(activation)
+        for l in range(len(mlp_hidden_dims)-1):
+            layers.append(nn.Linear(mlp_hidden_dims[l], mlp_hidden_dims[l + 1]))
+            layers.append(activation)
+
+        return nn.Sequential(*layers)

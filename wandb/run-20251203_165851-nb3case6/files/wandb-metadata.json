@@ -1,0 +1,43 @@
+{
+  "os": "Linux-5.15.0-139-generic-x86_64-with-glibc2.17",
+  "python": "CPython 3.8.20",
+  "startedAt": "2025-12-03T15:58:51.624819Z",
+  "program": "/home/miku/Documents/VideoSkills/motor_vae/MotorVAE.py",
+  "codePath": "motor_vae/MotorVAE.py",
+  "git": {
+    "remote": "git@github.com:budiu-39/VideoSkills.git",
+    "commit": "7492e6fdadc2f56a6c2b39332a24a9b9dcfe01a6"
+  },
+  "email": "13113138785@163.com",
+  "root": "/home/miku/Documents/VideoSkills",
+  "host": "miku",
+  "executable": "/home/miku/anaconda3/envs/isaac/bin/python",
+  "codePathLocal": "motor_vae/MotorVAE.py",
+  "cpu_count": 10,
+  "cpu_count_logical": 16,
+  "gpu": "NVIDIA GeForce RTX 4070 Ti SUPER",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "957231173632",
+      "used": "734404902912"
+    }
+  },
+  "memory": {
+    "total": "33449938944"
+  },
+  "cpu": {
+    "count": 10,
+    "countLogical": 16
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 4070 Ti SUPER",
+      "memoryTotal": "17171480576",
+      "cudaCores": 8448,
+      "architecture": "Ada",
+      "uuid": "GPU-e63d3240-9207-f1ca-1fee-90b8c36631be"
+    }
+  ],
+  "cudaVersion": "12.7"
+}

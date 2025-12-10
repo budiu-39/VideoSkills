@@ -1,0 +1,38 @@
+# configs/default.yaml
+
+# --- 实验基础设置 ---
+exp_name: "96w_96d_512dim_baseline"
+seed: 42
+device: "cuda"
+save_dir_root: "./vae_checkpoint"
+
+# --- 数据路径 ---
+data_root: "dataset/272_rep_w_action/272_w_action"
+
+# --- 模型参数 ---
+state_dim: 272
+action_dim: 69
+window_size: 96
+hidden_dim: 512
+latent_dim: 96
+down_t: 3          # 下采样层数，之前硬编码在代码里的，现在提出来
+norm_type: "BN"    # Normalization 类型
+
+# --- 训练参数 ---
+batch_size: 2048
+num_epochs: 150
+lr: 0.0002        # 5e-5
+kl_anneal_steps: 5000
+
+# --- Loss 设置 ---
+state_recons_type: "optimal_gaussian" # 或者 "mse"
+action_recons_type: "mse"
+lambda_state: 1.0
+lambda_action: 5.0
+target_kl_weight: 0.005
+
+# --- WandB ---
+wandb_project: "VideoSkills-VAE"
+
+
+save_interval: 5

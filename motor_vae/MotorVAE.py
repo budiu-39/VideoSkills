@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import datetime
 import wandb
+import yaml
+import argparse
 
 # 引入你的新模型
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -228,41 +230,39 @@ def get_kl_weight(step, total_steps, target_weight, start_weight=1e-4):
 # 4. 训练主流程
 # =========================
 
-def train_vae(
-        data_root,
-        state_dim=272,
-        action_dim=69,
-        window_size=32,
-        batch_size=2048,
-        num_epochs=100,
-        lr=3e-4,
-        kl_anneal_steps = 5000,
-        device="cuda",
-        save_dir=None,
-        state_recons_type="optimal_gaussian",
-        action_recons_type="optimal_gaussian",
-        wandb_project = "VideoSkills-VAE",  # <--- 新增 wandb 参数
-        wandb_name = 'double_gaussian'
-):
-    # 1. 准备数据
+def train_vae(config):
+    # 解包配置
+    data_root = config['data_root']
+    state_dim = config['state_dim']
+    action_dim = config['action_dim']
+    window_size = config['window_size']
+    hidden_dim = config['hidden_dim']
+    latent_dim = config['latent_dim']
+    down_t = config.get('down_t', 3)  # 增加 down_t，默认 4
+    norm_type = config.get('norm_type', 'LN')  # 增加 norm
 
-    if wandb_name is None:
-        wandb_name = f"vae_{datetime.datetime.now().strftime('%m%d_%H%M')}"
+    batch_size = config['batch_size']
+    num_epochs = config['num_epochs']
+    lr = float(config['lr'])  # 确保是浮点
+    kl_anneal_steps = config['kl_anneal_steps']
 
+    state_recons_type = config['state_recons_type']
+    action_recons_type = config['action_recons_type']
+
+    device = config.get('device', 'cuda')
+    exp_name = config.get('exp_name', 'vae_run')
+    wandb_project = config.get('wandb_project', 'VideoSkills-VAE')
+
+    # 生成保存路径
+    timestamp = datetime.datetime.now().strftime("%m%d-%H%M")
+    save_dir = os.path.join(config['save_dir_root'], f"{exp_name}_{timestamp}")
+    save_interval = config.get('save_interval', 5)
+
+    # 1. WandB Init
     wandb.init(
         project=wandb_project,
-        name=wandb_name,
-        config={
-            "state_dim": state_dim,
-            "action_dim": action_dim,
-            "window_size": window_size,
-            "batch_size": batch_size,
-            "lr": lr,
-            "kl_anneal_steps": kl_anneal_steps,
-            "state_recons_type": state_recons_type,
-            "lambda_state": 1.0,
-            "lambda_action": 5.0
-        }
+        name=f"{exp_name}_{timestamp}",
+        config=config  # 直接传入整个 config 字典
     )
 
     all_files = sorted(glob.glob(os.path.join(data_root, "*.npy")))
@@ -271,7 +271,7 @@ def train_vae(
     train_files = all_files[:split_idx]
     test_files = all_files[split_idx:]
 
-    train_ds = MotionWindowDataset(window_size, 8, action_dim, train_files)
+    train_ds = MotionWindowDataset(window_size, 16, action_dim, train_files)
     test_ds = MotionWindowDataset(window_size, 32, action_dim, test_files)  # Stride可以大一点用于eval
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=8)
@@ -288,8 +288,9 @@ def train_vae(
         state_dim=state_dim,
         action_dim=action_dim,
         window_size=window_size,
-        hidden_dim=512,  # 模型内部参数
-        latent_dim=64
+        hidden_dim=hidden_dim,
+        latent_dim=latent_dim,
+        down_t=down_t,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -300,33 +301,33 @@ def train_vae(
     print(f"[Info] State Loss: {state_recons_type}")
     if state_recons_type == "optimal_gaussian":
         # State 相对平滑，允许 sigma 小一点 (-2.0)
-        state_loss_fn = OptimalGaussianReconstructionLoss(mode="per_dim", min_log_sigma=-1.0).to(device)
+        state_loss_fn = OptimalGaussianReconstructionLoss(mode="per_dim", min_log_sigma=-0.5).to(device)
     else:
         state_loss_fn = None # 使用 MSE
 
     print(f"[Info] Action Loss: {action_recons_type}")
     if action_recons_type == "optimal_gaussian":
         # ★★★ Action 比较抖动，建议把下限调高到 -1.0，防止过度自信导致的爆炸 ★★★
-        action_loss_fn = OptimalGaussianReconstructionLoss(mode="per_dim", min_log_sigma=-1.0).to(device)
+        action_loss_fn = OptimalGaussianReconstructionLoss(mode="per_dim", min_log_sigma=-0.5).to(device)
     else:
         action_loss_fn = None # 使用 MSE
 
-    if save_dir: os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(save_dir, exist_ok=True)
+    with open(os.path.join(save_dir, 'config.yaml'), 'w') as f:
+        yaml.dump(config, f)
 
-    # 保存 Scaler stats，推理时需要
-    if save_dir:
-        torch.save({
-            "mean_state": scaler.mean_state,
-            "std_state": scaler.std_state,
-            "mean_action": scaler.mean_action,
-            "std_action": scaler.std_action
-        }, os.path.join(save_dir, "scaler_stats.pt"))
+    torch.save({
+        "mean_state": scaler.mean_state,
+        "std_state": scaler.std_state,
+        "mean_action": scaler.mean_action,
+        "std_action": scaler.std_action
+    }, os.path.join(save_dir, "scaler_stats.pt"))
 
     # 5. Training Loop
     best_mpjpe = float("inf")
     lambda_state = 1.0
     lambda_action = 5.0
-    target_kl_weight = 0.01
+    target_kl_weight = 0.005
     global_step = 0  # 用于内部计算 KL Annealing，不用于绘图轴
 
     for epoch in range(1, num_epochs + 1):
@@ -370,7 +371,7 @@ def train_vae(
 
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             optimizer.step()
 
             # --- 累积误差 (Accumulate) ---
@@ -412,7 +413,7 @@ def train_vae(
 
             # ================= 打印 =================
             print("-" * 65)
-            print(f"Epoch {epoch:03d}/{num_epochs} | Step {global_step} | LR {current_lr:.2e}")
+            print(f"[{exp_name}] Epoch {epoch:03d}/{num_epochs} | Step {global_step} | LR {current_lr:.2e}")
             print(f"Train | Loss: {avg_loss:.4f} | KL_w: {current_kl_weight:.4f}")
             print(f"Eval  | MPJPE: {eval_stats['mpjpe']:.2f} mm {'[New Best!]' if is_best else ''}")
             print(f"      | Action: R2={eval_stats['r2_score']:.3f} | Cos={eval_stats['cosine_sim']:.3f} "
@@ -439,30 +440,38 @@ def train_vae(
 
         else:
             # 平时只打印一行简报
-            print(f"Epoch {epoch:03d} | Loss: {avg_loss:.4f} | KL_w: {current_kl_weight:.4f}")
+            print(f"[{exp_name}] Epoch {epoch:03d} | Loss: {avg_loss:.4f} | KL_w: {current_kl_weight:.4f}")
 
         # --- ★★★ Wandb Log (Per Epoch) ★★★ ---
         # 关键点：设置 step=epoch，这样横坐标就是 1, 2, 3...
         wandb.log(log_dict, step=epoch)
 
-    # Finish
-    torch.save(model.state_dict(), os.path.join(save_dir, "final_model.pt"))
+        if epoch % save_interval == 0:
+            torch.save(model.state_dict(), os.path.join(save_dir, "final_model.pt"))
+
     wandb.finish()
 
-
 if __name__ == "__main__":
-    DATA_ROOT = "logs/smpl_ppo/amass_rollout/272_w_action"
-    # DATA_ROOT = "/home/miku/Documents/VideoSkills/dataset/272_w_action/amass_train_success"
-    timestamp = datetime.datetime.now().strftime("%m%d-%H%M")
-    SAVE_DIR = f"./vae_checkpoint/less_epoch_{timestamp}"
+    parser = argparse.ArgumentParser(description="Train MotorVAE with Config")
+    parser.add_argument('--config', type=str, default='motor_vae/configs/default.yaml', help='Path to the YAML config file')
+    args = parser.parse_args()
 
-    train_vae(
-        DATA_ROOT,
-        state_dim=272,  # 请确认维度
-        action_dim=69,  # 请确认维度
-        save_dir=SAVE_DIR,
-        state_recons_type="optimal_gaussian",
-        action_recons_type="mse",
-        batch_size=2048,  # 大 Batch
-        num_epochs=100  # 多 Epoch
-    )
+    # 1. 读取 YAML
+    if not os.path.exists(args.config):
+        raise FileNotFoundError(f"Config file not found: {args.config}")
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # 2. 设置随机种子 (可选)
+    if 'seed' in config:
+        seed = config['seed']
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+
+    print(f"[Info] Loaded configuration from {args.config}")
+
+    # 3. 开始训练
+    train_vae(config)
