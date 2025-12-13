@@ -71,9 +71,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/MotionUnion/kungfu')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_facex')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 

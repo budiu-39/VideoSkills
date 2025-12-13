@@ -2,6 +2,7 @@ import os
 import torch
 from videoskills.utils.poselib.skeleton.skeleton3d import SkeletonMotion, SkeletonState
 from videoskills.utils.poselib.core.rotation3d import *
+from videoskills.utils import torch_utils
 
 def _get_motion_key_static(filepath):
     # 提取出的静态方法，用于生成 key
@@ -98,11 +99,8 @@ def load_motion_worker(args):
     curr_file, rotate_motion, dof_body_ids, dof_offsets, num_dof = args
 
     # 1. Load File
-    try:
-        curr_motion = SkeletonMotion.from_file(curr_file)
-    except Exception as e:
-        print(f"Error loading {curr_file}: {e}")
-        return None
+    curr_motion = SkeletonMotion.from_file(curr_file)
+
 
     motion_fps = curr_motion.fps
 

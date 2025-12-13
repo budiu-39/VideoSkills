@@ -54,10 +54,6 @@ def train(args):
 
         # reset_motion_lib_dir(ppo_runner, train_batch_dir)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
-        # if ppo_runner.env.cfg.early_termination.distance[0] < 0.69:
-        #     ppo_runner.env.early_termination_distance = (torch.tensor(ppo_runner.env.cfg.early_termination.distance
-        #                                                              , device=ppo_runner.env.device) + 0.25/5) ** 2
-        # reset_motion_lib_dir(ppo_runner, test_batch_dir)
 
         result = ppo_runner.eval()
         print('Evaluation result: ', result)

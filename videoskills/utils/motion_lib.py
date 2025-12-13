@@ -94,6 +94,7 @@ class MotionLib():
         self._termination_history = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)
         self._sampling_prob = torch.ones(len(self._motions), dtype=torch.float32, device=self._device)/ len(self._motions)
 
+
         lengths = self._motion_num_frames
         lengths_shifted = lengths.roll(1)
         lengths_shifted[0] = 0
@@ -101,6 +102,8 @@ class MotionLib():
         self.length_starts = lengths_shifted.cumsum(0)
 
         self.motion_ids = torch.arange(len(self._motions), dtype=torch.long, device=self._device).to(device)
+
+
 
         return
 
@@ -112,6 +115,35 @@ class MotionLib():
 
     def get_motion(self, motion_id):
         return self._motions[motion_id]
+
+    def get_motion_z(self, motion_ids, motion_times):
+        """
+        获取指定时间的 Latent Z。
+        motion_ids: [N]
+        motion_times: [N] (秒)
+        """
+        if not self.has_latents:
+            # 如果没有 Z，返回全 0 (兼容旧数据)
+            return torch.zeros((len(motion_ids), 32), device=self._device)  # 假设 Dim=32
+
+        # 计算 Z 的索引
+        # Frame = Time * FPS
+        # Z_Index = Frame / Stride
+        frame_indices = (motion_times * 30.0).long()  # 假设 Motion FPS=30
+        z_indices_local = frame_indices // self.z_stride
+
+        # 防止越界 (Z 长度比 Motion 短)
+        # 获取每个 motion 对应的最大 Z 长度
+        # 这里需要更精细的处理，简单起见我们假设 z_indices 不会超过 z_lengths
+        # 实际工程中建议加上 clamp
+
+        z_indices_global = self.z_starts[motion_ids] + z_indices_local
+
+        # 边界保护
+        max_indices = self.latents_tensor.shape[0] - 1
+        z_indices_global = torch.clamp(z_indices_global, 0, max_indices)
+
+        return self.latents_tensor[z_indices_global]
 
     def sample_motions(self, n):
         motion_ids = torch.multinomial(self._sampling_prob, num_samples=n, replacement=True)
@@ -223,18 +255,10 @@ class MotionLib():
 
         motion_files = self._fetch_motion_files(motion_file)
 
-        try:
-            mp.set_sharing_strategy('file_system')
-        except RuntimeError:
-            # 这一行必须在任何 tensor 及其多进程操作之前运行
-            pass
+        mp.set_sharing_strategy('file_system')
 
-        try:
-            # os.sched_getaffinity(0) 返回当前进程被允许使用的 CPU 集合
-            num_workers = len(os.sched_getaffinity(0))
-        except AttributeError:
-            # 如果在 Windows 或非 Linux 环境下回退
-            num_workers = os.cpu_count()
+        num_workers = len(os.sched_getaffinity(0))
+
 
         # 准备传给 Worker 的参数
         # 必须确保 dof_body_ids 和 offsets 在 CPU 上，否则多进程会报错或变慢

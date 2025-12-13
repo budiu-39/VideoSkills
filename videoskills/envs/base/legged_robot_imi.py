@@ -6,7 +6,7 @@ import torch
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot import LeggedRobot
-from videoskills.utils.motion_lib import MotionLib
+from videoskills.utils.motion_lib_z import MotionLibZ as MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
 from videoskills.utils.torch_utils import exp_map_to_quat
@@ -59,6 +59,8 @@ class LeggedRobotImi(LeggedRobot):
             self.reset_body_id = torch.arange(0, self.num_bodies, device=self.device)
         self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance,
                                                        device=self.device) ** 2
+
+
 
     def _create_envs(self):
         """ Creates environments:
@@ -559,6 +561,13 @@ class LeggedRobotImi(LeggedRobot):
 
         task_obs = self.compute_mimic_observations()
 
+        # 2. 获取历史观测 (h_t)
+        # 注意：要在 update 之前 get，这样拿到的才是过去的，不包含当前的
+        # history_obs_flat = self._get_strided_history()
+        #
+        # # 3. 更新 Buffer (为下一帧做准备)
+        # self._update_history_buf(humanoid_obs)
+
         self.obs_buf = torch.cat((humanoid_obs, task_obs, self.actions), dim=-1)
 
         if self.eval_mode and hasattr(self, '_motion_lib_gt'):
@@ -884,6 +893,8 @@ class LeggedRobotImi(LeggedRobot):
         self.is_recording_data = False
 
         self.recorded_data = [[] for _ in range(self.num_envs)]
+
+
 
 
     # def init_pd_from_mass_matrix(self, zeta: float = 0.8):

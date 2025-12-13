@@ -118,8 +118,6 @@ if __name__ == '__main__':
 
         smpl_data = smpl_data
 
-
-
         # if seq_len > 0:
         #     pose_body = smpl_data[:, :72].reshape(seq_len, -1, 3)
         # else:

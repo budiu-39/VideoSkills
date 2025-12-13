@@ -13,8 +13,6 @@ from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_qu
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.envs.base.legged_robot_imi import (
     compute_humanoid_observations_jit,
-    compute_mimic_observations_jit,
-    compute_amp_observations_jit,
 )
 
 

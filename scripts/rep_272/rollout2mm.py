@@ -89,10 +89,10 @@ if __name__ == '__main__':
 
         # 先从 SMPL robot 转成 SMPL
 
-        pred_rot_np = torch.from_numpy(pred_rot)
-        pos_np =  torch.from_numpy(position_data[:, 0])
+        pred_rot = torch.from_numpy(pred_rot)
+        pos =  torch.from_numpy(position_data[:, 0])
 
-        pose_aa, transl = humanoid2smpl(pred_rot_np, pos_np, skeleton_tree, is_smplh=False)
+        pose_aa, transl = humanoid2smpl(pred_rot, pos, skeleton_tree, is_smplh=False)
 
         # gif_outdir = os.path.dirname(fpath).replace("refine_results", "272_plot")
         # os.makedirs(gif_outdir, exist_ok=True)

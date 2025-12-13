@@ -124,6 +124,93 @@ def recover_from_local_rotation(final_x, njoint):
     smpl_85 = rotations_matrix_to_smpl85(rotations_matrix, root_translation)
     return smpl_85
 
+
+def recover_from_272_zup(final_x, njoint=22):
+    """
+    将 272D Z-up 特征向量还原为全局位移的 motion。
+
+    Args:
+        final_x: (T, 272) numpy array
+        njoint: 关节数量，默认为 22
+
+    Returns:
+        positions_global: (T, J, 3) 包含轨迹和朝向的全局位置
+    """
+    # 1. 拆解数据
+    nfrm, _ = final_x.shape
+
+    # Root Linear Velocity (T, 2) -> Z-up 下是 X, Y
+    velocities_root_xy_local = final_x[:, :2]
+
+    # Root Angular Velocity (T, 6) -> 6D Rotation
+    global_heading_diff_6d = final_x[:, 2:8]
+
+    # Local Positions (T, J*3) -> (T, J, 3)
+    positions_local = final_x[:, 8: 8 + 3 * njoint].reshape(nfrm, njoint, 3)
+
+    # -------------------------------------------------------
+    # 2. 恢复全局朝向 (Recover Global Heading)
+    # -------------------------------------------------------
+    # 6D -> Matrix (T, 3, 3)
+    # 注意：pytorch3d 的输入需要是 tensor
+    diff_rot_mats = rotation_6d_to_matrix(torch.from_numpy(global_heading_diff_6d)).numpy()
+
+    # 累加旋转: 得到每一帧用于将 "Local" 转回 "Global" 的矩阵
+    # sim_to_d272 中我们存的是 heading_diff，恢复时累乘即可得到当前的 Global Heading Matrix
+    global_heading_rot = accumulate_rotations(diff_rot_mats)
+
+    # -------------------------------------------------------
+    # 3. 恢复关节位置 (Recover Joint Positions)
+    # -------------------------------------------------------
+    # 公式: Global_Pos = Rotation @ Local_Pos + Translation
+    # 这里的 Local_Pos 是去除了位移和朝向的
+
+    # (T, 1, 3, 3) @ (T, J, 3, 1) -> (T, J, 3)
+    # global_heading_rot 是 (T, 3, 3)，代表 Local -> Global 的旋转
+    positions_rotated = np.matmul(
+        global_heading_rot[:, None, :, :],  # 广播到所有关节
+        positions_local[..., None]
+    ).squeeze(-1)
+
+    # -------------------------------------------------------
+    # 4. 恢复根节点位移 (Recover Root Translation)
+    # -------------------------------------------------------
+    # 构造 3D 速度向量 (Z-up: X->0, Y->1, Z->0)
+    # sim_to_d272 中 velocity 是 local 的
+
+    root_vel_local_3d = np.zeros((nfrm, 3))
+    root_vel_local_3d[:, 0] = velocities_root_xy_local[:, 0]  # X
+    root_vel_local_3d[:, 1] = velocities_root_xy_local[:, 1]  # Y (注意这里与 Y-up 不同，是 index 1)
+    root_vel_local_3d[:, 2] = 0  # Z 速度隐含在 pose 高度变化中，或者在这里被忽略
+
+    # 旋转速度向量到世界坐标系
+    # Vel_Global[t] = Rot[t-1] @ Vel_Local[t]
+    # 因为 Vel[t] 存储的是 t-1 到 t 的位移，它是基于 t-1 时刻的朝向定义的
+    root_vel_global = np.zeros_like(root_vel_local_3d)
+
+    # 第一帧速度通常是 0 或者直接用第一帧旋转
+    root_vel_global[0] = np.matmul(global_heading_rot[0], root_vel_local_3d[0])
+
+    # 后续帧：用上一帧的旋转矩阵旋转当前帧的局部速度
+    root_vel_global[1:] = np.matmul(
+        global_heading_rot[:-1],
+        root_vel_local_3d[1:, :, None]
+    ).squeeze(-1)
+
+    # 积分得到轨迹
+    root_translation = np.cumsum(root_vel_global, axis=0)  # (T, 3)
+
+    # -------------------------------------------------------
+    # 5. 加回位移
+    # -------------------------------------------------------
+    positions_global = positions_rotated.copy()
+    positions_global[:, :, 0] += root_translation[:, 0:1]  # Add X
+    positions_global[:, :, 1] += root_translation[:, 1:2]  # Add Y
+    # Z 轴通常不需要加 root_translation，因为 sim_to_d272 中 Z 是绝对高度(未被减去)
+    # 如果你的 root_vel_xy_local 里不包含 Z，那么这里的 Z 就是对的 (贴地)
+
+    return positions_global
+
 def rotations_matrix_to_smpl85(rotations_matrix, translation):
     nfrm, njoint, _, _ = rotations_matrix.shape
     axis_angle = matrix_to_axis_angle(torch.from_numpy(rotations_matrix)).numpy().reshape(nfrm, -1)

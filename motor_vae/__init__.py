@@ -1,3 +1,5 @@
-from policy_skilltree_vae import PolicySkillTreeVAE
+# from policy_skilltree_vae import PolicySkillTreeVAE
+from skilltree_vae import PolicySkillTreeVAE
 from scaler import StandardScaler
 from motion_window_dataset import MotionWindowDataset
+from scripts.dataset_process.amass_split import get_amass_splits

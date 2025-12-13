@@ -111,7 +111,7 @@ def process_one(fpath, folder_path, output_dir, robot_cfg, fps=45, padding=0):
             is_local=False
         )
 
-        new_sk_state = pad_skeleton_state(new_sk_state, padding)
+        # new_sk_state = pad_skeleton_state(new_sk_state, padding)
         motion_obj = SkeletonMotion.from_skeleton_state(new_sk_state, fps=fps)
 
         os.makedirs(osp.dirname(save_path), exist_ok=True)
