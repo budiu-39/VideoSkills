@@ -78,9 +78,12 @@ def process_single_file(vae, file_path, output_dir, stride=4):
     for phase in range(stride):
         # 切片 Z: 从 phase 开始，每隔 4 帧取一个
         z_subset = z_dense_np[phase::stride]
-
+        recon_subset = recon_dense_np[phase:]
         # 边界检查：如果切片后为空，跳过
         if len(z_subset) == 0:
+            continue
+
+        if phase > 0:  # TODO: 这里先只生成 sub 1 试试？
             continue
 
         # 构造输出文件名
@@ -89,12 +92,12 @@ def process_single_file(vae, file_path, output_dir, stride=4):
 
         data_dict = {
             "z": z_subset,  # [Length/4, Latent_Dim] -> 稀疏控制信号
-            "recon": recon_dense_np  # [Length, 272]          -> 完整物理参考轨迹
+            "recon": recon_subset  # [Length, 272]          -> 完整物理参考轨迹
         }
 
         np.save(save_path, data_dict)
 
-        visualize = True
+        visualize = False
         if visualize:
             pred_xyz = recover_from_272_zup(recon_dense_np, 22)
             # gt_xyz = motion_norm_22.global_translation.clone().float().numpy()
@@ -111,6 +114,8 @@ def process_single_file(vae, file_path, output_dir, stride=4):
                 kinetic_chain='sim_22'
             )
             print(f"Saved: {out_path_rec}")
+
+
 
 
 

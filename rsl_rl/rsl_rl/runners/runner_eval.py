@@ -45,17 +45,18 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         else:
             actor_critic_class = eval(self.cfg["policy_class_name"])  # ActorCritic
-            actor = self.build_mlp(self.env.num_obs, self.policy_cfg['actor_hidden_dims'], self.env.num_actions)
-            critic = self.build_mlp(num_critic_obs, self.policy_cfg['critic_hidden_dims'], 1)
-            actor_critic = actor_critic_class(self.env.num_obs,
-                                                   num_critic_obs,
+            actor_critic = actor_critic_class(self.policy_cfg['actor_input_dim'],
+                                                   self.policy_cfg['critic_input_dim'],
                                                    self.env.num_actions,
-                                                   actor, critic, self.policy_cfg['actor_hidden_dims'][-1],
                                                    **self.policy_cfg).to(self.device)
 
-
+        # TODO: 这里暂时注释掉
         self.alg_cfg['num_obs'] = self.env.num_obs
         self.alg_cfg['num_critic_obs'] = num_critic_obs
+
+        # self.alg_cfg['num_obs'] = self.policy_cfg['actor_input_dim']
+        # self.alg_cfg['num_critic_obs'] = self.policy_cfg['critic_input_dim']
+
         # alg_class = eval(self.cfg["algorithm_class_name"])  # PPO
         self.alg = PPO(actor_critic, device=self.device, **self.alg_cfg)
         self.num_steps_per_env = self.cfg["num_steps_per_env"]
@@ -64,6 +65,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         # init storage and model
         init_storage = self.cfg.get("init_storage", True)  # 新增：默认不为 eval 分配storage
         if init_storage:
+            # self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+            #                       [self.policy_cfg['actor_input_dim']],
+            #                       [self.policy_cfg['critic_input_dim']], [self.env.num_actions])
+
             self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
                                   [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
 
@@ -91,6 +96,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         self.cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
 
+        self.max_iterations = self.cfg.get("max_iterations", 100000)
+
+
     def learn(self, num_learning_iterations, init_at_random_ep_len=False):
         # initialize writer
         # if self.log_dir is not None and self.writer is None:
@@ -108,7 +116,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         # terbuffer = deque(maxlen = min(100, num_learning_iterations))
 
         tot_iter = self.current_learning_iteration + num_learning_iterations
+
         for it in range(self.current_learning_iteration, tot_iter):
+            progress = it / self.max_iterations
+            prob = max(0.0, 1.0 - progress) * 0.5
+            self.env.visual_prob = prob
             start = time.time()
             early_termination_sum = 0
             dones_sum = 0
@@ -121,12 +133,17 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                         actions_z = self.alg.act(obs, critic_obs)
                         actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=True)
                     else:
+                        # student_obs = obs[:, :-645]
+                        # # actions = self.alg.actor_critic.act_inference(obs_student)
+                        # critic_obs = student_obs
                         actions = self.alg.act(obs, critic_obs)
+                        # actions = self.alg.act(obs, critic_obs)
                 obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                 obs = obs.to(self.device)
                 rewards = rewards.to(self.device)
                 dones = dones.to(self.device)
                 critic_obs = privileged_obs.to(self.device) if privileged_obs is not None else obs
+                # critic_obs = obs[:, :-645]
                 self.alg.process_env_step(rewards, dones, infos)
                 early_termination_sum += sum(dones.cpu().numpy()) - sum(infos['time_outs'].cpu().numpy())
                 dones_sum += sum(dones.cpu().numpy())
@@ -191,7 +208,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         if hasattr(self.alg.actor_critic, "set_update_rms"):
             self.alg.actor_critic.set_update_rms(False)
         self.env.eval_mode = True
-        self.env.early_termination_distance = torch.tensor([0.5] * len(self.env.early_termination_distance)
+        self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.eval_distance * len(self.env.early_termination_distance)
                                                            , device=self.device) ** 2
 
         num_envs = self.env.num_envs
@@ -249,6 +266,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                         actions_z = self.alg.actor_critic.act_inference(obs)
                         actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=False)
                     else:
+                        # obs_front = obs[:, :1432]
+                        # # action + task obs
+                        # obs_back = obs[:, -645:]
+                        # obs_student = torch.cat((obs_front, obs_back), dim=1)
+                        # obs_student = obs[:, :-645]
                         actions = self.alg.actor_critic.act_inference(obs)
                 obs, _, rewards, dones, extras = self.env.step(actions)
                 rewards = rewards.squeeze()
@@ -754,7 +776,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             loaded_dict = torch.load(self.resume_path)
         else:
             loaded_dict = torch.load(path)
-        self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        if 'model_state_dict' in loaded_dict:
+            self.alg.actor_critic.load_state_dict(loaded_dict['model_state_dict'])
+        elif 'student_state_dict' in loaded_dict:
+            self.alg.actor_critic.load_state_dict(loaded_dict['student_state_dict'])
 
         if load_optimizer:
             try:
@@ -789,15 +814,3 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         init_ids = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         self.env.reset_with_motion_ids(init_ids)
 
-
-    def build_mlp(self, mlp_input_dim, mlp_hidden_dims, num_outputs):
-        import torch.nn as nn
-        activation = nn.SiLU()
-        layers = []
-        layers.append(nn.Linear(mlp_input_dim, mlp_hidden_dims[0]))
-        layers.append(activation)
-        for l in range(len(mlp_hidden_dims)-1):
-            layers.append(nn.Linear(mlp_hidden_dims[l], mlp_hidden_dims[l + 1]))
-            layers.append(activation)
-
-        return nn.Sequential(*layers)

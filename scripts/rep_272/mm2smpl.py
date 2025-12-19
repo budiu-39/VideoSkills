@@ -45,9 +45,6 @@ def process_vae_one(fpath, output_dir, robot_cfg, fps=30):
         filename = os.path.basename(fpath)
         save_path = osp.join(output_dir, filename)
 
-        if osp.exists(save_path):
-            return ("skip", fpath)
-
         # 1. 加载数据
         data_dict = np.load(fpath, allow_pickle=True).item()
         z_all = data_dict['z']
@@ -80,8 +77,8 @@ def process_vae_one(fpath, output_dir, robot_cfg, fps=30):
 if __name__ == "__main__":
     robot_cfg = {"model": "smpl"}
 
-    input_vae_dir = "dataset/272_rep/AMASS_sim_test_predicted"
-    output_physics_dir = "dataset/smpl_motion/AMASS_sim_test_predicted"
+    input_vae_dir = "dataset/272_rep/AMASS_sim_predicted"
+    output_physics_dir = "dataset/smpl_win_z_motion/AMASS_sim_predicted"
 
     all_files = sorted(glob.glob(osp.join(input_vae_dir, "**", "*_sub*.npy"), recursive=True))
     print(f"Found {len(all_files)} VAE sub-files.")

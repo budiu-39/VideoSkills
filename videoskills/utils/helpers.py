@@ -145,6 +145,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
         # num envs
         if args.num_envs is not None:
             env_cfg.env.num_envs = args.num_envs
+        if args.dev:
+            env_cfg.env.test = True
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -218,7 +220,7 @@ def get_args():
         args.sim_device += f":{args.sim_device_id}"
 
     if args.dev:
-        args.num_envs = 64
+        args.num_envs = 16
         # args.headless = False
     return args
 
@@ -234,7 +236,7 @@ def export_policy_as_jit(actor_critic, path):
         traced_script_module = torch.jit.script(model)
         traced_script_module.save(path)
 
-def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
+def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy', max_files = None):
     if isinstance(env_cfg.motion.file, list):
         motion_file = env_cfg.motion.file
     else:
@@ -269,6 +271,8 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy'):
         import glob
         if not isinstance(env_cfg.motion.file, list):
             motion_file = glob.glob(os.path.join(motion_file, f"**/*{ext}"), recursive=True)
+            if max_files is not None:
+                motion_file = motion_file[:max_files]
         return motion_file
 
 

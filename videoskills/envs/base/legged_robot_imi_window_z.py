@@ -26,6 +26,7 @@ class LeggedRobotImiWinZ(LeggedRobotImi):
             dtype=torch.float
         )
 
+
     def compute_observations(self):
         # 1. 计算当前的 Humanoid Obs (s_t)
         humanoid_obs = self.compute_humanoid_observations()
@@ -52,10 +53,34 @@ class LeggedRobotImiWinZ(LeggedRobotImi):
         self.ref_body_ang_vel = motion_state["key_ang_vel"]
 
         # task_obs 不需要历史，只看当前差值
-        z_obs = self._motion_lib.get_motion_z(self._sampled_motion_ids, motion_times)
+        task_obs = self.compute_mimic_observations()
+        # z_obs = self._motion_lib.get_motion_z(self._sampled_motion_ids, motion_times)
+
+        z_obs = torch.nn.functional.one_hot(self._sampled_motion_ids, num_classes = 3).to(torch.float)
+        #
+        # if self.eval_mode:
+        #     # 评估模式：如果是为了测试纯 Latent 能力，强制为 0
+        #     # 如果是为了 Debug Oracle 能力，可以设为 1
+        #     # 通常 Eval 应该看 Policy 最终形态，所以是 0
+        #     masked_target = torch.zeros_like(task_obs)
+        # else:
+        #     # 生成随机掩码：概率 < visual_prob 的为 1，否则为 0
+        #     # 使用 float() 将 bool 转为 0.0 或 1.0
+        #
+        #     # 将 mask 广播到 target_diff 的维度
+        #     masked_target = task_obs * self.env_visual_mask
+
 
         # 5. 拼接: [s_t, h_t, task, a_{t-1}]
-        self.obs_buf = torch.cat((humanoid_obs, history_obs_flat, z_obs, self.actions), dim=-1)
+        # self.obs_buf = humanoid_obs
+        # self.obs_buf = torch.cat((humanoid_obs), dim=-1)
+        # self.obs_buf = torch.cat(
+        #     (humanoid_obs, history_obs_flat, self._sampled_motion_ids.unsqueeze(1), self.actions,), dim=-1)
+        # self.obs_buf = torch.cat((humanoid_obs, history_obs_flat, z_obs), dim=-1)
+        # self.privileged_obs_buf = torch.cat((humanoid_obs, history_obs_flat, task_obs, z_obs), dim=-1)
+
+        self.obs_buf = torch.cat((humanoid_obs, z_obs), dim=-1)
+        self.privileged_obs_buf = torch.cat((humanoid_obs, task_obs, z_obs), dim=-1)
 
         # Eval Logic
         if self.eval_mode and hasattr(self, '_motion_lib_gt'):

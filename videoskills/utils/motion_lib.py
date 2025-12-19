@@ -9,7 +9,6 @@ import torch
 import joblib
 from tqdm import tqdm
 import glob
-from videoskills.utils.motion_lib_worker import load_motion_worker
 import torch.multiprocessing as mp
 
 USE_CACHE = False
@@ -255,86 +254,70 @@ class MotionLib():
 
         motion_files = self._fetch_motion_files(motion_file)
 
-        mp.set_sharing_strategy('file_system')
-
-        num_workers = len(os.sched_getaffinity(0))
-
-
-        # 准备传给 Worker 的参数
-        # 必须确保 dof_body_ids 和 offsets 在 CPU 上，否则多进程会报错或变慢
+        # 确保 dof ID 在 CPU 上以进行计算
         cpu_dof_body_ids = self._dof_body_ids.cpu() if isinstance(self._dof_body_ids, torch.Tensor) else torch.tensor(
             self._dof_body_ids)
         cpu_dof_offsets = self._dof_offsets.cpu() if isinstance(self._dof_offsets, torch.Tensor) else torch.tensor(
             self._dof_offsets)
 
-        worker_args = []
-        for f in motion_files:
-            worker_args.append((
-                f,
-                self._rotate_motion,
-                cpu_dof_body_ids,
-                cpu_dof_offsets,
-                self._num_dof
-            ))
+        print(f"Loading {len(motion_files)} motions (Single Process)...")
 
-        print(f"Loading {len(motion_files)} motions using {num_workers} processes...")
+        # 单进程直接加载
+        for curr_file in tqdm(motion_files):
+            try:
+                # 1. 加载文件
+                raw_data = np.load(curr_file, allow_pickle=True)
+                curr_motion = None
 
-        # 1. 并行处理 (CPU 密集型 + IO)
-        results = []
-        # 使用 mp.Pool
-        with mp.Pool(num_workers) as pool:
-            # 使用 imap_unordered 或 imap 配合 tqdm 显示进度
-            for res in tqdm(pool.imap(load_motion_worker, worker_args), total=len(worker_args)):
-                if res is not None:
-                    results.append(res)
+                # 判断是否为字典格式
+                if isinstance(raw_data, np.ndarray) and raw_data.dtype == object and raw_data.ndim == 0:
+                    data_dict = raw_data.item()
+                    if 'motion' in data_dict:
+                        curr_motion = SkeletonMotion.from_dict(data_dict['motion'])
+                    else:
+                        curr_motion = SkeletonMotion.from_dict(data_dict)
+                else:
+                    curr_motion = SkeletonMotion.from_file(curr_file)
 
-        # 2. 串行后处理 (GPU 传输)
-        # 将数据从 CPU 转移到 GPU 并存入列表
-        # print("Moving data to GPU...")
-        for res in tqdm(results, desc="concating motions"):
-            curr_motion = res["motion"]
+                if curr_motion is None:
+                    continue
 
-            # 计算剩余元数据
-            motion_fps = res["fps"]
-            curr_dt = 1.0 / motion_fps
-            num_frames = res["num_frames"]
-            curr_len = 1.0 / motion_fps * (num_frames - 1)
+                motion_fps = curr_motion.fps
 
-            self._motion_keys.append(res["key"])
-            self._motion_fps.append(motion_fps)
-            self._motion_dt.append(curr_dt)
-            self._motion_num_frames.append(num_frames)
-            self._motion_files.append(res["file"])
-            self._motion_lengths.append(curr_len)
+                # 2. 随机旋转
+                if self._rotate_motion:
+                    curr_motion = self._apply_random_rotation(curr_motion)
 
-            # Move to Device
-            # if USE_CACHE:
-            #     curr_motion = DeviceCache(curr_motion, self._device)
-            # else:
-            #     # 手动处理，假设 SkeletonMotion 类内部结构允许这样直接赋值
-            #     # 如果 SkeletonMotion 包含 skeleton_tree 等复杂对象，
-            #     # 最好确保 DeviceCache 能够处理，或者手动 .to(device)
-            #     # 这里参考原代码逻辑，只是现在是在主进程进行
-            #     if hasattr(curr_motion, 'tensor'):
-            #         curr_motion.tensor = curr_motion.tensor.to(self._device)
-            #     if hasattr(curr_motion, 'dof_vels'):
-            #         curr_motion.dof_vels = curr_motion.dof_vels.to(self._device)
-            #
-            #     # 处理 SkeletonMotion 内部的 tensor
-            #     if hasattr(curr_motion, '_rotation'):
-            #         curr_motion._rotation = curr_motion._rotation.to(self._device)
-            #
-            #     # 处理 skeleton_tree 内部 tensor (如果需要)
-            #     if hasattr(curr_motion, '_skeleton_tree'):
-            #         st = curr_motion._skeleton_tree
-            #         if hasattr(st, '_local_translation'):
-            #             st._local_translation = st._local_translation.to(self._device)
+                # 3. 计算 DOF 速度 (向量化)
+                curr_dof_vels = self._compute_motion_dof_vels_vectorized(
+                    curr_motion, cpu_dof_body_ids, cpu_dof_offsets
+                )
+                curr_motion.dof_vels = curr_dof_vels
 
-            self._motions.append(curr_motion)
+                # 4. 生成 Key
+                key = self._get_motion_key(curr_file)
 
-        # 后续排序和转换为大 Tensor
+                # 5. 存储数据
+                curr_dt = 1.0 / motion_fps
+                num_frames = curr_motion.tensor.shape[0]
+                curr_len = 1.0 / motion_fps * (num_frames - 1)
+
+                self._motion_keys.append(key)
+                self._motion_fps.append(motion_fps)
+                self._motion_dt.append(curr_dt)
+                self._motion_num_frames.append(num_frames)
+                self._motion_files.append(curr_file)
+                self._motion_lengths.append(curr_len)
+                self._motions.append(curr_motion)
+
+            except Exception as e:
+                print(f"Failed to load {curr_file}: {e}")
+                continue
+
+        # 排序
         self._sort_motions_by_length()
 
+        # 转为 Tensor
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
         self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
         self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
@@ -342,72 +325,6 @@ class MotionLib():
 
         total_len = self.get_total_length()
         print("Loaded {:d} motions with a total length of {:.3f}s.".format(len(self._motions), total_len))
-
-        return
-
-    # def _load_motions(self, motion_file, skeleton_trees = None):
-    #     self._motions = []
-    #     self._motion_lengths = []
-    #     self._motion_fps = []
-    #     self._motion_dt = []
-    #     self._motion_num_frames = []
-    #     self._motion_files = []
-    #     self._motion_keys = []
-    #
-    #     total_len = 0.0
-    #
-    #     motion_files = self._fetch_motion_files(motion_file)
-    #     # num_motion_files = len(motion_files)
-    #     for curr_file in tqdm(motion_files, desc="Loading motion files", unit="file"):
-    #         curr_motion = SkeletonMotion.from_file(curr_file)
-    #
-    #         if self._rotate_motion:
-    #             curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
-    #
-    #         motion_fps = curr_motion.fps
-    #         curr_dt = 1.0 / motion_fps
-    #
-    #         num_frames = curr_motion.tensor.shape[0]
-    #         curr_len = 1.0 / motion_fps * (num_frames - 1)
-    #
-    #         self._motion_keys.append(self._get_motion_key(curr_file))
-    #         self._motion_fps.append(motion_fps)
-    #         self._motion_dt.append(curr_dt)
-    #         self._motion_num_frames.append(num_frames)
-    #
-    #         curr_dof_vels = self._compute_motion_dof_vels(curr_motion)
-    #         curr_motion.dof_vels = curr_dof_vels
-    #
-    #         # Moving motion tensors to the GPU
-    #         if USE_CACHE:
-    #             curr_motion = DeviceCache(curr_motion, self._device)
-    #         # else:
-    #         #     curr_motion.tensor = curr_motion.tensor.to(self._device)
-    #         #     curr_motion._skeleton_tree._parent_indices = curr_motion._skeleton_tree._parent_indices.to(self._device)
-    #         #     curr_motion._skeleton_tree._local_translation = curr_motion._skeleton_tree._local_translation.to(
-    #         #         self._device)
-    #         #     curr_motion._rotation = curr_motion._rotation.to(self._device)
-    #
-    #         self._motions.append(curr_motion)
-    #         self._motion_lengths.append(curr_len)
-    #
-    #         self._motion_files.append(curr_file)
-    #
-    #     self._sort_motions_by_length()
-    #
-    #     self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
-    #
-    #
-    #     self._motion_fps = torch.tensor(self._motion_fps, device=self._device, dtype=torch.float32)
-    #     self._motion_dt = torch.tensor(self._motion_dt, device=self._device, dtype=torch.float32)
-    #     self._motion_num_frames = torch.tensor(self._motion_num_frames, device=self._device)
-    #
-    #     num_motions = len(self._motions)
-    #     total_len = self.get_total_length()
-    #
-    #     print("Loaded {:d} motions with a total length of {:.3f}s.".format(num_motions, total_len))
-    #
-    #     return
 
     def _calc_frame_blend(self, time, len, num_frames, dt):
 
@@ -425,22 +342,63 @@ class MotionLib():
         num_bodies = motion.num_joints
         return num_bodies
 
-    def _compute_motion_dof_vels(self, motion):
-        num_frames = motion.tensor.shape[0]
+    def _compute_motion_dof_vels_vectorized(self, motion, dof_body_ids, dof_offsets):
+        """
+        向量化的 DOF 速度计算 (替换原本 worker 中的静态函数)
+        """
+        local_rot = motion.local_rotation
         dt = 1.0 / motion.fps
-        dof_vels = []
 
-        for f in range(num_frames - 1):
-            local_rot0 = motion.local_rotation[f]
-            local_rot1 = motion.local_rotation[f + 1]
-            frame_dof_vel = self._local_rotation_to_dof_vel(local_rot0, local_rot1, dt)
-            frame_dof_vel = frame_dof_vel
-            dof_vels.append(frame_dof_vel)
+        # 错位切片
+        rot0 = local_rot[:-1]
+        rot1 = local_rot[1:]
 
-        dof_vels.append(dof_vels[-1])
-        dof_vels = torch.stack(dof_vels, dim=0)
+        # 批量计算相对旋转
+        diff_quat_data = quat_mul_norm(quat_inverse(rot0), rot1)
+        diff_angle, diff_axis = quat_angle_axis(diff_quat_data)
+        local_vel = diff_axis * diff_angle.unsqueeze(-1) / dt
 
+        # 映射到 DOF
+        num_frames_vel = local_vel.shape[0]
+        # 注意：这里在 CPU 上创建 tensor，避免显存碎片，最后再由 self.dvs 统一上 GPU
+        dof_vels_frames = torch.zeros((num_frames_vel, self._num_dof), dtype=torch.float32)
+
+        selected_vels = local_vel[:, dof_body_ids, :]
+
+        for j in range(len(dof_body_ids)):
+            joint_offset = dof_offsets[j]
+            joint_size = dof_offsets[j + 1] - joint_offset
+            joint_vel_batch = selected_vels[:, j, :]
+
+            if joint_size == 3:
+                dof_vels_frames[:, joint_offset: joint_offset + 3] = joint_vel_batch
+            elif joint_size == 1:
+                dof_vels_frames[:, joint_offset] = joint_vel_batch.sum(dim=-1)
+            else:
+                pass
+
+        # 补齐最后一帧
+        last_frame = dof_vels_frames[-1:]
+        dof_vels = torch.cat([dof_vels_frames, last_frame], dim=0)
         return dof_vels
+
+
+    # def _compute_motion_dof_vels(self, motion):
+    #     num_frames = motion.tensor.shape[0]
+    #     dt = 1.0 / motion.fps
+    #     dof_vels = []
+    #
+    #     for f in range(num_frames - 1):
+    #         local_rot0 = motion.local_rotation[f]
+    #         local_rot1 = motion.local_rotation[f + 1]
+    #         frame_dof_vel = self._local_rotation_to_dof_vel(local_rot0, local_rot1, dt)
+    #         frame_dof_vel = frame_dof_vel
+    #         dof_vels.append(frame_dof_vel)
+    #
+    #     dof_vels.append(dof_vels[-1])
+    #     dof_vels = torch.stack(dof_vels, dim=0)
+    #
+    #     return dof_vels
 
     def _local_rotation_to_dof(self, local_rot):
         body_ids = self._dof_body_ids

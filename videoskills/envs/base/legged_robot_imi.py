@@ -6,6 +6,7 @@ import torch
 from videoskills import LEGGED_GYM_ROOT_DIR
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot import LeggedRobot
+# from videoskills.utils.motion_lib import MotionLib
 from videoskills.utils.motion_lib_z import MotionLibZ as MotionLib
 from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, quat_to_angle_axis
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_apply, quat_to_tan_norm
@@ -59,6 +60,22 @@ class LeggedRobotImi(LeggedRobot):
             self.reset_body_id = torch.arange(0, self.num_bodies, device=self.device)
         self.early_termination_distance = torch.tensor(self.cfg.early_termination.distance,
                                                        device=self.device) ** 2
+
+        self.visual_prob = 1.0
+        self.env_visual_mask = torch.zeros(self.num_envs, 1, device=self.device)
+
+        if not self.headless:
+            # 1. 设置摄像机位置 (相对于环境原点的坐标)
+            # 这里设置为机器人侧后方：x=3米, y=0, z=1.5米高
+            cam_pos = gymapi.Vec3(0.0, -3.0, 1.5)
+
+            # 2. 设置观察目标点 (相对于环境原点的坐标)
+            # 这里设置为看向机器人的腰部高度：z=1.0米
+            cam_target = gymapi.Vec3(0.0, 0.0, 1.0)
+
+            # 3. 将摄像机锁定并看向第一个环境 (self.envs[0])
+            # 这样无论机器人在世界坐标的哪里，镜头都会基于第一个环境的相对坐标进行初始化
+            self.gym.viewer_camera_look_at(self.viewer, self.envs[-1], cam_pos, cam_target)
 
 
 
@@ -302,6 +319,9 @@ class LeggedRobotImi(LeggedRobot):
         self.extras["episode"] = {}
         self.extras["early_termination_buf"] = self.early_termination_buf
         self.extras["recorded_data"] = [[] for _ in range(self.num_envs)]
+
+        mask = (torch.rand(len(env_ids), 1, device=self.device) < self.visual_prob).float()
+        self.env_visual_mask[env_ids] = mask
 
 
         if hasattr(self.envs, "reward_subterm_sums"):
@@ -621,10 +641,8 @@ class LeggedRobotImi(LeggedRobot):
         Computes the imitation reward based on the difference between the current and reference body positions and rotations.
         The reward is computed in the heading frame of the root body.
         """
-
-
-
         pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
+        # pos_err = torch.norm(self.body_pos - self.ref_body_pos, p=2, dim=-1).mean(dim=1)
         rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
         diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
         rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
@@ -638,6 +656,39 @@ class LeggedRobotImi(LeggedRobot):
         reward_ang_vel = self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
 
         reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
+        self.extras['reward_pos'] = reward_pos
+        self.extras['reward_rot'] = reward_rot
+        self.extras['reward_vel'] = reward_vel
+        self.extras['reward_ang_vel'] = reward_ang_vel
+        self.extras['pos_err'] = pos_err
+        self.extras['rot_err'] = rot_err
+        self.extras['vel_err'] = vel_err
+        self.extras['ang_vel_err'] = ang_vel_err
+
+        return reward
+
+    def _reward_imitation_mul(self):
+        # reward 是不需要 heading 归一化 的！
+        """
+        Computes the imitation reward based on the difference between the current and reference body positions and rotations.
+        The reward is computed in the heading frame of the root body.
+        """
+        pos_err = torch.mean(torch.square(self.body_pos - self.ref_body_pos), dim=1).mean(-1)
+        # pos_err = torch.norm(self.body_pos - self.ref_body_pos, p=2, dim=-1).mean(dim=1)
+        # rot_err = torch.mean(torch.square(self.ref_body_rot - self.body_rot), dim=1).mean(-1)
+        rot_diff = quat_mul(self.ref_body_rot, quat_conjugate(self.body_rot))
+        diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
+        rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
+        vel_err = torch.mean(torch.square(self.body_vel - self.ref_body_vel), dim=1).mean(-1)
+        ang_vel_err = torch.mean(torch.square(self.body_ang_vel - self.ref_body_ang_vel), dim=1).mean(-1)
+
+        # Compute the reward as a weighted sum of the errors
+        reward_pos = torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err)
+        reward_rot = torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err)
+        reward_vel = torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err)
+        reward_ang_vel = torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
+
+        reward = reward_pos * reward_rot * reward_ang_vel
         self.extras['reward_pos'] = reward_pos
         self.extras['reward_rot'] = reward_rot
         self.extras['reward_vel'] = reward_vel
@@ -940,8 +991,7 @@ def compute_humanoid_observations_jit(
     root_base_expand = base_pos.unsqueeze(1).expand(-1, body_pos.shape[1], -1)
     local_body_pos = quat_apply(heading_rot_inv_expand, body_pos - root_base_expand)[:, 1:].reshape(base_pos.shape[0], -1)
     local_body_rot = quat_mul(heading_rot_inv_expand, body_rot).reshape(base_pos.shape[0], -1)
-    if activate_quat_to_tan_norm:
-        local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(base_pos.shape[0], -1)
+    local_body_rot = quat_to_tan_norm(local_body_rot.view(-1, 4)).view(base_pos.shape[0], -1)
     local_body_vel = quat_apply(heading_rot_inv_expand, body_vel).reshape(base_pos.shape[0], -1)
     local_body_ang_vel = quat_apply(heading_rot_inv_expand, body_ang_vel).reshape(base_pos.shape[0], -1)
     return torch.cat((root_h, local_body_pos, local_body_rot, local_body_vel, local_body_ang_vel), dim=-1)

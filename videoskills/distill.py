@@ -44,9 +44,9 @@ def main():
     student = build_student(env, train_cfg, device)
 
     # 优化器：先只训 actor/backbone；如需蒸馏 value 再加 critic
-    optim_params = list(student.actor_backbone.parameters()) + list(student.actor_head.parameters())
+    optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters())
     if args.distill_value:
-        optim_params += list(student.critic_backbone.parameters()) + list(student.critic_head.parameters())
+        optim_params += list(student.critic_network.parameters()) + list(student.critic_head.parameters())
     optimizer = torch.optim.AdamW(optim_params, lr=DAggerCfg.lr, betas=DAggerCfg.betas, weight_decay=DAggerCfg.weight_decay)
 
     cfg = DAggerCfg()
@@ -73,6 +73,7 @@ def main():
         beta = beta_schedule(it, cfg)
 
         # 1) 学生主导 rollout，老师打标签
+
         obs, mu_t, std_t, v_t = rollout_dagger(env, teacher, student, cfg.steps_per_env, beta, device)
         rb.add(obs, mu_t, std_t, v_t)
 
@@ -87,21 +88,19 @@ def main():
                   f"  |  data={rb.size}  |  fps≈{int(steps_per_iter/cfg.log_interval/dt)}")
             t_last = time.time()
 
-        if it % cfg.save_interval == 0 or it == cfg.max_iters:
+        if it % cfg.save_interval == 0 or it == cfg.max_iters or it == 30:
             path = os.path.join(log_dir, f"dagger_student_{it}.pt")
             torch.save({"student_state_dict": student.state_dict(),
                         "iter": it,
                         "cfg": cfg.__dict__}, path)
             print(f"[DAgger] saved => {path}")
 
-        if it % 200 == 0:
+        if it % 50 == 0:
             print(f"\n[DAgger] Eval at iteration {it} ...")
 
             if eval_runner is None:
                 import copy
                 eval_cfg = copy.deepcopy(train_cfg)
-                eval_cfg.runner.policy_class_name = 'ActorCritic_Attention'
-
                 eval_cfg.runner.init_storage = False
 
                 # 创建 eval_runner

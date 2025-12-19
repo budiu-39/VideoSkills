@@ -6,12 +6,14 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
         # init_noise_std = 1.0
         fixed_std = True
         # init_noise_std = 0.15
-
-        actor_input_dim = 358 + 576 + 69  # proprioception + task + one-hot motion id
-        critic_input_dim = 358 + 576 + 69
+        # actor_hidden_dims = [1024, 512, 512]
+        # critic_hidden_dims = [1024, 512, 512]
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+
+        actor_input_dim =  358 + 32 + 1074 #576 + 69  # proprioception + task + one-hot motion id
+        critic_input_dim =  358 + 32 + 576 + 1074#576 + 69
 
         # FiLM 相关配置
         use_z = False
@@ -28,14 +30,14 @@ class SMPLRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         # run_name = 'kungfu_wo_padding'
         policy_class_name = 'ActorCritic'
-        run_name = 'one_hot_138'  # 'phc_progress'
+        run_name = 'AMASS_train_his_looser_ET'  # 'phc_progress'
         experiment_name = 'smpl_ppo'
         use_amp_runner = False # 可以联动！和 amp
-        max_iterations = 4000  # number of policy updates
+        max_iterations = 20000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
-        load_run = 'phc_universal'
+        # load_run = 'phc_universal'
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
@@ -64,7 +66,8 @@ class SMPLRobotCfg( LeggedRobotCfg ):
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
-        distance = [0.25] * 24
+        distance = [0.65] * 24
+        eval_distance = [0.5] * 24
 
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
@@ -74,9 +77,9 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/humman')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/causal_16')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_win_z_motion/AMASS_sim_test_predicted')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/amass_turntwist')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_train_fixed_height')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_win_z_motion/AMASS_sim_test_predicted')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_win_z_motion/AMASS_sim_predicted')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/behave_small')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smpl_motion/GVHMR_tennis')
 
@@ -117,9 +120,11 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         num_actions = 69
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
+        num_privileged_obs = 358 + 576 + 32 + 1074
         num_observations = 859
         activate_quat_to_tan_norm = True
-        norm_num_observations = 358 + 576 + 69
+        # norm_num_observations = 1432 + 138 + 576 + 69 + 1 # 32 + 576
+        norm_num_observations = 358 + 32 + 1074 # 1432 + 32 + 69 #  + 1 # 32 + 576  1501
 
     class control:
         # PD Drive parameters:
@@ -189,7 +194,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         class task_w:
             k_ang_vel = 0.1
             k_pos = 100
-            k_rot = 10
+            k_rot = 20
             k_vel = 0.1
             w_ang_vel = 0.1
             w_pos = 0.3
@@ -198,7 +203,7 @@ class SMPLRobotCfg( LeggedRobotCfg ):
         class scales:
             imitation = 1.0
             # torques = -0.000001
-            dof_force = -0.0005
+            dof_force = -0.0003
             # action_rate = - 0.02
 
     class sim(LeggedRobotCfg.sim):

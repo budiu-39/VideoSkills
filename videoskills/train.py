@@ -4,6 +4,8 @@ from datetime import datetime
 import sys
 
 import isaacgym
+from cherrypy.process.wspbus import max_files
+
 from videoskills.utils import get_args, task_registry
 import wandb
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict
@@ -46,9 +48,14 @@ def train(args):
                    config={**vars(args), **class_to_dict(train_cfg), ** class_to_dict(env_cfg)})
     if args.dev:
         train_cfg.runner.eval_interval = 10
+        env.early_termination_distance = torch.tensor([0.5] * len(env.early_termination_distance)
+                                                           , device='cuda') ** 2
+
 
     # train_batch_dir = "dataset/smpl_motion/subset/control3"
     # test_batch_dir = "dataset/smpl_motion/subset/train_active"
+
+
 
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
 

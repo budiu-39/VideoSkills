@@ -10,6 +10,7 @@ from scipy.spatial.distance import num_obs_dm
 
 from videoskills.utils import task_registry, get_args as get_train_args
 from videoskills.utils.helpers import print_and_save_cfg, class_to_dict, parse_motion_file_path, dict_to_class
+from rsl_rl.storage.rollout_buffer import ReplayBuf
 
 # A100 友好设置
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -71,14 +72,15 @@ def load_teacher(train_cfg, ckpt_path, env, device):
 
     policy_cfg = class_to_dict(train_cfg['policy'])
 
-    num_actor_obs  = env.num_obs
-    num_critic_obs = env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs
+    num_actor_obs  = env.num_obs - 138
+    num_critic_obs = env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs - 138
     num_actions    = env.num_actions
 
     teacher = ActorCritic(
-        num_actor_obs=num_actor_obs,
-        num_critic_obs=num_critic_obs,
-        num_actions=num_actions,
+        policy_cfg['actor_input_dim'],
+        policy_cfg['critic_input_dim'],
+        num_actions,
+
         **policy_cfg
     ).to(device)
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -98,19 +100,26 @@ def load_teacher(train_cfg, ckpt_path, env, device):
 
 def build_student(env, train_cfg, device):
     policy_cfg = class_to_dict(train_cfg.policy)
-    policy_cfg.setdefault('d_model', 256)
     policy_cfg.setdefault('n_heads', 4)
     policy_cfg.setdefault('depth', 4)
     policy_cfg.setdefault('num_bodies', 24)
     policy_cfg.setdefault('fixed_std', True)     # 蒸馏期间固定学生 std，KL 更稳定
     policy_cfg.setdefault('init_noise_std', 0.055)
 
-    student = ActorCritic_Attention(
-        env.num_obs,
-        env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs,
+    student = ActorCritic(
+        policy_cfg['actor_input_dim'],
+        policy_cfg['critic_input_dim'],
         env.num_actions,
         **policy_cfg
     ).to(device)
+
+    #
+    # student = ActorCritic_Attention(
+    #     env.num_obs,
+    #     env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs,
+    #     env.num_actions,
+    #     **policy_cfg
+    # ).to(device)
     return student
 
 
@@ -119,11 +128,9 @@ def build_student(env, train_cfg, device):
 
 @torch.no_grad()
 def teacher_outputs(teacher, obs, critic_obs):
-    teacher.update_distribution(obs)
-    mu = teacher.action_mean
-    std = teacher.action_std
+    mu_q, lv_q, std_q = teacher.update_latent_distribution(obs)
     v = teacher.evaluate(critic_obs)
-    return mu, std, v
+    return mu_q, lv_q, v
 
 
 def kl_gaussians(mu_t, std_t, mu_s, std_s, eps=1e-8):
@@ -145,17 +152,28 @@ def rollout_dagger(env, teacher, student, steps_per_env, beta, device):
     for _ in range(steps_per_env):
         # 老师标签
         with torch.no_grad():
-            mu_t, std_t, v_t = teacher_outputs(teacher, obs, critic_obs)
+            # proprioception
+            obs_front = obs[:, :358]
+            # action + task obs
+            obs_back = obs[:, -645:]
+            # 拼回去（如果你需要）
+            obs_teacher = torch.cat((obs_front, obs_back), dim=1)
+            mu_t, std_t, v_t = teacher_outputs(teacher, obs_teacher, obs_teacher)
 
         # 学生分布
         with torch.no_grad():
-            student.update_distribution(obs)
+            # obs_front = obs[:, :1432]
+            # # action + task obs
+            # obs_back = obs[:, -645:]
+            # obs_student = torch.cat((obs_front, obs_back), dim=1)
+            obs_student = obs[:, :-645]
+            student.update_latent_distribution(obs_student)
             # mu_s = student.action_mean
 
 
         # β-混合动作 方案 1 按概率选老师/学生
-        a_teacher = teacher.act_inference(obs)
-        a_student = student.act_inference(obs)
+        a_teacher = teacher.act_inference(obs_teacher)
+        a_student = student.act_inference(obs_student)
         mask = (torch.rand(obs.shape[0], 1, device=device) < beta)
         act = torch.where(mask, a_teacher, a_student)
 
@@ -193,16 +211,21 @@ def train_student_epoch(student, optimizer, rb: ReplayBuf, cfg: DAggerCfg):
         for obs, mu_t, std_t, v_t in rb.sample_batches(cfg.batch_size):
             optimizer.zero_grad(set_to_none=True)
             with autocast(enabled=cfg.use_mixed_precision, dtype=cfg.amp_dtype):
-                student.update_distribution(obs)
-                mu_s, std_s = student.action_mean, student.action_std
+                # obs_front = obs[:, :1432]
+                # # action + task obs
+                # obs_back = obs[:, -645:]
+                # obs_student = torch.cat((obs_front, obs_back), dim=1)
+                obs_student = obs[:, :-645]
+                mu_s, lv_q, std_s = student.update_latent_distribution(obs_student)
                 kl_loss  = kl_gaussians(mu_t, std_t, mu_s, std_s).mean()
                 mse_loss = F.mse_loss(mu_s, mu_t)
                 v_loss = torch.tensor(0.0, device=obs.device)
                 if cfg.value_coef > 0:
-                    v_pred = student.evaluate(obs)
+                    v_pred = student.evaluate(obs_student)
                     v_loss = F.mse_loss(v_pred, v_t)
 
-                loss = cfg.kl_coef*kl_loss + cfg.mse_coef*mse_loss + cfg.value_coef*v_loss
+                # loss = cfg.kl_coef*kl_loss + cfg.mse_coef*mse_loss + cfg.value_coef*v_loss
+                loss = cfg.mse_coef*mse_loss + cfg.value_coef*v_loss
 
             if cfg.use_mixed_precision:
                 scaler.scale(loss).backward()
@@ -232,4 +255,5 @@ def beta_schedule(t, cfg: DAggerCfg):
         return max(cfg.beta_end, cfg.beta_start + (cfg.beta_end - cfg.beta_start) * (t / cfg.max_iters))
     # exponential
     return cfg.beta_end + (cfg.beta_start - cfg.beta_end) * math.exp(-cfg.beta_exp_k * t)
+
 
