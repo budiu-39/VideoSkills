@@ -6,7 +6,7 @@ from videoskills.envs.base.legged_robot_imi_z import LeggedRobotImiZ
 from videoskills.envs.base.legged_robot_hoi import LeggedRobotHoi
 
 
-class SMPLRobot(LeggedRobotImiWinZ):
+class SMPLRobot(LeggedRobotHoi):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)

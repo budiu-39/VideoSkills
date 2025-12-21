@@ -95,35 +95,6 @@ class MotionLibZ(MotionLib):
 
         return
 
-    # def get_motion_z(self, motion_ids, motion_times):
-    #     """
-    #     获取指定时间的 Latent Z。
-    #     motion_ids: [N]
-    #     motion_times: [N] (秒)
-    #     """
-    #     if not self.has_latents:
-    #         # 如果没有 Z，返回全 0 (兼容旧数据)
-    #         return torch.zeros((len(motion_ids), 32), device=self._device)  # 假设 Dim=32
-    #
-    #     # 计算 Z 的索引
-    #     # Frame = Time * FPS
-    #     # Z_Index = Frame / Stride
-    #     frame_indices = (motion_times * 30.0).long()  # 假设 Motion FPS=30
-    #     z_indices_local = frame_indices // self.z_stride
-    #
-    #     # 防止越界 (Z 长度比 Motion 短)
-    #     # 获取每个 motion 对应的最大 Z 长度
-    #     # 这里需要更精细的处理，简单起见我们假设 z_indices 不会超过 z_lengths
-    #     # 实际工程中建议加上 clamp
-    #
-    #     z_indices_global = self.z_starts[motion_ids] + z_indices_local
-    #
-    #     # 边界保护
-    #     max_indices = self.latents_tensor.shape[0] - 1
-    #     z_indices_global = torch.clamp(z_indices_global, 0, max_indices)
-    #
-    #     return self.latents_tensor[z_indices_global]
-
     def get_motion_z(self, motion_ids, motion_times):
         """
         获取指定时间的 Latent Z，支持线性/球形插值以获得平滑信号。

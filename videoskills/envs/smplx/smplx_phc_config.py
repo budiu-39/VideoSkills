@@ -7,6 +7,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
+        actor_input_dim = 328 + 528 + 63
+        critic_input_dim = 328 + 528 + 63
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
@@ -18,7 +20,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smplx_universal_reboot'
+        run_name = 'smplx_universal'
         experiment_name = 'smplx_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -55,8 +57,8 @@ class SMPLXRobotCfg(LeggedRobotCfg):
     class early_termination:
         enabled = True
         # distance = [0.25] * 24
-        distance = [0.25] * 52
-
+        distance = [0.5] * 52
+        eval_distance = [0.5] * 52
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
@@ -76,7 +78,7 @@ class SMPLXRobotCfg(LeggedRobotCfg):
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_test')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/behave_sit')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
@@ -86,6 +88,9 @@ class SMPLXRobotCfg(LeggedRobotCfg):
         #                      'L_Wrist', 'L_Hand', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist', 'R_Hand']    # 7
 
         key_bodies = ["R_Ankle", "L_Ankle", "R_Wrist",  "L_Wrist"]
+
+    class hoi:
+        mask_interaction = True
 
     class object:
         object_density = 1000

@@ -7,6 +7,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
+        actor_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        critic_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
@@ -18,7 +20,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'behave_smalltable'
+        run_name = 'smplx_amass_prior_origin'
         experiment_name = 'smplx_hoi_ppo'
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -72,12 +74,13 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         enabled = True
         # distance = [0.25] * 24
         distance = [0.5] * 52
-
+        eval_distance = [0.5] * 52
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
     class asset(LeggedRobotCfg.asset):
+        load_object = False
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_hand.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
@@ -85,7 +88,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         penalize_contacts_on = ["Hip", "Knee"]
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
-        load_obj = True
+
         default_dof_drive_mode = 1
         # asset_root = 'dataset/OMOMO_new/objects'
         asset_root = 'data/objects_centered'
@@ -93,8 +96,8 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
 
     class motion:
         rotate_motion = False
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
 
 
@@ -251,6 +254,17 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class rewards:
         # soft_dof_pos_limit = 0.9
         only_positive_rewards = True
+
+        class task_w:
+            k_ang_vel = 0.1
+            k_pos = 100
+            k_rot = 10
+            k_vel = 0.1
+            w_ang_vel = 0.1
+            w_pos = 0.3
+            w_rot = 0.5
+            w_vel = 0.1
+
         class weight:
             p = 30.
             r = 1.5

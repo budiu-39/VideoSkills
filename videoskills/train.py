@@ -51,7 +51,6 @@ def train(args):
         env.early_termination_distance = torch.tensor([0.5] * len(env.early_termination_distance)
                                                            , device='cuda') ** 2
 
-
     # train_batch_dir = "dataset/smpl_motion/subset/control3"
     # test_batch_dir = "dataset/smpl_motion/subset/train_active"
 

@@ -22,8 +22,12 @@ class LeggedRobotHoi(LeggedRobotImi):
         # self.motion_file = os.listdir(self.cfg.motion.file)
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
-        self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+        if self.cfg.asset.load_object:
+            self.mask_interaction_reward = True
+            self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
         # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
+        else:
+            self.mask_interaction_reward = True
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
         self.et_counter = {
@@ -47,8 +51,8 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)
-
-        self._build_obj(env_id, env_ptr)
+        if self.cfg.asset.load_object:
+            self._build_obj(env_id, env_ptr)
         return
 
     def _load_motion(self, motion_file):
@@ -72,7 +76,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         super()._create_envs()
         return
 
-    def _load_obj_asset(self):  # smplx
+    def _load_obj_asset(self):
+        if not self.cfg.asset.load_object:
+            # Stage 1: 创建一个虚拟的空点云，保证维度对齐 [1, 1024, 3]
+            self.object_points = torch.zeros((1, 1024, 3), device=self.device)
+            self.object_name = ["none"]
+            return
+        # smplx
         asset_root = self.cfg.asset.asset_root
         self._obj_asset = []
         points_num = []
@@ -112,20 +122,29 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _build_obj_tensors(self):
-        num_actors = self.gym.get_actor_count(self.envs[0])
-        self.obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
+        if self.cfg.asset.load_object:
+            num_actors = self.gym.get_actor_count(self.envs[0])
+            self.obj_states = self.root_states.view(self.num_envs, num_actors, 13)[..., 1, :]
+            self.obj_pos = self.obj_states[..., 0:3]
+            self.obj_quat = self.obj_states[..., 3:7]
+            self.obj_vel = self.obj_states[..., 7:10]
+            self.obj_ang_vel = self.obj_states[..., 10:13]
+            self.tar_actor_ids = self.robot_actor_ids + 1
+        else:
+            # AMASS 阶段：创建一个全零的伪 Tensor，保证代码不崩
+            self.obj_states = torch.zeros((self.num_envs, 13), device=self.device)
+            self.obj_pos = self.obj_states[:, 0:3]
+            self.obj_quat = self.obj_states[:, 3:7]
+            self.obj_quat[:, 3] = 1.0  # 单位四元数
+            self.obj_vel = self.obj_states[:, 7:10]
+            self.obj_ang_vel = self.obj_states[:, 10:13]
+            self.tar_actor_ids = self.robot_actor_ids
+        # bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
+        # contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
+        # contact_force_tensor = gymtorch.wrap_tensor(contact_force_tensor)
+        # self._tar_contact_forces = contact_force_tensor.view(self.num_envs, bodies_per_env, 3)[..., self.num_bodies, :]
 
-        self.obj_pos = self.obj_states[..., 0:3]
-        self.obj_quat = self.obj_states[..., 3:7]
-        self.obj_vel = self.obj_states[..., 7:10]
-        self.obj_ang_vel = self.obj_states[..., 10:13]
 
-        self.tar_actor_ids = self.robot_actor_ids + 1
-
-        bodies_per_env = self._rigid_body_state.shape[0] // self.num_envs
-        contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
-        contact_force_tensor = gymtorch.wrap_tensor(contact_force_tensor)
-        self._tar_contact_forces = contact_force_tensor.view(self.num_envs, bodies_per_env, 3)[..., self.num_bodies, :]
         return
 
     def _init_buffers(self):
@@ -249,13 +268,19 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         mimic_obs = self.compute_mimic_observations()
 
-        obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self.obj_states,
-                                               self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
+        if self.cfg.asset.load_object:
 
-        hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig.view(-1, 3)
-                                              , ig)
+            obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self.obj_states,
+                                                   self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
 
-        self.body_contact = torch.any(torch.abs(self.contact_forces[:, self.body_ids]) > 0.1, dim=-1).float()
+            hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig.view(-1, 3)
+                                                  , ig)
+            self.body_contact = torch.any(torch.abs(self.contact_forces[:, self.body_ids]) > 0.1, dim=-1).float()
+        else:
+            obj_obs = torch.zeros((self.num_envs, 21), device=self.device) # 根据你的 JIT 函数计算出的维度
+            hoi_obs = torch.zeros((self.num_envs, self.num_bodies * 6), device=self.device)
+            self.body_contact[:] = 0.0
+
 
         self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, hoi_obs, self.body_contact, self.actions), dim=-1)
 
@@ -424,6 +449,9 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # --------- ③ 汇总三个条件 ----------
         # self.reset_buf = fall | time_out | body_too_far
+        if not self.cfg.asset.load_object:
+            self.object_reset = torch.zeros_like(self.robot_reset)
+            self.ig_reset = torch.zeros_like(self.robot_reset)
         kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
         self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
         contact_fail = torch.any(self.contact_reset > 10, dim=-1) & (self.episode_length_buf > 1)
@@ -452,26 +480,60 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def compute_reward(self):
         # TODO: just for develop now
-        self.rew_buf[:] = 1.0
-        for i in range(len(self.reward_functions)):
-            name = self.reward_names[i]
-            rew = self.reward_functions[i]() * self.reward_scales[name]
-            self.rew_buf[:] *= rew
-            self.episode_sums[name] += rew
-            self.extras[f'reward_{name}'] = rew
-        # index = torch.arange(self._curr_reward.shape[0])
-        # # # print(self._humanoid_root_states.dtype)
-        # self._curr_reward[index, self.progress_buf - self.start_times] = self.rew_buf
-        # self._sum_reward[index] += self.rew_buf
-        # self._curr_state[index, self.progress_buf - self.start_times, :] = torch.cat([
-        #     self._humanoid_root_states,
-        #     self._dof_pos,
-        #     self._dof_vel,
-        #     self._target_states,
-        # ], dim=1)
+        rew_h = self._reward_imitation()
+
+        if self.mask_interaction_reward:
+            # Stage 1: 屏蔽物体奖励
+            rew_obj = torch.ones_like(rew_h)
+            rew_ig = torch.ones_like(rew_h)
+            rew_cg = torch.ones_like(rew_h)
+        else:
+            # Stage 2/3: 逐步开启
+            rew_obj = self._reward_obj()
+            rew_ig = self._reward_ig()
+            rew_cg = self._reward_cg()
+
+        # 最终奖励相乘或相加
+        self.rew_buf[:] = rew_h * rew_obj * rew_ig * rew_cg
         if self.cfg.rewards.only_positive_rewards:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
         return
+
+    def _reward_imitation(self):
+        # reward 是不需要 heading 归一化 的！
+        """
+        Computes the imitation reward based on the difference between the current and reference body positions and rotations.
+        The reward is computed in the heading frame of the root body.
+        """
+        body_nohand = self.no_hand_body_mask
+
+        pos_err = torch.mean(torch.square(self.body_pos[:, body_nohand] - self.ref_body_pos[:, body_nohand]), dim=1).mean(-1)
+        # pos_err = torch.norm(self.body_pos - self.ref_body_pos, p=2, dim=-1).mean(dim=1)
+        rot_diff = quat_mul(self.ref_body_rot[:, body_nohand] , quat_conjugate(self.body_rot[:, body_nohand] ))
+        diff_global_body_angle = quat_to_angle_axis(rot_diff)[0]
+        rot_err = (diff_global_body_angle ** 2).mean(dim=-1)
+        vel_err = torch.mean(torch.square(self.body_vel[:, body_nohand]  - self.ref_body_vel[:, body_nohand] ), dim=1).mean(-1)
+        ang_vel_err = torch.mean(torch.square(self.body_ang_vel[:, body_nohand]  - self.ref_body_ang_vel[:, body_nohand] ), dim=1).mean(-1)
+        self.robot_reset = (self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]).norm(dim=-1).mean(
+            dim=-1) > 0.5
+        self.robot_reset *= (self.episode_length_buf > 1)
+        # Compute the reward as a weighted sum of the errors
+        reward_pos = self.cfg.rewards.task_w.w_pos * torch.exp(-self.cfg.rewards.task_w.k_pos * pos_err)
+        reward_rot = self.cfg.rewards.task_w.w_rot * torch.exp(-self.cfg.rewards.task_w.k_rot * rot_err)
+        reward_vel = self.cfg.rewards.task_w.w_vel * torch.exp(-self.cfg.rewards.task_w.k_vel * vel_err)
+        reward_ang_vel = self.cfg.rewards.task_w.w_ang_vel * torch.exp(-self.cfg.rewards.task_w.k_ang_vel * ang_vel_err)
+
+        reward = reward_pos + reward_rot + reward_vel + reward_ang_vel
+        self.extras['reward_pos'] = reward_pos
+        self.extras['reward_rot'] = reward_rot
+        self.extras['reward_vel'] = reward_vel
+        self.extras['reward_ang_vel'] = reward_ang_vel
+        self.extras['pos_err'] = pos_err
+        self.extras['rot_err'] = rot_err
+        self.extras['vel_err'] = vel_err
+        self.extras['ang_vel_err'] = ang_vel_err
+
+        return reward
 
 
     def _reward_humanoid(self):
@@ -844,9 +906,10 @@ def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, re
 
 @torch.jit.script
 def normalize(x, eps: float = 1e-9):
-    mask = x[..., -1] < 0  # 实部（w分量）为负
+    # 增加 eps 防止除以 0
+    mask = x[..., -1] < 0
     x[mask] = -x[mask]
-    return x / x.norm(p=2, dim=-1).clamp(min=eps, max=None).unsqueeze(-1)
+    return x / x.norm(p=2, dim=-1).clamp(min=eps).unsqueeze(-1)
 
 @torch.jit.script
 def compute_sdf(points1, points2):

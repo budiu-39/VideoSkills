@@ -1,4 +1,5 @@
 from isaacgym import gymapi
+import time
 import torch
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 from videoskills.envs.base.legged_robot_hoi import LeggedRobotHoi
@@ -19,7 +20,7 @@ SMPL24_BODIES = [
 ]
 
 # TODO：No hand 部分其实应该合并到 LeggedRobotImi 里去的，但现在改动太大，先放这里
-class SMPLXRobot(LeggedRobotImi):
+class SMPLXRobot(LeggedRobotHoi):
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
     # filter 默认全为 1
