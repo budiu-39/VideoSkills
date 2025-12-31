@@ -73,8 +73,12 @@ def build_and_write_smplx_humanoid_xml(betas, gender):
     set_joint_ds(smpl_robot, default_d=20.0, default_k=200.0, per_joint=per_joint)
 
     # 3) 写 XML
-    xml_path = "data/robot/smpl/smplx_humanoid_restricted.xml"
+    xml_path = "data/robots/smpl/smplh_humanoid_restricted.xml"
     smpl_robot.write_xml(xml_path)
 
     return xml_path
+
+if __name__ == "__main__":
+    betas = np.zeros([1,10])
+    build_and_write_smplx_humanoid_xml(betas, 'female')
 

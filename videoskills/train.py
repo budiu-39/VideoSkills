@@ -40,14 +40,14 @@ def train(args):
                                                train_cfg.runner.load_run, "motion_sampling_state.pkl")
         env._motion_lib.load_sampling_state(motionlib_state_file)
 
-    if args.use_wandb and not args.dev:
+    if args.use_wandb:
         os.makedirs(os.path.join(log_dir, "wandb"), exist_ok=True)
         run_name = train_cfg.runner.run_name
         wandb.init(project=args.wandb_project, name=run_name,
                    dir=log_dir,
                    config={**vars(args), **class_to_dict(train_cfg), ** class_to_dict(env_cfg)})
     if args.dev:
-        train_cfg.runner.eval_interval = 10
+        train_cfg.runner.eval_interval = 30
         env.early_termination_distance = torch.tensor([0.5] * len(env.early_termination_distance)
                                                            , device='cuda') ** 2
 

@@ -14,8 +14,8 @@ from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, Sk
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.preprocess.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
-from scripts.preprocess.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
+from scripts.smpl2sim.hoi.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
+from scripts.smpl2sim.hoi.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
 from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
 import trimesh
 import joblib

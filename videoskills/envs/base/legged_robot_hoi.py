@@ -23,9 +23,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.motion_file = self.cfg.motion.file
         # TODO: Hacky code here for Behave dataset
         if self.cfg.asset.load_object:
-            self.mask_interaction_reward = True
+            self.mask_interaction_reward = False
             self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
-        # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
+            # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         else:
             self.mask_interaction_reward = True
         self.object_density = self.cfg.object.object_density
@@ -48,7 +48,6 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.env_object_ids[i] = obj_id
 
 
-
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)
         if self.cfg.asset.load_object:
@@ -56,7 +55,6 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _load_motion(self, motion_file):
-
         self._motion_lib = MotionLibHoi(motion_file=motion_file,
                                      dof_body_ids=self.dof_body_ids,
                                      dof_offsets=self.dof_offsets,
@@ -108,11 +106,14 @@ class LeggedRobotHoi(LeggedRobotImi):
             self._obj_asset.append(self.gym.load_asset(self.sim, asset_root, asset_file, asset_options))
 
             mesh_obj = trimesh.load(obj_file, force='mesh')
-            # obj_verts = mesh_obj.vertices
-            # center = np.mean(obj_verts, 0)
-            object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
-
-            object_points = to_torch(object_points)
+            obj_file = os.path.dirname(obj_file)
+            points_cache_path = os.path.join(obj_file, 'sampled_points.pt')
+            if os.path.exists(points_cache_path):
+                object_points = torch.load(points_cache_path, map_location=self.device)
+            else:
+                object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
+                object_points = to_torch(object_points)
+                torch.save(object_points, points_cache_path)
 
             while object_points.shape[0] < 1024:
                 object_points = torch.cat([object_points, object_points[:1024 - object_points.shape[0]]], dim=0)
@@ -480,7 +481,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def compute_reward(self):
         # TODO: just for develop now
-        rew_h = self._reward_imitation()
+        rew_h = self._reward_humanoid()
 
         if self.mask_interaction_reward:
             # Stage 1: 屏蔽物体奖励
@@ -493,11 +494,22 @@ class LeggedRobotHoi(LeggedRobotImi):
             rew_ig = self._reward_ig()
             rew_cg = self._reward_cg()
 
+        if self.mask_interaction_reward:
+            self.episode_sums["obj"].zero_()  # 修复点：使用 zero_() 保持张量类型
+            self.episode_sums["ig"].zero_()
+            self.episode_sums["cg"].zero_()
+        else:
+            self.episode_sums["obj"] += rew_obj
+            self.episode_sums["ig"] += rew_ig
+            self.episode_sums["cg"] += rew_cg
+        self.episode_sums["humanoid"] += rew_h
+
         # 最终奖励相乘或相加
         self.rew_buf[:] = rew_h * rew_obj * rew_ig * rew_cg
         if self.cfg.rewards.only_positive_rewards:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
         return
+
 
     def _reward_imitation(self):
         # reward 是不需要 heading 归一化 的！
@@ -755,51 +767,75 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.reward_subterm_sums[key] += val.float()
 
     def begin_eval(self, motion_ids=None):
-        """
-        一次性生成评估批次：
-        - 每个 object 的 motion 数 < 加载该 object 的 env 数
-        - 每个 object 的前 len(motions) 个 env 分配到各自 motion
-        - 剩余 env 用同对象 motion 随机补齐
-        """
-        ml = self._motion_lib  # MotionLibHoi
+        ml = self._motion_lib
         device = self.device
 
+        # 确定需要评估的 motion_ids
         if motion_ids is None:
-            mids = ml.motion_ids
+            mids = ml.motion_ids  # 所有动作
         else:
             mids = torch.as_tensor(motion_ids, device=device, dtype=torch.long)
 
-        mids_mask = torch.zeros(int(ml._num_motions), dtype=torch.bool, device=device)
-        mids_mask[mids] = True
+        # 1. 按物体类型对动作进行分桶 (Object ID -> Motion IDs)
+        self._eval_buckets = {}
+        unique_obj_ids = self.env_object_ids.unique().tolist()
 
-        # 对象 -> motion 列表
-        eval_buckets = {oid: bucket[mids_mask[bucket]]
-                        for oid, bucket in ml._motions_by_object.items()
-                        if mids_mask[bucket].any()}
+        # 将传入的 mids 分类到对应的物体桶中
+        # 注意：这里要查 MotionLibHoi 中动作对应的物体名
+        for oid in unique_obj_ids:
+            name = ml.object_vocab_inv[oid]
+            # 找到所有物体名为 name 且在 mids 里的动作
+            all_mids_for_obj = ml._motions_by_object[oid]
+            # 取交集：只测试指定的 mids
+            mask = torch.isin(all_mids_for_obj, mids)
+            self._eval_buckets[oid] = all_mids_for_obj[mask]
 
-        env_obj_ids = self.env_object_ids.to(device)
-        single_batch = torch.empty(self.num_envs, dtype=torch.long, device=device)
-
-        for oid, motions in eval_buckets.items():
-            env_idx = torch.nonzero(env_obj_ids == oid, as_tuple=False).flatten()
-            n_motions = motions.numel()
-            # 前 n_motions 个 env 分配唯一 motion
-            single_batch[env_idx[:n_motions]] = motions
-            # 剩余 env 随机补齐
-            extra_env = env_idx[n_motions:]
-            ridx = torch.randint(0, n_motions, (extra_env.numel(),), device=device)
-            single_batch[extra_env] = motions[ridx]
-
-        self._eval_single_batch_ids = single_batch
-        self._eval_done_once = False
+        # 2. 初始化各物体的指针
+        self._eval_cursors = {oid: 0 for oid in unique_obj_ids}
+        self._eval_all_done = False
 
     def next_eval_batch_ids(self):
-        """返回一次性批次，并标记完成。"""
-        if not getattr(self, "_eval_done_once", False):
-            self._eval_done_once = True
-            return self._eval_single_batch_ids, True
-        else:
-            return self._eval_single_batch_ids, True
+        num_envs = self.num_envs
+        device = self.device
+        ml = self._motion_lib
+
+        batch_ids = torch.empty(num_envs, dtype=torch.long, device=device)
+
+        # 记录本轮哪些环境是在执行有效测试（不是为了凑数填充的）
+        # 用于后续统计评估是否真的结束
+        finished_status = []
+
+        for i in range(num_envs):
+            oid = int(self.env_object_ids[i].item())
+            bucket = self._eval_buckets[oid]
+            cursor = self._eval_cursors[oid]
+
+            if bucket.numel() == 0:
+                # 保护：如果该环境的物体根本没有对应的动作
+                batch_ids[i] = 0  # 填个占位符
+                finished_status.append(True)
+                continue
+
+            # 取当前指针指向的动作
+            batch_ids[i] = bucket[cursor % bucket.numel()]
+
+            # 指针前进
+            self._eval_cursors[oid] += 1
+
+            # 如果该物体的桶刚跑完一次，标记一下
+            if self._eval_cursors[oid] >= bucket.numel():
+                finished_status.append(True)
+            else:
+                finished_status.append(False)
+
+        # 判断是否所有桶都至少完整跑过一遍了
+        all_buckets_done = True
+        for oid in self._eval_buckets:
+            if self._eval_cursors[oid] < self._eval_buckets[oid].numel():
+                all_buckets_done = False
+                break
+
+        return batch_ids, all_buckets_done
 
     def reset_with_motion_ids(self, motion_ids, random = False):
         """ Reset all environments with given motion ids. (For Evaluation)

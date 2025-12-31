@@ -427,20 +427,20 @@ if __name__ == "__main__":
         )
 
         # 2. 创建全 0 参数
-        # betas = torch.zeros([1, 10])  # 形状参数（shape）
-        # body_pose = torch.zeros([1, 69])  # 姿态参数（23*3）
-        # global_orient = torch.zeros([1, 3])  # 全局旋转
-        # transl = torch.zeros([1, 3])  # 平移
-        #
-        # output = model(
-        #     betas=betas,
-        #     body_pose=body_pose,
-        #     global_orient=global_orient,
-        #     transl=transl
-        # )
+        betas = torch.zeros([1, 10])  # 形状参数（shape）
+        body_pose = torch.zeros([1, 69])  # 姿态参数（23*3）
+        global_orient = torch.zeros([1, 3])  # 全局旋转
+        transl = torch.zeros([1, 3])  # 平移
 
-        # # 4. 导出关节或顶点位置
-        # joints = output.joints.detach().cpu().numpy()  # (1, N_joints, 3)
+        output = model(
+            betas=betas,
+            body_pose=body_pose,
+            global_orient=global_orient,
+            transl=transl
+        )
+
+        # 4. 导出关节或顶点位置
+        joints = output.joints.detach().cpu().numpy()  # (1, N_joints, 3)
         # vertices = output.vertices.detach().cpu().numpy()  # (1, 6890, 3)
 
         skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")

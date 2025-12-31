@@ -432,26 +432,49 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.env.reset()
 
         if wandb.run is not None and log:
-            wandb.log({
-                "iteration": self.current_learning_iteration,
-                "Eval/mean_reward": mean_rew,
-                "Eval/success_rate": success_rate,
-                "Eval/reward_until_fail_mean_failed": np.mean(
-                    reward_until_fail_list) if reward_until_fail_list else 0.0,
-                "Eval/num_success": num_success,
-                "Eval/num_total": num_total,
-            }, step=self.current_learning_iteration)
+            # 1. 基础汇总指标 (Section: Eval_Standard)
+            # 使用 Standard 作为前缀，便于一眼看到核心结果
+            eval_summary = {
+                "Eval_Standard/Success_Rate": success_rate,
+                "Eval_Standard/Mean_Reward": mean_rew,
+                "Eval_Standard/Reward_Until_Fail": np.mean(reward_until_fail_list) if reward_until_fail_list else 0.0,
+                "Eval_Standard/Num_Success": num_success,
+                "Eval_Standard/Num_Total": num_total,
+                "iteration": self.current_learning_iteration  # 保持时序同步
+            }
 
-            wandb_metric_dict = {}
+            # 2. 分类评估指标 (Section: Tracking vs Physical)
+            # 定义物理指标关键字，用于自动分流
+            physics_keywords = ['skating', 'skate', 'penetration', 'contact', 'floating', 'cg', 'ig', 'sdf']
+
+            detail_metrics = {}
+
+            # --- 处理 A: 全量轨迹指标 (_All) ---
             for k, v in global_metrics.items():
-                if len(v) > 0:
-                    wandb_metric_dict[f"Eval/{k}"] = np.mean(v).item()
+                if len(v) == 0: continue
+                val = np.mean(v).item()
+                # 判定是物理合理性指标还是动作模仿指标
+                if any(kw in k.lower() for kw in physics_keywords):
+                    prefix = "Eval_Physical"
+                else:
+                    prefix = "Eval_Tracking"
+                # 扁平化命名示例: Eval_Physical/Foot_Skating_All
+                detail_metrics[f"{prefix}/{k}_All"] = val
 
+            # --- 处理 B: 仅成功轨迹的指标 (_SuccessOnly) ---
+            # 这对于观察模型在稳定运行时的姿态质量非常有用
             for k, v in metrics_success.items():
-                if len(v) > 0:
-                    wandb_metric_dict[f"Eval/{k}_success"] = np.mean(v).item()
+                if len(v) == 0: continue
+                val = np.mean(v).item()
+                if any(kw in k.lower() for kw in physics_keywords):
+                    prefix = "Eval_Physical"
+                else:
+                    prefix = "Eval_Tracking"
+                detail_metrics[f"{prefix}/{k}_success_only"] = val
 
-            wandb.log(wandb_metric_dict, step=self.current_learning_iteration)
+            # 3. 一次性推送
+            wandb.log(eval_summary, step=self.current_learning_iteration)
+            wandb.log(detail_metrics, step=self.current_learning_iteration)
 
         success_keys_unique = list(dict.fromkeys(success_keys))  # 保序去重
         result = {
@@ -668,96 +691,115 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']
 
-        # ------ 取出 step/episode 信息（安全）------
-        infos = locs.get('infos', {})  # 最后一个step的infos
-        ep_infos = locs.get('ep_infos', [])  # 本迭代收集到的所有episode汇总
-        rb = locs.get('rewbuffer', getattr(self, 'rewbuffer', None))
-        lb = locs.get('lenbuffer', getattr(self, 'lenbuffer', None))
+        # 初始化最终发送给 WandB 的字典
+        wandb_dict = {}
 
-        # ------ 构建 wandb metrics ------
-        wandb_metrics = {
-            "Loss/value_function": locs['mean_value_loss'],
-            "Loss/surrogate": locs['mean_surrogate_loss'],
-            "Loss/learning_rate": self.alg.learning_rate,
-            "Perf/collection_time": locs['collection_time'],
-            "Perf/learning_time": locs['learn_time'],
-            "Perf/total_fps": self.num_steps_per_env * self.env.num_envs / (
-                        locs['collection_time'] + locs['learn_time']),
-            # "Policy/mean_noise_std": self.alg.actor_critic.std.mean().item(),
-            "Imitation/ET_rate": locs['ET_rate']
-        }
+        # 1. 损失与学习率 (Section: Loss)
+        wandb_dict.update({
+            "Loss/Value_Function": locs.get('mean_value_loss'),
+            "Loss/Surrogate_PPO": locs.get('mean_surrogate_loss'),
+            "Loss/Learning_Rate": self.alg.learning_rate,
+        })
 
-        # 训练指标
-        if rb is not None and len(rb) > 0:
-            mean_rew = statistics.mean(rb)
-            mean_len = statistics.mean(lb)
-            wandb_metrics.update({
-                "Train/mean_reward": mean_rew,
-                "Train/mean_episode_length": mean_len,
-            })
-        else:
-            mean_rew, mean_len = None, None
+        # 2. 系统性能 (Section: System)
+        wandb_dict.update({
+            "System/FPS": (self.num_steps_per_env * self.env.num_envs) / (locs['collection_time'] + locs['learn_time']),
+            "System/Early_Termination_Rate": locs.get('ET_rate', 0.0),
+            "System/Time_Elapsed": self.tot_time,
+        })
 
-        # imitation rewards（来自最后一个step的infos）
+        # 3. 训练统计（按已完成的 Episode 平均）(Section: Train)
+        mean_rew = None
+        mean_len = None
+        if len(self.rewbuffer) > 0:
+            mean_rew = statistics.mean(self.rewbuffer)
+            mean_len = statistics.mean(self.lenbuffer)
+            wandb_dict["Train/Episode_Reward_Total"] = mean_rew
+            wandb_dict["Train/Episode_Length"] = mean_len
+
+        # 4. 解析单步内的实时奖励分量与误差 (Section: Reward_Terms & Errors)
+        # 这部分主要从 env.step 的 infos 中获取
+        infos = locs.get('infos', {})
         if isinstance(infos, dict):
             for key, val in infos.items():
+                # 只处理 Tensor, Array, Number 或 List
+                if not isinstance(val, (torch.Tensor, np.ndarray, float, int, list)):
+                    continue
+
+                # 统一计算均值：将 Bool/CUDA Tensor 转为 Float
+                if isinstance(val, torch.Tensor):
+                    v_mean = val.float().mean().item()
+                else:
+                    try:
+                        v_mean = float(np.mean(val))
+                    except:
+                        continue
+
+                # 分类命名，便于 WandB 侧边栏折叠
                 if key.startswith("reward"):
-                    wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-                        np.mean(val))
+                    # Section: Reward_Terms (奖励项：0~1得分)
+                    clean_name = key.replace("reward_", "")
+                    wandb_dict[f"Reward_Terms/{clean_name}"] = v_mean
 
-            # imitation errors 可选
-            for key in ['pos_err', 'rot_err', 'vel_err', 'ang_vel_err']:
-                if key in infos:
-                    val = infos[key]
-                    wandb_metrics[f"Imitation/{key}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(
-                        np.mean(val))
+                elif any(kw in key for kw in ['err', 'dist', 'delta', 'pos', 'rot', 'vel']):
+                    # Section: Physical_Errors (物理误差：真实的米、度、速度等)
+                    # 防止由于命名字典干扰，可以再过滤一下
+                    if not key.startswith("reward"):
+                        clean_name = key.replace("_err", "")
+                        wandb_dict[f"Physical_Errors/{clean_name}"] = v_mean
 
-        # ====== 关键：按迭代聚合并记录 episode 级指标（包含你的小项）======
-        # 需要你的 env 在 reset_idx() 时把小项放入 extras["episode"]，键以 "rew_sub/..." 开头
-        if self.log_dir is not None and isinstance(ep_infos, list) and len(ep_infos) > 0:
-            merged = {}
-            for ep in ep_infos:
-                if not isinstance(ep, dict):
-                    continue
-                for k, v in ep.items():
-                    if k.startswith("rew_") or k.startswith("rew_sub/"):
-                        merged.setdefault(k, []).append(v.item() if torch.is_tensor(v) else float(v))
-
-            if wandb.run is not None:  # ← 加保护
-                for k, vals in merged.items():
-                    if k.startswith("rew_sub/"):
-                        wandb_key = f"Rewards/{k[len('rew_sub/'):]}"
-                    elif k.startswith("rew_"):
-                        wandb_key = f"Rewards/{k[len('rew_'):]}"
-                    else:
-                        wandb_key = f"Rewards/{k}"
-                    wandb.log({wandb_key: float(np.mean(vals))}, step=it)
-
-        # ====== 统一推送 wandb_metrics ======
-        if wandb.run is not None:
-            wandb.log(wandb_metrics, step=it)
-
-        # 控制台摘要
+        # 5. 解析 Episode 结束时的累计子项 (Section: HOI_Details)
+        # 这部分是从 reset_idx 时填入的 extras['episode'] 传过来的
+        ep_infos = locs.get('ep_infos', [])
         ep_info_str = ""
-        if isinstance(ep_infos, list) and len(ep_infos) > 0:
-            first = ep_infos[0]
-            for key in first:
-                vals = [ep[key].item() if isinstance(ep.get(key), torch.Tensor) else ep.get(key) for ep in ep_infos if
-                        key in ep]
-                if len(vals) == 0:
-                    continue
-                ep_mean = sum(vals) / len(vals)
-                wandb_metrics[f"Episode/{key}"] = ep_mean
-                if key in ["rew_imitation", "rew_dof_force", "rew_torques"]:
-                    ep_info_str += f"  {key}: {ep_mean:.4f}"
+        if len(ep_infos) > 0:
+            merged_stats = defaultdict(list)
+            for ep in ep_infos:
+                for k, v in ep.items():
+                    val = v.item() if torch.is_tensor(v) else float(v)
+                    merged_stats[k].append(val)
 
+            # 定义需要在控制台终端打印的关键指标
+            core_summary_keys = ["humanoid", "obj", "ig", "cg", "imitation"]
+            found_summary = {}
+
+            for k, vals in merged_stats.items():
+                avg = np.mean(vals)
+                if k.startswith("rew_sub/"):
+                    # 路径：Detailed_Subterms (例如穿模量、具体关节点分数)
+                    wandb_dict[f"Detailed_HOI/{k[8:]}"] = avg
+                elif k.startswith("rew_"):
+                    # 路径：Reward_Summaries (模仿奖励汇总)
+                    wandb_dict[f"Reward_Summaries/{k[4:]}"] = avg
+
+                # 模糊匹配以生成终端摘要行
+                for target in core_summary_keys:
+                    if target in k.lower():
+                        found_summary[target] = avg
+
+            # 拼接控制台显示的摘要字符串
+            for label, val in found_summary.items():
+                ep_info_str += f"  {label}: {val:.3f}"
+
+        # 6. 一次性推送至 WandB (防止短时间内多次调用造成的 UI 错位)
+        if wandb.run is not None:
+            wandb.log(wandb_dict, step=it)
+
+        # 7. 控制台格式化输出
         summary = f"[{self.cfg['run_name']} it {it:05d}]"
-        if mean_rew is not None and mean_len is not None:
-            summary += f" Reward: {mean_rew:.3f} | EpLen: {mean_len:.2f}"
+
+        if mean_rew is not None:
+            # 格式： Rew: [总回报] | Len: [总长度]
+            summary += f" Rew: {mean_rew:,.1f} | Len: {mean_len:.1f}"
         else:
-            summary += " Reward: ---- | EpLen: ----"
-        summary += f" | ET_rate: {locs['ET_rate']:.2f} |"
+            summary += " Rew: ---- | Len: ----"
+
+        # 增加早停率显示 (转为百分比)
+        summary += f" | ET: {locs.get('ET_rate', 0.0):.2%}"
+
+        # 增加核心子奖励摘要
         summary += ep_info_str
+
         print(summary)
 
     def save(self, path=None, infos=None):

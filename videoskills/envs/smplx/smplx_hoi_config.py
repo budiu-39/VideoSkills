@@ -20,8 +20,10 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        run_name = 'smplx_amass_prior_origin'
         experiment_name = 'smplx_hoi_ppo'
+
+        run_name = 'omomo_origin_plus'
+
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
@@ -31,8 +33,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 2000  # check for potential saves every this many iterations
-        eval_interval = 2000
+        save_interval = 1000  # check for potential saves every this many iterations
+        eval_interval = 1000
 
         num_steps_per_env = 32  # per iteration
         num_learning_epochs = 6
@@ -46,7 +48,6 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         success_rate = 0.98
         convergence_threshold = 0.03
         convergence_criteria = 'reward'  # 'reward' or 'mpjpe'
-
 
 
     class amp_config:
@@ -80,7 +81,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
 
     class asset(LeggedRobotCfg.asset):
-        load_object = False
+        load_object = True
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_hand.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
@@ -91,14 +92,13 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
 
         default_dof_drive_mode = 1
         # asset_root = 'dataset/OMOMO_new/objects'
-        asset_root = 'data/objects_centered'
-        # asset_root = 'dataset/omomo/objects_centered'
+        asset_root = 'dataset/behave_correct/objects_centered'
 
     class motion:
         rotate_motion = False
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_tablesmall')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/omomo')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_corrected')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
 
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9
@@ -155,7 +155,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 4096
+        num_envs = 2048
         num_actions = 153
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
@@ -206,41 +206,6 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             1, 1, 1,
         ]
 
-        # ver 6
-        # stiffness = [
-        #     170, 150, 30, 30, 30, 10,     # 'L_Hip', 'L_Knee',
-        #     10, 10, 10, 5, 5, 5,  # 'L_Ankle', 'L_Toe'
-        #     170, 150, 30, 30, 30, 10,
-        #     10, 10, 10,  5, 5, 5,
-        #     60, 60, 60, 110, 40, 70,   # 'Torso', 'Spine',
-        #     80, 30, 50, 5, 5, 5,  # 'Chest', 'Neck'
-        #     5, 5, 5, 130, 20, 75,  # Head, 'L_Thorax',
-        #     85, 20, 50, 15, 5, 12,   # 'L_Shoulder', 'L_Elbow'
-        #     5, 5, 5, 5, 5, 5,  # 'L_Wrist', 'L_Hand'
-        #     130, 20, 75, 85, 20, 50,
-        #     15, 5, 12, 5, 5, 5,
-        #     5, 5, 5,
-        # ]
-        # # 太大 的 damping 会
-        # damping = [
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     15, 12, 3, 3, 3, 1.5,
-        #     1.5, 1.5, 1.5, 1, 1, 1,
-        #     6, 6, 6, 9, 4, 7,
-        #     8, 3, 5, 1, 1, 1,
-        #     1, 1, 1, 13, 2, 7,
-        #     8, 2, 5, 2, 1, 2,
-        #     1, 1, 1, 1, 1, 1,
-        #     13, 2, 7, 8, 2, 5,
-        #     2, 1, 2, 1, 1, 1,
-        #     1, 1, 1,
-        # ]
-        # pd_scale = 0.333
-        # pd_scale = 0.2
-
-
-
     class normalization:
         class obs_scales:
             lin_vel = 2.0
@@ -286,7 +251,8 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             eg2 = 0.00002
             eg3 = 0.00000000001
         class scales:
-            humanoid = 10.0
+            imitation = 1.0
+            # humanoid = 10.0
             obj = 100.0
             ig = 10.0
             cg = 10.0

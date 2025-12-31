@@ -16,7 +16,7 @@ def eval(args):
     env_cfg, train_cfg = task_registry.get_cfgs(args)
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False, max_files=138)
     # override some parameters for testing
-    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1)
+    env_cfg.env.num_envs = min(env_cfg.env.num_envs, 1024)
     env_cfg.terrain.num_rows = 5
     env_cfg.terrain.num_cols = 5
     env_cfg.terrain.curriculum = False

@@ -338,10 +338,16 @@ class LeggedRobotImi(LeggedRobot):
             for k in self.reward_subterm_sums:
                 self.reward_subterm_sums[k][env_ids] = 0.0
         for key in self.episode_sums.keys():
-            self.extras["episode"]['rew_' + key] = torch.mean(
-                self.episode_sums[key][env_ids])
-            # self.extras["episode"]['rew_' + key] = torch.mean(
-            #     self.episode_sums[key][env_ids]) / self.max_episode_length_s
+            # 获取这批结束环境的累计奖励
+            reward_tensor = self.episode_sums[key][env_ids]
+            mean_reward = torch.mean(reward_tensor)
+
+            # --- 核心改动：只有非零才记录 ---
+            if mean_reward.item() != 0:
+                self.extras["episode"]['rew_' + key] = mean_reward
+            # ---------------------------
+
+            # 无论是否打印，都必须清空这批 env 的累计值，防止下一个 Episode 污染
             self.episode_sums[key][env_ids] = 0.
         if self.cfg.commands.curriculum:
             self.extras["episode"]["max_command_x"] = self.command_ranges["lin_vel_x"][1]

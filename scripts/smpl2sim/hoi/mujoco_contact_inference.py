@@ -292,11 +292,12 @@ def contacts_from_xml_pointcloud(
 # ===== 5) 可视化：只高亮 contact body=红，其余=白；加地面与坐标轴 =====
 def quick_viz_frame(
     mj_model, mj_data, body_local_clouds,
-    obj_pts, contact_row,
+    obj_pts,
     body_pos_frame,
     body_rot_frame,
     mj2sk,
     title="viz", ground_size=10.0,
+    contact_row=None,
     ig_frame=None,
 ):
     scene = trimesh.Scene()

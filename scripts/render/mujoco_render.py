@@ -3,7 +3,7 @@ import time
 import mujoco
 import imageio
 from scipy.spatial.transform import Rotation as sRot
-
+import tqdm
 
 def export_mujoco_video(
         motion_traj: dict,
@@ -113,6 +113,62 @@ def vis_mujoco_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path):
             mujoco.mj_forward(mj_model, mj_data)
             viewer.sync()
             time.sleep(1/30)
+
+
+def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, output_path="output.mp4", fps=30):
+    # 1. 初始化模型
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+
+    # --- 修复 Offscreen 缓冲区报错 ---
+    mj_model.vis.global_.offwidth = 1280
+    mj_model.vis.global_.offheight = 720
+    # ------------------------------
+
+    mj_data = mujoco.MjData(mj_model)
+    renderer = mujoco.Renderer(mj_model, height=720, width=1280)
+
+    # 3. 相机设置
+    # 不使用可能报错的 camera.type = ...，改用手动 lookat 跟随
+    camera = mujoco.MjvCamera()
+    camera.distance = 4.0  # 相机距离人的距离
+    camera.elevation = -20  # 视角高度（仰角）
+    camera.azimuth = 45  # 视角方位角
+
+    num_frames = len(motion_traj['root_trans_offset'])
+
+    def xyzw_to_wxyz(q): return q[[3, 0, 1, 2]]
+
+    # 4. 获取物体 mocap ID
+    obj_mocap_bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "object_body")
+    obj_mocap_id = mj_model.body_mocapid[obj_mocap_bid]
+
+    print(f"正在导出视频到: {output_path}...")
+
+    with imageio.get_writer(output_path, fps=fps) as video:
+        for t in tqdm.tqdm(range(num_frames)):
+            # 更新人体姿态
+            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
+            mj_data.qpos[3:7] = xyzw_to_wxyz(motion_traj['root_rotation'][t])
+            mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
+
+            # 更新物体位置
+            mj_data.mocap_pos[obj_mocap_id] = obj_pos[t]
+            mj_data.mocap_quat[obj_mocap_id] = xyzw_to_wxyz(obj_quat_xyzw[t])
+
+            # 物理计算更新
+            mujoco.mj_forward(mj_model, mj_data)
+
+            # --- 关键：摄像机跟随逻辑 ---
+            # 每一帧都让相机盯住人物当前的根节点位置 (root_xyz)
+            camera.lookat[:] = mj_data.qpos[:3]
+            # --------------------------
+
+            # 渲染并写入
+            renderer.update_scene(mj_data, camera=camera)
+            frame = renderer.render()
+            video.append_data(frame)
+
+    print(f"✅ 视频已保存至: {output_path}")
 
 # def vis_mujoco(motion_traj, xml_path, humanoid_type = 'g1'):
 #
