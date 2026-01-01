@@ -115,7 +115,8 @@ def vis_mujoco_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path):
             time.sleep(1/30)
 
 
-def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, output_path="output.mp4", fps=30):
+def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, camera_cfg,
+                            output_path="output.mp4", fps=30):
     # 1. 初始化模型
     mj_model = mujoco.MjModel.from_xml_path(xml_path)
 
@@ -130,9 +131,9 @@ def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, outpu
     # 3. 相机设置
     # 不使用可能报错的 camera.type = ...，改用手动 lookat 跟随
     camera = mujoco.MjvCamera()
-    camera.distance = 4.0  # 相机距离人的距离
-    camera.elevation = -20  # 视角高度（仰角）
-    camera.azimuth = 45  # 视角方位角
+    camera.distance = camera_cfg['distance'] + 1.0
+    camera.azimuth = camera_cfg['azimuth'] + 90
+    camera.elevation = camera_cfg['elevation']
 
     num_frames = len(motion_traj['root_trans_offset'])
 
@@ -145,7 +146,7 @@ def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, outpu
     print(f"正在导出视频到: {output_path}...")
 
     with imageio.get_writer(output_path, fps=fps) as video:
-        for t in tqdm.tqdm(range(num_frames)):
+        for t in tqdm.tqdm(range(num_frames), mininterval=1.0):
             # 更新人体姿态
             mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
             mj_data.qpos[3:7] = xyzw_to_wxyz(motion_traj['root_rotation'][t])
@@ -160,7 +161,7 @@ def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, outpu
 
             # --- 关键：摄像机跟随逻辑 ---
             # 每一帧都让相机盯住人物当前的根节点位置 (root_xyz)
-            camera.lookat[:] = mj_data.qpos[:3]
+            camera.lookat[:] = mj_data.qpos[:3] + camera_cfg['lookat_offset']
             # --------------------------
 
             # 渲染并写入
