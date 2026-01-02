@@ -22,8 +22,11 @@ from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, Sk
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.smpl2sim.hoi.mujoco_contact_inference import penetration_depth_sequence_ig, build_local_templates_by_body
-from scripts.smpl2sim.hoi.mujoco_contact_inference import quick_viz_ig_cg, build_sk2mj_index, quick_viz_penetration
+from scripts.smpl2sim.hoi.mujoco_contact_inference import (build_local_templates_by_body, prepare_batch_body_cloud,
+                                                           get_aligned_vhacd_hulls, compute_hull_planes,
+                                                           quick_viz_ig_cg, build_sk2mj_index,
+                                                           penetration_depth_vhacd_frame, quick_viz_penetration_vhacd,
+                                                           penetration_depth_vhacd_cuda)
 from scripts.render.mujoco_render import export_mujoco_video_hoi, create_temp_xml_with_object
 from scripts.render.hoi_render import render_smpl_hoi_video_yup
 from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation, tranfrom_to_yup
@@ -141,13 +144,15 @@ if __name__ == "__main__":
     }
 
     render_outdir = "renders/Behave"
+
     for sequence_dir in tqdm(all_sequences):
         if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")) and not osp.exists(osp.join(sequence_dir, "human.npz")):
             continue
 
         norm_path = osp.normpath(sequence_dir)
         seq_name = norm_path.split(osp.sep)[-1]
-        print("Processing", sequence_dir)
+        # 这样打印会在进度条上方输出，不会打断进度条动画
+        tqdm.write(f"Processing {sequence_dir}")
 
         # 导入人体 SMPL 数据，此时是相机坐标系(Y down)，先把它变成 渲染通用的坐标系(Y up)，再转化成 Z up。
         # 只渲染 Y up 和 Z up
@@ -187,10 +192,90 @@ if __name__ == "__main__":
         human_yup, obj_yup = tranfrom_to_yup(smpl[gender], human, obj, mesh_obj, origin_format='ydown')
 
         new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
-                                                          smplx_parser_n, skeleton_tree)
+                                                          smplx_parser_n, skeleton_tree, mesh_obj)
 
 
         motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
+
+        # 建立 mujoco 模型，用于穿模计算和可视化检查
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body(
+            "data/robots/smpl/smplx_humanoid_hand.xml",
+            samples_per_geom=500)
+        mj_data = mujoco.MjData(mj_model)
+        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+
+        # 计算 cg 和 ig
+        smpl_vert_part = get_smpl_vert_part(smpl[gender])
+        smpl_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
+        cg_yup, ig_yup = compute_cg_ig_via_smplh_contacts_yup(
+            smpl_model=smpl[gender],
+            human=human_yup,
+            obj=obj_yup,
+            obj_mesh_path=obj_mesh_path,
+            smpl_vert_part=smpl_vert_part
+        )
+
+        # 注意：from_yup_to_simulation 内部会计算 R_yup2zup_mat (RotX 90)
+        # 交互信息 IG/CG 也需要相应旋转
+        R_yup2zup = sRot.from_euler('x', 90, degrees=True).as_matrix()
+
+        # IG 是方向向量，需要旋转；CG 是标签，不需要旋转
+        ig_mj = ig_yup[:, smpl_2_mujoco, :] @ R_yup2zup.T
+        cg_mj = cg_yup[:, smpl_2_mujoco]
+
+        collision_tag = np.zeros((len(cg_mj),), dtype=bool)
+
+        if args.penetration_check:
+            # 1. [预处理] V-HACD (只做一次)
+            obj_mesh = trimesh.load(obj_mesh_path, force='mesh')
+            vhacd_cache = obj_mesh_path.replace(".obj", "_aligned_vhacd.pkl")
+            hulls_template = get_aligned_vhacd_hulls(
+                mesh_obj, vhacd_cache, resolution=300000, max_hulls=64, max_v_per_ch=64
+            )
+            hulls_planes_local = [compute_hull_planes(h) for h in hulls_template]
+
+            # 2. [预处理] 计算物体的 AABB (Local Space)
+            # 用所有凸包的顶点合并计算，比原始 Mesh 更准确对应 V-HACD 形状
+            all_hull_verts = np.concatenate([h.vertices for h in hulls_template], axis=0)
+            obj_aabb_min = all_hull_verts.min(axis=0)
+            obj_aabb_max = all_hull_verts.max(axis=0)
+
+            # 3. [预处理] 批处理人体点云
+            # 将 dict 形式的点云转为大数组，方便后续向量化操作
+            B_len = new_sk_state.global_translation.shape[1]
+            batch_pts_local, batch_indices = prepare_batch_body_cloud(body_clouds, mj2sk, B_len)
+
+            # 4. 准备循环数据
+            T_len = len(object_dict['obj_pos'])
+            pen_seq = np.zeros((T_len, B_len), dtype=np.float32)
+
+            body_pos_all = new_sk_state.global_translation
+            body_rot_all = new_sk_state.global_rotation
+
+
+            # 物体数据 (numpy -> tensor)
+            obj_pos_gpu = torch.from_numpy(object_dict['obj_pos']).to(device).float()
+            obj_rot_gpu = torch.from_numpy(object_dict['obj_rot']).to(device).float()
+
+            # 3. 调用 CUDA 函数 (一次性计算所有帧)
+            print("Running CUDA Penetration Check...")
+            pen_seq_gpu = penetration_depth_vhacd_cuda(
+                body_pos_seq=body_pos_all.to(device),
+                body_rot_seq=body_rot_all.to(device),
+                all_body_local_pts=torch.from_numpy(batch_pts_local).to(device).float(),
+                body_indices=torch.from_numpy(batch_indices).to(device).long(),
+                hulls_planes_local=hulls_planes_local,  # 里面是 numpy，函数内部会转
+                obj_pos_seq=obj_pos_gpu,
+                obj_rot_seq=obj_rot_gpu,
+                obj_aabb_min=obj_aabb_min,
+                obj_aabb_max=obj_aabb_max,
+                device=device
+            )
+
+            # 4. 转回 Numpy 用于保存
+            pen_seq = pen_seq_gpu.cpu().numpy()
+            collision_tag = (pen_seq > 0.01).any(axis=1)
+
 
         if args.render:
             # 渲染原始人体与物体交互视频 (Y up)
@@ -257,59 +342,6 @@ if __name__ == "__main__":
                 print("-------------------------------")
                 break
 
-        # 建立 mujoco 模型，用于穿模计算和可视化检查
-        body_clouds, body_geoms, mj_model = build_local_templates_by_body(
-            "data/robots/smpl/smplx_humanoid_hand.xml",
-            samples_per_geom=500)
-        mj_data = mujoco.MjData(mj_model)
-        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
-
-        # 计算 cg 和 ig
-        smpl_vert_part = get_smpl_vert_part(smpl[gender])
-        smpl_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
-        cg_yup, ig_yup = compute_cg_ig_via_smplh_contacts_yup(
-            smpl_model=smpl[gender],
-            human=human_yup,
-            obj=obj_yup,
-            obj_mesh_path=obj_mesh_path,
-            smpl_vert_part=smpl_vert_part
-        )
-
-        # 注意：from_yup_to_simulation 内部会计算 R_yup2zup_mat (RotX 90)
-        # 交互信息 IG/CG 也需要相应旋转
-        R_yup2zup = sRot.from_euler('x', 90, degrees=True).as_matrix()
-
-        # IG 是方向向量，需要旋转；CG 是标签，不需要旋转
-        ig_mj = ig_yup[:, smpl_2_mujoco, :] @ R_yup2zup.T
-        cg_mj = cg_yup[:, smpl_2_mujoco]
-
-        if args.penetration_check:
-            # 准备数据, 获取物体的世界坐标系点云序列 (Z-up)
-            obj_pos = object_dict['obj_pos']  # (T, 3)
-            obj_rot = object_dict['obj_rot']  # (T, 4) xyzw
-            T_len = obj_pos.shape[0]
-
-            # 预先计算物体每一帧在世界系下的点云
-            # object_points 是局部点云 (1024, 3)
-            obj_pts_world_seq = []
-            for t in range(T_len):
-                r_mat = sRot.from_quat(obj_rot[t]).as_matrix()
-                pts_w = (object_points.cpu().numpy() @ r_mat.T) + obj_pos[t]
-                obj_pts_world_seq.append(pts_w)
-
-            body_pos = new_sk_state.global_translation.numpy()
-            body_rot = new_sk_state.global_rotation.numpy()  # xyzw
-
-            pen_seq = penetration_depth_sequence_ig(
-                mj_model,
-                body_geoms,
-                mj2sk,
-                obj_pts_world_seq,
-                body_pos,
-                body_rot
-            )
-
-            collision_tag = (pen_seq > 0.01).any(axis=1)
 
         if args.debug:
             t = min(50, len(cg_mj) - 1)
@@ -320,15 +352,34 @@ if __name__ == "__main__":
             # object_points 是循环前采样好的 (1024, 3) 局部点
             object_points_world = (object_points.cpu().numpy() @ r_mat.T) + o_pos
 
-            quick_viz_penetration(
-                mj_model=mj_model,
+            hulls_world_viz = []
+            obj_mat = np.eye(4)
+            obj_mat[:3, :3] = r_mat
+            obj_mat[:3, 3] = o_pos
+
+            hulls_world_viz = []
+            # 只有在 penetration_check 开启时才有 hulls_template
+            if args.penetration_check:
+                obj_mat = np.eye(4)
+                obj_mat[:3, :3] = r_mat # 使用正确的旋转矩阵
+                obj_mat[:3, 3] = o_pos
+                # 使用循环外定义的 hulls_template
+                for h in hulls_template:
+                    hw = h.copy()
+                    hw.apply_transform(obj_mat)
+                    hulls_world_viz.append(hw)
+            # 获取当前帧的穿模数据
+            p_row = pen_seq[t] if 'pen_seq' in locals() else None
+
+            quick_viz_penetration_vhacd(
                 body_local_clouds=body_clouds,
                 obj_pts=object_points_world,
                 body_pos_frame=new_sk_state.global_translation[t].cpu().numpy(),
                 body_rot_frame=new_sk_state.global_rotation[t].cpu().numpy(),
                 mj2sk=mj2sk,
-                pen_depth_row=pen_seq[t],
-                title=f"Penetration Check: {key_str} (Frame {t})"
+                pen_depth_row=p_row,
+                hulls_world=hulls_world_viz, # 传入变换后的凸包
+                title=f"VHACD Check: {key_str} (Frame {t})"
             )
 
             quick_viz_ig_cg(

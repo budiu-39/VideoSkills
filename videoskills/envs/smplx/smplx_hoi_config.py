@@ -22,7 +22,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_ppo'
 
-        run_name = 'omomo_origin_plus'
+        run_name = 'omomo_new_retarget'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -91,13 +91,13 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         self_collisions = 1
 
         default_dof_drive_mode = 1
-        # asset_root = 'dataset/OMOMO_new/objects'
-        asset_root = 'dataset/behave_correct/objects_centered'
+        asset_root = 'dataset/OMOMO_new/objects'
+        # asset_root = 'dataset/behave_correct/objects_centered'
 
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_fixed')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_select')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
 
 

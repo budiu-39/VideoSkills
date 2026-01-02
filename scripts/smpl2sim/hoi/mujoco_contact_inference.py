@@ -4,8 +4,12 @@ import mujoco
 from collections import defaultdict
 from scipy.spatial import cKDTree
 
+import os
 import numpy as np
-import pyvhacd
+import pickle
+import trimesh
+
+import torch
 from scipy.spatial.transform import Rotation as sRot
 
 # ===== 常量（与你现有阈值保持一致，可按需调整） =====
@@ -629,3 +633,400 @@ def quick_viz_penetration(
 
     # 显示场景
     scene.show(title=title)
+
+
+def get_aligned_vhacd_hulls(mesh_obj, cache_path, resolution=300000, max_hulls=64, max_v_per_ch=64):
+    """
+    使用 trimesh 的接口执行 V-HACD，参数对齐 Isaac Gym。
+    """
+
+    if os.path.exists(cache_path):
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    print(f"--- Running VHACD via Trimesh (Resolution: {resolution}) ---")
+
+    # trimesh 会根据系统环境调用可用的 VHACD 后端
+    # 参数名称需要对应 trimesh 内部的映射逻辑
+    hulls = mesh_obj.convex_decomposition(
+        resolution=resolution,  # 对应 vhacd_params.resolution
+        maxConvexHulls=max_hulls,  # 对应 vhacd_params.max_convex_hulls
+        maxNumVerticesPerCH=max_v_per_ch  # 对应 vhacd_params.max_num_vertices_per_ch
+    )
+
+    # 兼容性处理：trimesh 有时返回单个 mesh，有时返回列表
+    if not isinstance(hulls, list):
+        hulls = [hulls]
+
+    # 缓存结果
+    with open(cache_path, "wb") as f:
+        pickle.dump(hulls, f)
+
+    return hulls
+
+
+def compute_hull_planes(hull):
+    """提取凸包所有平面的法线 n 和 偏移 d (dot(n,p) + d = 0)"""
+    normals = hull.face_normals
+    # 每个面上的一个顶点
+    p0 = hull.vertices[hull.faces[:, 0]]
+    d = -np.sum(normals * p0, axis=1)
+    return normals, d
+
+
+def prepare_batch_body_cloud(body_local_clouds, mj2sk, B_len):
+    """
+    预处理：将分散在各个 body 的点云合并成一个大数组，并记录索引映射。
+    返回:
+      all_local_pts: (Total_N, 3) 所有关节的局部点
+      body_indices: (Total_N,) 每个点属于哪个关节 (sk_idx)
+    """
+    list_pts = []
+    list_idxs = []
+
+    # 确保按照 sk_idx 的顺序或者能映射回去
+    # 这里我们直接遍历字典，建立映射
+    for mj_bid, pts in body_local_clouds.items():
+        sk_idx = mj2sk.get(mj_bid, -1)
+        if sk_idx < 0 or sk_idx >= B_len: continue
+
+        list_pts.append(pts)
+        list_idxs.append(np.full(len(pts), sk_idx, dtype=np.int64))
+
+    if not list_pts:
+        return None, None
+
+    all_local_pts = np.concatenate(list_pts, axis=0)  # (N, 3)
+    body_indices = np.concatenate(list_idxs, axis=0)  # (N,)
+
+    return all_local_pts, body_indices
+
+
+def penetration_depth_vhacd_frame(
+        body_pos_frame, body_rot_frame,
+        all_body_local_pts, body_indices,
+        hulls_planes_local, obj_pos, obj_rot_quat,
+        obj_aabb_min, obj_aabb_max
+):
+    """
+    极速版穿模计算：
+    1. 批处理所有身体点
+    2. 变换到物体局部坐标系 (Object Space)
+    3. AABB 粗筛
+    4. 仅对 AABB 内的点进行 V-HACD 细查
+    """
+    B = body_pos_frame.shape[0]
+    pen_depths = np.zeros(B, dtype=np.float32)
+
+    # --- 1. 将所有身体点变换到世界坐标系 (World Space) ---
+
+    total_pts = len(all_body_local_pts)
+    world_pts = np.empty((total_pts, 3), dtype=np.float32)
+
+    unique_ids = np.unique(body_indices)
+
+    # 预计算所有关节的旋转矩阵
+    all_rots = sRot.from_quat(body_rot_frame).as_matrix()  # (B, 3, 3)
+
+    for sk_idx in unique_ids:
+        mask = (body_indices == sk_idx)
+        # P_w = P_l @ R_body.T + T_body
+        local_pts = all_body_local_pts[mask]
+        R = all_rots[sk_idx]
+        T = body_pos_frame[sk_idx]
+        world_pts[mask] = local_pts @ R.T + T
+
+    # --- 2. 将世界系点变换到物体局部系 (Object Local Space) ---
+    # P_obj = (P_world - T_obj) @ R_obj
+    # 这里的 rot 是从 Local 到 World，所以转回去要用 transpose (即 inverse)
+    R_obj = sRot.from_quat(obj_rot_quat).as_matrix()  # (3, 3)
+    # world_pts - obj_pos: (N, 3)
+    # @ R_obj: (N, 3) @ (3, 3) -> (N, 3)
+    pts_in_obj = (world_pts - obj_pos) @ R_obj
+
+    # --- 3. Broad Phase: AABB 粗筛 ---
+    # 检查哪些点在物体的 AABB 内。如果在外面，绝对不可能穿模。
+    # obj_aabb_min/max 是物体在局部系下的包围盒
+    # 稍微给 AABB 加一点点 padding (e.g. 1mm) 防止边界误差
+    padding = 0.001
+    in_aabb_mask = (
+            (pts_in_obj[:, 0] >= obj_aabb_min[0] - padding) & (pts_in_obj[:, 0] <= obj_aabb_max[0] + padding) &
+            (pts_in_obj[:, 1] >= obj_aabb_min[1] - padding) & (pts_in_obj[:, 1] <= obj_aabb_max[1] + padding) &
+            (pts_in_obj[:, 2] >= obj_aabb_min[2] - padding) & (pts_in_obj[:, 2] <= obj_aabb_max[2] + padding)
+    )
+
+    if not np.any(in_aabb_mask):
+        return pen_depths  # 没有任何点在物体附近
+
+    # 仅保留通过粗筛的点
+    candidate_pts = pts_in_obj[in_aabb_mask]
+    candidate_indices = body_indices[in_aabb_mask]
+
+    # --- 4. Narrow Phase: V-HACD 细查 ---
+    # 计算这些点在每个凸包内的穿模深度
+    # 初始化每个候选点的最大穿模深度为 0
+    point_max_pen = np.zeros(len(candidate_pts), dtype=np.float32)
+
+    for (normals, d) in hulls_planes_local:
+        # normals: (F, 3), d: (F,)
+        # dists: (N_cand, F)
+        dists = candidate_pts @ normals.T + d
+
+        # 判定是否在凸包内：所有面的距离都 < 0
+        is_inside_hull = np.all(dists < 0, axis=1)  # (N_cand,)
+
+        if np.any(is_inside_hull):
+            # 穿模深度 = -max(dists) (离表面最近的距离)
+            # update point_max_pen
+            current_depths = -np.max(dists[is_inside_hull], axis=1)
+            # 取最大值（因为一个点可能被多个重叠的凸包覆盖，虽少见但可能）
+            point_max_pen[is_inside_hull] = np.maximum(point_max_pen[is_inside_hull], current_depths)
+
+    # --- 5. 聚合结果到关节 ---
+    # 只有 point_max_pen > 0 的才是真穿模
+    penetrated_mask = point_max_pen > 0
+    if np.any(penetrated_mask):
+        pen_vals = point_max_pen[penetrated_mask]
+        pen_idxs = candidate_indices[penetrated_mask]
+
+        # 使用 reduceat 或者简单的循环取最大值
+        # 这里用循环比较简单，因为穿模的关节通常不多
+        unique_pen_joints = np.unique(pen_idxs)
+        for sk_idx in unique_pen_joints:
+            # 找到属于该关节的所有穿模点的深度，取最大
+            max_d = np.max(pen_vals[pen_idxs == sk_idx])
+            pen_depths[sk_idx] = max_d
+
+    return pen_depths
+
+def set_scene_camera_facing_human(scene, root_pos):
+    """设置相机位置：Z-up系下正对人体"""
+    distance = 4.0
+    elevation = 1.0
+    # 相机位于 Y 负半轴看向坐标原点（正面）
+    cam_pos = root_pos + np.array([0, -distance, elevation])
+    target = root_pos + np.array([0, 0, 0.5])
+
+    forward = target - cam_pos
+    forward /= np.linalg.norm(forward)
+    right = np.cross(forward, [0, 0, 1])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, forward)
+
+    mat = np.eye(4)
+    mat[:3, 0] = right
+    mat[:3, 1] = up
+    mat[:3, 2] = -forward
+    mat[:3, 3] = cam_pos
+    scene.camera_transform = mat
+
+
+def quick_viz_penetration_vhacd(
+        body_local_clouds, obj_pts, body_pos_frame, body_rot_frame,
+        mj2sk, pen_depth_row=None, hulls_world=None, title="VHACD Penetration"
+):
+    """
+    使用 trimesh 渲染。包含凸包线框显示。
+    """
+    import trimesh
+    scene = trimesh.Scene()
+
+    # 1. 绘制机器人
+    for mj_bid, local_pts in body_local_clouds.items():
+        sk_idx = mj2sk.get(mj_bid, -1)
+        if sk_idx < 0: continue
+        rot = sRot.from_quat(body_rot_frame[sk_idx]).as_matrix()
+        world_pts = local_pts @ rot.T + body_pos_frame[sk_idx] # 注意变量名
+
+        color = [180, 180, 180, 60]  # 正常灰色透明
+        if pen_depth_row is not None and pen_depth_row[sk_idx] > 0.005:
+            color = [255, 0, 0, 180]  # 穿模红色
+
+        # 修复：将 world_cloud 改为 world_pts
+        scene.add_geometry(trimesh.points.PointCloud(world_pts, colors=np.tile(color, (world_pts.shape[0], 1))))
+
+    # 2. 绘制物体点云
+    scene.add_geometry(trimesh.points.PointCloud(obj_pts, colors=np.tile([0, 255, 0, 255], (obj_pts.shape[0], 1))))
+
+    # 3. 绘制物体凸包线框
+    if hulls_world:
+        for h in hulls_world:
+            edge = h.copy()
+            edge.visual.face_colors = [0, 255, 0, 30] # 浅绿色凸包
+            scene.add_geometry(edge)
+
+    # 4. 相机正对人
+    set_scene_camera_facing_human(scene, body_pos_frame[0])
+    scene.show(title=title)
+
+
+def quat_to_rotmat_torch(quat):
+    """
+    PyTorch 版四元数转旋转矩阵。
+    quat: (..., 4) [x, y, z, w] (SciPy 格式)
+    返回: (..., 3, 3)
+    """
+    # 归一化
+    quat = quat / torch.norm(quat, dim=-1, keepdim=True)
+
+    x, y, z, w = quat[..., 0], quat[..., 1], quat[..., 2], quat[..., 3]
+
+    x2, y2, z2 = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+
+    # 构造矩阵
+    out = torch.empty(quat.shape[:-1] + (3, 3), device=quat.device, dtype=quat.dtype)
+
+    out[..., 0, 0] = 1 - 2 * (y2 + z2)
+    out[..., 0, 1] = 2 * (xy - wz)
+    out[..., 0, 2] = 2 * (xz + wy)
+
+    out[..., 1, 0] = 2 * (xy + wz)
+    out[..., 1, 1] = 1 - 2 * (x2 + z2)
+    out[..., 1, 2] = 2 * (yz - wx)
+
+    out[..., 2, 0] = 2 * (xz - wy)
+    out[..., 2, 1] = 2 * (yz + wx)
+    out[..., 2, 2] = 1 - 2 * (x2 + y2)
+
+    return out
+
+
+def penetration_depth_vhacd_cuda(
+        body_pos_seq, body_rot_seq,  # (T, B, 3), (T, B, 4)
+        all_body_local_pts, body_indices,  # (N, 3), (N,)
+        hulls_planes_local,  # List[(F, 3), (F,)]
+        obj_pos_seq, obj_rot_seq,  # (T, 3), (T, 4)
+        obj_aabb_min, obj_aabb_max,  # (3,)
+        device='cuda',
+        chunk_size=100  # <--- 新增：每次处理的帧数，默认100，显存小可调小
+):
+    """
+    全序列 CUDA 并行穿模计算（分块版，防止 OOM）。
+    """
+
+    # --- 1. 数据类型与设备转换 ---
+    # 使用 .clone().detach() 或 np.copy() 解决 "non-writable" 警告
+    def to_tensor(x, dtype):
+        if isinstance(x, np.ndarray):
+            # 解决 numpy read-only 警告
+            x = torch.from_numpy(np.copy(x))
+        if not isinstance(x, torch.Tensor):
+            x = torch.tensor(x)
+        return x.to(device=device, dtype=dtype)
+
+    body_pos_seq = to_tensor(body_pos_seq, torch.float32)
+    body_rot_seq = to_tensor(body_rot_seq, torch.float32)
+    all_body_local_pts = to_tensor(all_body_local_pts, torch.float32)
+    body_indices = to_tensor(body_indices, torch.long)  # 索引必须是 long
+    obj_pos_seq = to_tensor(obj_pos_seq, torch.float32)
+    obj_rot_seq = to_tensor(obj_rot_seq, torch.float32)
+    obj_aabb_min = to_tensor(obj_aabb_min, torch.float32)
+    obj_aabb_max = to_tensor(obj_aabb_max, torch.float32)
+
+    # 预处理平面方程 (list of tensors)
+    planes_cuda = []
+    for n, d in hulls_planes_local:
+        planes_cuda.append((
+            to_tensor(n, torch.float32),
+            to_tensor(d, torch.float32)
+        ))
+
+    T_total, B, _ = body_pos_seq.shape
+    N_pts = all_body_local_pts.shape[0]
+
+    # 结果列表
+    pen_seq_chunks = []
+
+    # --- 2. 分块循环 (Chunk Loop) ---
+    # 将 T 维度切分为多个小 batch，防止显存爆炸
+    for start_t in range(0, T_total, chunk_size):
+        end_t = min(start_t + chunk_size, T_total)
+
+        # 切片数据
+        b_pos_sub = body_pos_seq[start_t:end_t]
+        b_rot_sub = body_rot_seq[start_t:end_t]
+        o_pos_sub = obj_pos_seq[start_t:end_t]
+        o_rot_sub = obj_rot_seq[start_t:end_t]
+
+        t_sub = end_t - start_t
+
+        # === 以下是原来的计算逻辑 (针对当前 chunk) ===
+
+        # 1. 扩展索引
+        p_indices = body_indices.view(1, -1).expand(t_sub, -1)  # (t_sub, N_pts)
+
+        # 2. Gather Body Pose
+        idx_pos = p_indices.unsqueeze(-1).expand(-1, -1, 3)
+        batch_pts_pos = torch.gather(b_pos_sub, 1, idx_pos)
+
+        idx_rot = p_indices.unsqueeze(-1).expand(-1, -1, 4)
+        batch_pts_quat = torch.gather(b_rot_sub, 1, idx_rot)
+
+        # 3. Local Point -> World Point
+        batch_rot_mat = quat_to_rotmat_torch(batch_pts_quat)  # (t, N, 3, 3)
+        pts_local_exp = all_body_local_pts.view(1, N_pts, 3, 1)
+        pts_world = (batch_rot_mat @ pts_local_exp).squeeze(-1) + batch_pts_pos
+
+        # 4. World Point -> Object Local Point
+        R_obj = quat_to_rotmat_torch(o_rot_sub)  # (t, 3, 3)
+        pts_rel = pts_world - o_pos_sub.unsqueeze(1)
+        # R^T @ P = (P @ R) if row-major? PyTorch matmul last 2 dims.
+        # R_obj is Obj->World. We need World->Obj (R^T).
+        # matmul( (t,3,3).T, (t,N,3,1) ) -> (t,3,3) need unsqueeze to (t,1,3,3)
+        # 简便写法: P_local = (P_world - T) @ R_obj
+        # 验证: vec(1,3) @ mat(3,3) = vec(1,3).
+        pts_in_obj = torch.matmul(pts_rel, R_obj)
+
+        # 5. AABB Broad Phase
+        padding = 0.005
+        in_aabb = (
+                (pts_in_obj[..., 0] >= obj_aabb_min[0] - padding) & (pts_in_obj[..., 0] <= obj_aabb_max[0] + padding) &
+                (pts_in_obj[..., 1] >= obj_aabb_min[1] - padding) & (pts_in_obj[..., 1] <= obj_aabb_max[1] + padding) &
+                (pts_in_obj[..., 2] >= obj_aabb_min[2] - padding) & (pts_in_obj[..., 2] <= obj_aabb_max[2] + padding)
+        )
+
+        # 当前 Chunk 的结果容器
+        pen_sub = torch.zeros((t_sub, B), device=device, dtype=torch.float32)
+
+        # 如果有任何点在 AABB 内，才进行精细检测
+        if in_aabb.any():
+            active_mask = in_aabb
+            active_pts = pts_in_obj[active_mask]  # Flattened (K, 3)
+
+            # 记录哪些点属于哪个 (t, b)
+            grid_t = torch.arange(t_sub, device=device).view(-1, 1).expand(-1, N_pts)
+            grid_b = body_indices.view(1, -1).expand(t_sub, -1)
+
+            active_t = grid_t[active_mask]
+            active_b = grid_b[active_mask]
+
+            active_pen = torch.zeros(active_pts.shape[0], device=device, dtype=torch.float32)
+
+            # V-HACD Narrow Phase
+            for (n_cuda, d_cuda) in planes_cuda:
+                # n: (F, 3), d: (F,)
+                dists = active_pts @ n_cuda.T + d_cuda
+                is_inside = torch.all(dists < 0, dim=1)
+
+                if is_inside.any():
+                    # depth = -max(dist)
+                    depths = -torch.max(dists[is_inside], dim=1)[0]
+                    # Update max penetration
+                    current = active_pen[is_inside]
+                    active_pen[is_inside] = torch.maximum(current, depths)
+
+            # Scatter Reduce (Max pooling to joints)
+            flat_idx = active_t * B + active_b
+            pen_flat = torch.zeros(t_sub * B, device=device, dtype=torch.float32)
+            pen_flat.scatter_reduce_(0, flat_idx, active_pen, reduce='amax', include_self=False)
+            pen_sub = pen_flat.view(t_sub, B)
+
+        pen_seq_chunks.append(pen_sub)
+
+        # 可选：清理缓存
+        # torch.cuda.empty_cache()
+
+    # 合并结果
+    return torch.cat(pen_seq_chunks, dim=0)

@@ -109,7 +109,7 @@ def tranfrom_to_yup(smpl_model, human, obj, mesh_obj, origin_format):
 
 
 
-def from_yup_to_simulation(human, obj, smpl_model, smplx_parser_n, skeleton_tree):
+def from_yup_to_simulation(human, obj, smpl_model, smplx_parser_n, skeleton_tree, mesh_obj):
     rotation_matrix_x = sRot.from_euler('x', np.pi / 2)
 
     device = next(smpl_model.parameters()).device
@@ -138,25 +138,61 @@ def from_yup_to_simulation(human, obj, smpl_model, smplx_parser_n, skeleton_tree
     # 将位移向量轨迹整体旋转到世界系
     rel_pelvis_obj_world = rotation_matrix_x.apply(obj_delta_yup)
 
+    # --- 4. 计算人体和物体在 Z-up 下的"原始"位置 (未落地修正) ---
+
+    # 4.1 人体原始 Z-up
     pose_aa = poses.copy()
     rotated_root_orientation = rotation_matrix_x * sRot.from_rotvec(pose_aa[:, :3])
     pose_aa[:, :3] = rotated_root_orientation.as_rotvec()
-    root_trans_origin_world = rotation_matrix_x.apply(trans)
+    root_trans_origin_world = rotation_matrix_x.apply(trans)  # (T, 3)
 
-    # 4. 高度修正，这里直接使用 SMPL-X Parser（等效于机器人骨骼）
-    with torch.no_grad():
-        f_check = min(100, pose_aa.shape[0])
-        p_t = torch.from_numpy(pose_aa[:f_check]).float()
-        t_t = torch.from_numpy(root_trans_origin_world[:f_check]).float()
-        verts, _ = smplx_parser_n.get_joints_verts(p_t, torch.zeros((1, 20)), t_t)
-        diff_fix = verts[..., -1].min().item()
-
-    final_root_trans = root_trans_origin_world - diff_fix
-
-    # 5. 物体旋转 (位置相对于人体平移，只需独立旋转角度)
-    obj_pos = final_root_trans + rel_pelvis_obj_world
+    # 4.2 物体原始 Z-up (基于人体 Root + 相对位移)
+    # 注意：这时候人体还没落地修正，所以物体也没落地
+    obj_pos_raw = root_trans_origin_world + rel_pelvis_obj_world
     obj_angles_w = rotation_matrix_x * sRot.from_rotvec(obj_angles)
 
+    # --- 5. 联合高度修正 (Joint Ground Alignment) ---
+
+    # 设定检测帧数 (前100帧用于确定地面高度)
+    f_check = min(100, pose_aa.shape[0])
+
+    # A. 计算人体最低点
+    with torch.no_grad():
+        p_t = torch.from_numpy(pose_aa[:f_check]).float()
+        t_t = torch.from_numpy(root_trans_origin_world[:f_check]).float()
+        # 注意：这里需要传入空的 hand pose 占位，防止 smplx 报错，如果模型包含手
+        # 假设 smplx_parser_n 内部处理好了，或者只用了 body_pose
+        verts_h, _ = smplx_parser_n.get_joints_verts(p_t, torch.zeros((1, 20)), t_t)
+        min_z_h = verts_h[..., -1].min().item()
+
+    # B. 计算物体最低点
+    # 准备物体模板顶点 (中心化，与 tranfrom_to_yup 逻辑保持一致)
+    v_template = mesh_obj.vertices.copy()
+    v_template -= np.mean(v_template, axis=0)  # (V, 3)
+
+    # 取前 f_check 帧的物体旋转矩阵和平移
+    R_obj_check = obj_angles_w[:f_check].as_matrix()  # (T_check, 3, 3)
+    T_obj_check = obj_pos_raw[:f_check]  # (T_check, 3)
+
+    # 批量计算物体顶点世界坐标: V_world = V_local @ R.T + T
+    # (T, 3, 3) @ (3, V) -> (T, 3, V) -> transpose -> (T, V, 3)
+    # 使用 einsum 加速: 'tij, vj -> tvi'
+    # (t:frames, i:row, j:col/vert_dim, v:vertices)
+    # V_local @ R.T 等价于 (R @ V_local.T).T
+    v_obj_world = np.matmul(v_template, np.transpose(R_obj_check, (0, 2, 1))) + T_obj_check[:, np.newaxis, :]
+    min_z_o = v_obj_world[..., 2].min()
+
+    # C. 决定修正值：谁更低就以谁为准
+    diff_fix = min(min_z_h, min_z_o)
+
+    # --- 6. 应用修正 ---
+
+    # 修正人体 Root
+    final_root_trans = root_trans_origin_world - diff_fix
+
+    # 修正物体位置 (物体位置是基于人体计算的，人体降了，物体自然也降了，
+    # 但我们需要重新计算基于 final_root_trans 的 obj_pos)
+    obj_pos = final_root_trans + rel_pelvis_obj_world
 
     # 6. 计算物体额外信息（速度、角速度），默认 30 fps
     dt = 1.0 / 30

@@ -24,8 +24,8 @@ class LeggedRobotHoi(LeggedRobotImi):
         # TODO: Hacky code here for Behave dataset
         if self.cfg.asset.load_object:
             self.mask_interaction_reward = False
-            self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
-            # self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
+            # self.object_name = [motion_example.split('/')[-1].split('_')[2].split('.')[0] for motion_example in self.motion_file]
+            self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         else:
             self.mask_interaction_reward = True
         self.object_density = self.cfg.object.object_density
