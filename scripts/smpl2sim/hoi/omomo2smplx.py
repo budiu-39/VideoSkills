@@ -1,9 +1,17 @@
+
+import shutil
+import smplx
+import joblib
+import pytorch3d.transforms as transforms
+
+
+
 import os
 import sys
 import os.path as osp
 
 sys.path.append(os.getcwd())
-import subprocess
+
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
 from tqdm import tqdm
@@ -13,28 +21,24 @@ import trimesh
 import torch
 import mujoco
 import numpy as np
-import shutil
 import smplx
-import joblib
-import pytorch3d.transforms as transforms
+import subprocess
 
-from scripts.libsmpl.smplpytorch.pytorch.smpl_layer import SMPL_Layer
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
-from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
+from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLX_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.smpl2sim.hoi.mujoco_contact_inference import build_local_templates_by_body
+from scripts.smpl2sim.hoi.mujoco_contact_inference import viz_smpl_simulation_space, build_local_templates_by_body
+
+
+from scripts.smpl2sim.hoi.omomo_utils import rotate_at_frame_w_obj, get_smpl_parents
 from scripts.smpl2sim.hoi.mujoco_contact_inference import quick_viz_frame, build_sk2mj_index
 from scripts.render.mujoco_render import export_mujoco_video_hoi, create_temp_xml_with_object
-from scripts.render.render_smplh_hoi import render_smplh_hoi_video
-from scripts.smpl2sim.hoi.hoi_retarget_utils import (apply_cam2world_rotvec_trans, _quat_rotate_xyzw,
-                                                     angular_velocity_world_from_quat_xyzw, penetration_depth_sequence_ig,
-                                                     compute_cg_ig_via_smplh_contacts_yup, smplh_vert_part_from_custom_layer)
-from human_body_prior.body_model.body_model import BodyModel
-from scripts.smpl2sim.hoi.omomo_utils import rotate_at_frame_w_obj, get_smpl_parents
-from scripts.smpl2sim.hoi.model_test import compare_root_joint_smplx_vs_bodymodel, check_equivalence_with_known_R
-from scripts.render.hoi_render import render_smplx_hoi_video_zup
-from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation
+from scripts.render.hoi_render import render_smpl_hoi_video_yup
+from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation, tranfrom_to_yup
+from scripts.smpl2sim.hoi.hoi_retarget_utils import (compute_cg_ig_via_smplh_contacts_yup, get_smpl_vert_part)
+
+sys.path.append(os.getcwd())
 
 def get_omomo_data(raw_p_path):
     print(f"Loading OMOMO data from {raw_p_path}...")
@@ -108,67 +112,6 @@ def omomo_preprocess(seq_data):
     }
     return human, obj
 
-def from_zup_to_yup(smpl_model, poses, trans, betas, obj_trans, obj_angles, mesh_obj):
-    ''' 将 OMOMO 数据集的 Z up 坐标系转换到 Y up 坐标系，输入输出都是 numpy 格式S '''
-    rotation_matrix_x = sRot.from_euler('x', -np.pi/2, degrees=False)
-
-    with torch.no_grad():
-        smplx_output = smpl_model(
-            body_pose=torch.from_numpy(poses[:, 3:66]).float().to(device),
-            global_orient=torch.from_numpy(poses[:, :3]).float().to(device),
-            betas=torch.from_numpy(betas).float().to(device),
-            transl=torch.from_numpy(trans).float().to(device)
-        )
-        pelvis = smplx_output.joints.detach().cpu().numpy()[:, 0, :]
-
-    # --- 1. 坐标系旋转 (World Transformation) ---
-    # 旋转人
-    rotvecs = poses[:, :3]
-    rotated_rotations = rotation_matrix_x * sRot.from_rotvec(rotvecs)
-    poses[:, :3] = rotated_rotations.as_rotvec()
-    trans = rotation_matrix_x.apply(trans)
-
-    # 旋转物体 (保持相对 pelvis 关系)
-    obj_trans_delta = rotation_matrix_x.apply(obj_trans - pelvis)
-
-    rotated_rotations2 = rotation_matrix_x * sRot.from_rotvec(obj_angles)
-    obj_angles = rotated_rotations2.as_rotvec()
-
-    # --- 2. SMPL 前向计算 (Pass 2: 旋转后) ---
-    # 这一步是为了拿到旋转后的人体顶点最低点
-    with torch.no_grad():
-        smplx_output = smpl_model(
-            body_pose=torch.from_numpy(poses[:, 3:66]).float().to(device),
-            global_orient=torch.from_numpy(poses[:, :3]).float().to(device),
-            betas=torch.from_numpy(betas).float().to(device),
-            transl=torch.from_numpy(trans).float().to(device)
-        )
-        verts = smplx_output.vertices.detach().cpu().numpy()
-        pelvis = smplx_output.joints.detach().cpu().numpy()[:, 0, :]  # 更新后的 pelvis
-
-    # 更新物体位置
-    obj_trans = pelvis + obj_trans_delta
-
-    # --- 3. 落地校准 (Ground Alignment) ---
-    # 计算每一帧物体的顶点世界坐标，只取了前 30 帧用于计算最低点
-    angle_matrix = sRot.from_rotvec(obj_angles).as_matrix()
-    obj_verts_template = mesh_obj.vertices[None, ...]  # (1, V, 3)
-    obj_verts_template -= np.mean(obj_verts_template, axis=1, keepdims=True)
-    # R * V_T + T
-    obj_verts_motion = np.matmul(obj_verts_template, np.transpose(angle_matrix, (0, 2, 1))) + obj_trans[:, None, :]
-
-    # 计算 diff
-    diff_fix = min(verts[:30, ..., 1].min(), obj_verts_motion[:30, ..., 1].min())
-
-    # 应用落地修正
-    obj_trans[..., 1] -= diff_fix
-    trans[..., 1] -= diff_fix
-
-    obj = {'angles': obj_angles, 'trans': obj_trans, 'name': obj_name}
-    human = {'poses': poses, 'betas': betas, 'trans': trans, 'gender': gender}
-    return human, obj
-
-
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -219,6 +162,7 @@ if __name__ == "__main__":
     )
 
     OBJECT_PATH = "./data/omomo/objects_scaled_center"
+    render_outdir = "renders/OMOMO"
 
     data_dict = get_omomo_data(args.src)
 
@@ -275,21 +219,10 @@ if __name__ == "__main__":
         obj_mesh_path = osp.join(OBJECT_PATH, obj_name, f"{obj_name}.obj")
         mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
 
-        output_mesh_video = f"renders/origin/{seq_name}.mp4"
+        output_mesh_video = f"{render_outdir}/origin/{seq_name}.mp4"
         os.makedirs(os.path.dirname(output_mesh_video), exist_ok=True)
 
-        render_smplx_hoi_video_zup(
-            smplx_model=smpl[gender].to(device),
-            poses_zup=pose_aa_smpl,  # (T, 156)
-            trans_zup=trans_smpl,  # (T, 3)
-            betas=betas_smpl,  # (10,)
-            obj_mesh_path=obj_mesh_path,
-            obj_trans_zup=obj_trans,
-            obj_rotmat_zup=obj['rot'],
-            output_path=output_mesh_video,
-            fps=30,
-            camera_cfg=camera_config,
-        )
+
 
         obj_file = os.path.dirname(obj_mesh_path)
         points_cache_path = os.path.join(obj_file, 'sampled_points.pt')
@@ -301,8 +234,15 @@ if __name__ == "__main__":
             object_points = torch.from_numpy(pts).float().to(device)
             torch.save(object_points, points_cache_path)
 
-        human_yup, obj_yup = from_zup_to_yup(smpl[gender], pose_aa_smpl, trans_smpl, betas_smpl,
-                                               obj_trans, obj_angles, mesh_obj)
+        obj = {'angles': obj_angles, 'trans': obj_trans, 'name': obj_name}
+        human = {'poses': pose_aa_smpl, 'betas': betas_smpl, 'trans': trans_smpl, 'gender': gender}
+
+        human_yup, obj_yup = tranfrom_to_yup(smpl[gender], human, obj, mesh_obj, origin_format='zup')
+
+        render_smpl_hoi_video_yup(
+            smpl_model=smpl[gender].to(device), human=human_yup, obj=obj_yup, output_path=output_mesh_video,
+            fps=30, camera_cfg=camera_config, obj_mesh_path=obj_mesh_path
+        )
 
         new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
                                                           smplx_parser_n, skeleton_tree)
@@ -310,11 +250,10 @@ if __name__ == "__main__":
         motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
 
         if args.render:
-            render_outdir = 'renders/retarget'
-            os.makedirs(render_outdir, exist_ok=True)
-            retarget_video_path = osp.join(render_outdir, f"{key_str}.mp4")
+            retarget_outdir = f'{render_outdir}/retarget'
+            os.makedirs(retarget_outdir, exist_ok=True)
+            retarget_video_path = osp.join(retarget_outdir, f"{key_str}.mp4")
             N = new_sk_state.local_rotation.shape[0]
-            os.makedirs(render_outdir, exist_ok=True)
             temp_xml = create_temp_xml_with_object("data/robots/smpl/smplx_humanoid_hand.xml", obj_mesh_path)
 
             motion_traj = {}
@@ -331,7 +270,7 @@ if __name__ == "__main__":
                 output_path=retarget_video_path
             )
 
-            compare_outdir = 'renders/comparison'
+            compare_outdir = f'{render_outdir}/comparison'
             os.makedirs(compare_outdir, exist_ok=True)
             comparison_video_path = osp.join(compare_outdir, f"{key_str}.mp4")
 
@@ -363,6 +302,69 @@ if __name__ == "__main__":
                 print(e.stderr)
                 print("-------------------------------")
                 break
+
+        # 建立 mujoco 模型，用于穿模计算和可视化检查
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body(
+            "data/robots/smpl/smplx_humanoid_hand.xml",
+            samples_per_geom=500)
+        mj_data = mujoco.MjData(mj_model)
+        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+
+        # 计算 cg 和 ig
+        smpl_vert_part = get_smpl_vert_part(smpl[gender])
+        smpl_2_mujoco = [SMPLX_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLX_BONE_ORDER_NAMES]
+        cg_yup, ig_yup = compute_cg_ig_via_smplh_contacts_yup(
+            smpl_model=smpl[gender],
+            human=human_yup,
+            obj=obj_yup,
+            obj_mesh_path=obj_mesh_path,
+            smpl_vert_part=smpl_vert_part
+        )
+
+        R_yup2zup = sRot.from_euler('x', 90, degrees=True).as_matrix()
+
+        # IG 是方向向量，需要旋转；CG 是标签，不需要旋转
+        ig_mj = ig_yup[:, smpl_2_mujoco, :] @ R_yup2zup.T
+        cg_mj = cg_yup[:, smpl_2_mujoco]
+
+        if args.debug:
+            t = min(50, len(cg_mj) - 1)
+
+            # 2. 计算该帧物体点云 (Z-up)
+            o_pos = object_dict['obj_pos'][t]
+            o_quat = object_dict['obj_rot'][t]
+            r_mat = sRot.from_quat(o_quat).as_matrix()
+            # object_points 是循环前采样好的 (1024, 3) 局部点
+            obj_pts_w = (object_points.cpu().numpy() @ r_mat.T) + o_pos
+
+            # 3. 传入修复后的函数
+            quick_viz_frame(
+                body_local_clouds=body_clouds,
+                obj_pts=obj_pts_w,
+                # 修复此处：直接从 new_sk_state 获取全局平移
+                body_pos_frame=new_sk_state.global_translation[t].cpu().numpy(),
+                body_rot_frame=new_sk_state.global_rotation[t].cpu().numpy(),
+                mj2sk=mj2sk,  # 关键！必须传入映射表
+                contact_row=cg_mj[t],  # cg_mj 已经是重排后的顺序
+                ig_frame=ig_mj[t],     # ig_mj 已经是重排后的顺序
+                title=f"Fixed Check: {key_str}"
+            )
+
+        bundle = {
+            "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
+            "object": object_dict,
+            "interaction": {
+                "ig": ig_mj,  # (T,52,3) float32（世界系）
+                "contact_robot": cg_mj,  # (T,52)   0/1 float32
+                # "collision_tag": (pen_seq > 0).any(axis=1)  # 这个目前是占位符
+            }
+        }
+
+        output_dir_sequences = osp.join(output_dir)
+        os.makedirs(output_dir_sequences, exist_ok=True)
+        save_path = osp.join(output_dir_sequences, f"{key_str}.npy")
+        os.makedirs(osp.dirname(save_path), exist_ok=True)
+        np.save(save_path, bundle, allow_pickle=True)
 
         # # 9. 计算接触和交互信息
         # # compute_cg_ig_via_smplh_contacts_yup 期望输入在 Y-up/camera 坐标系下：

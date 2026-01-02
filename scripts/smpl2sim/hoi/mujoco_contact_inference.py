@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-import numpy as np
+
 import mujoco
-import trimesh
 from collections import defaultdict
 from scipy.spatial import cKDTree
+
+import numpy as np
+import pyvhacd
 from scipy.spatial.transform import Rotation as sRot
 
 # ===== 常量（与你现有阈值保持一致，可按需调整） =====
@@ -17,14 +19,38 @@ ADAPTIVE_PAD = 0.005      # sigma_t = min_dist + 0.005
 FIXED_SIGMA_NO_INTERACT = 0.02  # 不满足交互条件的保底阈值
 
 
-# ===== 1) 从 XML 采样 local 模板，按 body 聚合（只支持新版 dict） =====
-import numpy as np
-import mujoco
-import trimesh
-from collections import defaultdict
-from scipy.spatial.transform import Rotation as sRot
+def set_scene_camera_facing_human(scene, root_pos):
+    """
+    设置 trimesh 场景相机，使其正对人体中心。
+    root_pos: 人体根节点的 [x, y, z] 坐标
+    """
+    import trimesh
+    import numpy as np
 
+    # 1. 设定相机参数
+    distance = 4.0  # 相机离人的距离
+    elevation = 0.8  # 相机稍微抬高的高度 (Z轴)
 
+    # 2. 计算相机位置 (从 Y 轴负方向看过来，通常是正面)
+    cam_pos = root_pos + np.array([0, -distance, elevation])
+    target = root_pos + np.array([0, 0, 0.4])  # 视点对准人的胸部高度
+
+    # 3. 计算相机变换矩阵 (Look-at 矩阵)
+    forward = target - cam_pos
+    forward /= np.linalg.norm(forward)
+
+    right = np.cross(forward, [0, 0, 1])
+    right /= np.linalg.norm(right)
+
+    up = np.cross(right, forward)
+
+    mat = np.eye(4)
+    mat[:3, 0] = right
+    mat[:3, 1] = up
+    mat[:3, 2] = -forward  # trimesh 相机朝向自己的 -Z
+    mat[:3, 3] = cam_pos
+
+    scene.camera_transform = mat
 
 def build_local_templates_by_body(xml_path, samples_per_geom=1500, drop_world=True):
     """
@@ -287,83 +313,84 @@ def contacts_from_xml_pointcloud(
     return contact, ig
 
 
-
-
-# ===== 5) 可视化：只高亮 contact body=红，其余=白；加地面与坐标轴 =====
-def quick_viz_frame(
-    mj_model, mj_data, body_local_clouds,
-    obj_pts,
-    body_pos_frame,
-    body_rot_frame,
-    mj2sk,
-    title="viz", ground_size=10.0,
-    contact_row=None,
-    ig_frame=None,
+def quick_viz_ig_cg(
+        body_local_clouds,
+        obj_pts,
+        body_pos_frame,  # 来自 sk_state.global_translation[t]
+        body_rot_frame,  # 来自 sk_state.global_rotation[t]
+        mj2sk,  # 必须传入：mj_body_id -> sk_index 的映射
+        title="Corrected Viz",
+        contact_row=None,  # (B,) 已按 Skeleton 顺序重排
+        ig_frame=None,  # (B, 3) 已按 Skeleton 顺序重排
 ):
+    import trimesh
     scene = trimesh.Scene()
 
-    # 世界系点云（按 body）
-    body_world = worldize_clouds_per_frame_sk(body_pos_frame, body_rot_frame, body_local_clouds, mj2sk)
+    # 1. 预计算所有 Skeleton 节点的旋转矩阵
+    # body_rot_frame 形状 (J, 4) -> (J, 3, 3)
+    all_mats = sRot.from_quat(body_rot_frame).as_matrix()
 
-    # —— 颜色表 ——
-    RED    = np.array([220,  40,  40, 255], np.uint8)   # +1: 促成
-    WHITE  = np.array([235, 235, 235, 255], np.uint8)   #  0: 中性
-    BLUE   = np.array([ 60,  60, 220, 255], np.uint8)   # -1: 惩罚
-    GREEN  = np.array([ 60, 200,  60, 255], np.uint8)   # 物体点云
-    CYAN   = np.array([ 50, 150, 255, 255], np.uint8)   # body_pos 标记
+    # 颜色定义
+    RED, WHITE, BLUE, GREEN = [220, 40, 40, 255], [235, 235, 235, 255], [60, 60, 220, 255], [60, 200, 60, 120]
 
-    # —— 机器人各 body：根据 contact 三值渲染 ——
-    B = len(contact_row) if contact_row is not None else mj_model.nbody
-    for b, pts in body_world.items():
-        if pts is None or pts.size == 0:
+    # 2. 遍历每一个有采样点云的 MuJoCo Body
+    for mj_bid, pts_local in body_local_clouds.items():
+        # 获取该 Body 在 SkeletonState 数组中对应的索引
+        if mj_bid not in mj2sk:
             continue
+        sk_idx = mj2sk[mj_bid]
 
+        # 严格对应位姿
+        R = all_mats[sk_idx]
+        T = body_pos_frame[sk_idx]
+
+        # 变换点云到世界系: P_w = P_l * R^T + T
+        pts_world = pts_local @ R.T + T
+
+        # 判定颜色 (contact_row 是按 Skeleton 顺序排的)
+        rgba = WHITE
         if contact_row is not None:
-            val = float(contact_row[mj2sk[b]])
-            if val > 0.5:      # +1 or binary 1
+            val = contact_row[sk_idx]
+            if val > 0.5:
                 rgba = RED
-            elif val < -0.5:   # -1
+            elif val < -0.5:
                 rgba = BLUE
-            else:              # 0 or neutral
-                rgba = WHITE
-        else:
-            rgba = WHITE
 
-        pc = trimesh.points.PointCloud(pts, colors=np.tile(rgba, (pts.shape[0], 1)))
-        scene.add_geometry(pc, node_name=f"body_{b:02d}")
+        pc = trimesh.points.PointCloud(pts_world, colors=np.tile(rgba, (pts_world.shape[0], 1)))
+        scene.add_geometry(pc)
 
-    # —— 物体点云（绿色） ——
+    # 3. 绘制物体 (绿色)
     obj_pc = trimesh.points.PointCloud(obj_pts, colors=np.tile(GREEN, (obj_pts.shape[0], 1)))
-    scene.add_geometry(obj_pc, node_name="object_points")
+    scene.add_geometry(obj_pc)
 
-    # —— 人体代表点（青色） ——
-    if body_pos_frame is not None:
-        bp = np.asarray(body_pos_frame, dtype=np.float32)
-        bp_pc = trimesh.points.PointCloud(bp, colors=np.tile(CYAN, (bp.shape[0], 1)))
-        scene.add_geometry(bp_pc, node_name="body_markers")
+    # 4. 绘制 IG 向量 (修正方向：从关节指向物体)
+    if ig_frame is not None:
+        starts = body_pos_frame
 
-    # —— ig 线段（橙色） ——
-    if (body_pos_frame is not None) and (ig_frame is not None):
-        starts = np.asarray(body_pos_frame, dtype=np.float32)
-        ends   = starts + np.asarray(ig_frame, dtype=np.float32)
-        segs   = np.stack([starts, ends], axis=1)  # (B,2,3)
-        path_orange = trimesh.load_path(segs)
-        color_orange = np.tile(np.array([[255, 140, 0, 255]], dtype=np.uint8), (len(segs), 1))
-        for i in range(len(path_orange.entities)):
-            path_orange.entities[i].color = color_orange[i]
-        scene.add_geometry(path_orange, node_name="ig_lines_body")
+        # --- 核心修复点 ---
+        # 如果你的 ig_mj 是 (物体最近点 - 关节中心)，则终点应该是 关节 + 向量
+        ends = body_pos_frame + ig_frame  # 将 '-' 改为 '+'
+        # -----------------
 
-    # —— 地面 + 坐标轴 ——
-    plane = trimesh.creation.box(extents=(ground_size, ground_size, 0.01))
-    plane.apply_translation([0.0, 0.0, -0.005])
-    plane.visual.face_colors = [200, 200, 200, 120]
-    scene.add_geometry(plane, node_name="ground")
-    scene.add_geometry(trimesh.creation.axis(axis_length=1.0), node_name="axes")
+        valid = np.linalg.norm(ig_frame, axis=1) > 0.001
+        if np.any(valid):
+            segs = np.stack([starts[valid], ends[valid]], axis=1)
+            path = trimesh.load_path(segs)
+            for e in path.entities:
+                e.color = [255, 140, 0, 255]  # 橙色
+            scene.add_geometry(path)
 
-    try:
-        scene.show(title=title)
-    except Exception as e:
-        print("[viz] headless:", e)
+    # 5. 地面与坐标轴
+    scene.add_geometry(trimesh.creation.axis(axis_length=0.5))
+    ground = trimesh.creation.box(extents=[5, 5, 0.005])
+    ground.apply_translation([0, 0, -0.0025])
+    ground.visual.face_colors = [200, 200, 200, 100]
+    scene.add_geometry(ground)
+
+    root_center = body_pos_frame[0]
+    set_scene_camera_facing_human(scene, root_center)
+
+    scene.show(title=title)
 
 def build_qpos_seq_from_state(mj_model, new_sk_state):
     """
@@ -457,72 +484,148 @@ def world_to_geom_local_ig(points_world, Rbw, pbw, geom_pos_body, geom_quat_wxyz
     # world -> geomLocal
     return (points_world - pgw) @ Rgw
 
-# ---------- 整段运动：返回 (T, B) 的穿入深度 ----------
-def penetration_depth_sequence_ig(
-    mj_model,
-    body_geoms,                 # dict{ mj_body_id -> [geom_id, ...] } （只含原语）
-    mj2sk: dict,                # mj body id -> skeleton index
-    obj_pts_world_seq,          # list 长度 T；每项为 (P_t, 3) 世界系物体点云
-    ig_body_pos_world_seq,      # (T, B, 3) Skeleton 顺序 body 世界位置
-    ig_body_rot_world_seq,      # (T, B, 4) Skeleton 顺序 body 世界四元数（xyzw）
-):
-    T, B = ig_body_pos_world_seq.shape[:2]
 
-    # 预取不变的 MuJoCo 几何参数
-    geom_type = mj_model.geom_type
-    geom_size = mj_model.geom_size
-    geom_pos  = mj_model.geom_pos
-    geom_quat = mj_model.geom_quat
+def penetration_depth_sequence_ig(mj_model, body_geoms, mj2sk, obj_pts_seq, body_pos, body_rot):
+    """
+    计算物体点云与机器人各个 body 几何体之间的穿模深度。
 
-    # 预计算每帧、每个 body 的 Rbw（提升速度）
-    Rbw_all = sRot.from_quat(ig_body_rot_world_seq.reshape(-1, 4)).as_matrix().reshape(T, B, 3, 3)
-    pbw_all = ig_body_pos_world_seq  # (T, B, 3)
+    参数:
+        mj_model: mujoco.MjModel
+        body_geoms: dict, 由 build_local_templates_by_body 生成，包含 geom_id, type, size 等
+        mj2sk: list/array, mj_body_id -> sk_joint_id 的映射
+        obj_pts_seq: np.ndarray (T, P, 3) 或 List, 世界系物体点云
+        body_pos: np.ndarray (T, B, 3), 骨骼全局位置 (SkeletonState.global_translation)
+        body_rot: np.ndarray (T, B, 4), 骨骼全局旋转 (xyzw, SkeletonState.global_rotation)
 
-    # 输出 (T, B)
-    pen_seq = np.zeros((T, B), dtype=np.float32)
+    返回:
+        pen_depth: np.ndarray (T, B), 每个关节在每一帧的最大穿模深度 (正值表示穿模)
+    """
+    T = len(obj_pts_seq)
+    B = body_pos.shape[1]
+    pen_depth = np.zeros((T, B), dtype=np.float32)
 
     for t in range(T):
-        pts_w = obj_pts_world_seq[t]  # (P_t, 3)
-        # 遍历 MuJoCo 的 body（只处理在 body_geoms 中登记的）
-        for mj_bid, geom_list in body_geoms.items():
-            sk_idx = mj2sk[mj_bid]
-            Rbw = Rbw_all[t, sk_idx]
-            pbw = pbw_all[t, sk_idx]
+        pts_w = obj_pts_seq[t]  # (P, 3)
+        if len(pts_w) == 0: continue
 
-            min_signed = np.inf
-            for g in geom_list:
-                gtype = geom_type[g]
-                size  = geom_size[g]
-                pgb   = geom_pos[g]
-                q_wxyz= geom_quat[g]
+        # 遍历所有几何体
+        for mj_body_id, geoms in body_geoms.items():
+            sk_idx = mj2sk.get(mj_body_id, -1)  # 使用 get 防止 key 缺失
+            if sk_idx < 0: continue  # 跳过没有对应骨骼的 body (如 worldbody)
 
-                if gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
-                    r = float(size[0])
-                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
-                    sd = sdf_sphere(pl, r)
-                elif gtype == mujoco.mjtGeom.mjGEOM_BOX:
-                    half = size[:3].astype(np.float32)
-                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
-                    sd = sdf_box(pl, half)
-                elif gtype == mujoco.mjtGeom.mjGEOM_CAPSULE:
-                    r, half = float(size[0]), float(size[1])
-                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
-                    sd = sdf_capsule_z(pl, r, half)
-                elif gtype == mujoco.mjtGeom.mjGEOM_CYLINDER:
-                    r, half = float(size[0]), float(size[1])
-                    pl = world_to_geom_local_ig(pts_w, Rbw, pbw, pgb, q_wxyz)
-                    sd = sdf_cylinder_z(pl, r, half)
+            # 获取当前 body 的世界系位姿
+            b_pos = body_pos[t, sk_idx]
+            b_rot = sRot.from_quat(body_rot[t, sk_idx])
+
+            max_pen_for_body = 0.0
+
+            for g_id in geoms:
+                g_type = mj_model.geom_type[g_id]
+                g_size = mj_model.geom_size[g_id]
+
+                # 获取 geom 相对于 body 的局部偏移 (如果有的话)
+                g_pos_local = mj_model.geom_pos[g_id]
+                g_quat_local = mj_model.geom_quat[g_id]  # wxyz in mujoco
+                g_rot_local = sRot.from_quat([g_quat_local[1], g_quat_local[2], g_quat_local[3], g_quat_local[0]])
+
+                # 计算 geom 的世界系位姿
+                # P_g_w = R_b_w * P_g_l + P_b_w
+                geom_pos_w = b_rot.apply(g_pos_local) + b_pos
+                geom_rot_w = b_rot * g_rot_local
+
+                # 将物体点云转换到 geom 的局部坐标系
+                # P_l = R_g_w^T * (P_w - P_g_w)
+                pts_local = geom_rot_w.inv().apply(pts_w - geom_pos_w)
+
+                # 根据几何体类型计算穿模
+                if g_type == 3:  # mjtGeom.mjGEOM_CAPSULE
+                    # Capsule 在 Mujoco 中沿 Z 轴生长, size = [radius, half_height, 0]
+                    r, hh = g_size[0], g_size[1]
+                    # 计算点到 Z 轴线段 [-hh, hh] 的距离
+                    z_proj = np.clip(pts_local[:, 2], -hh, hh)
+                    dist_to_axis = np.linalg.norm(pts_local[:, :2], axis=1)
+                    dist_to_capsule = np.sqrt(dist_to_axis ** 2 + (pts_local[:, 2] - z_proj) ** 2) - r
+                    # 穿模深度 = -dist (如果是负数表示在内部)
+                    current_pen = -dist_to_capsule
+
+                elif g_type == 2:  # mjtGeom.mjGEOM_BOX
+                    # Box size = [half_x, half_y, half_z]
+                    # 计算点到 AABB 的 Signed Distance
+                    d = np.abs(pts_local) - g_size
+                    # 简化的 SDF: 内部点的距离为负
+                    dist_to_box = np.max(d, axis=1)
+                    current_pen = -dist_to_box
+
+                elif g_type == 5:  # mjtGeom.mjGEOM_CYLINDER
+                    r, hh = g_size[0], g_size[1]
+                    dist_r = np.linalg.norm(pts_local[:, :2], axis=1) - r
+                    dist_z = np.abs(pts_local[:, 2]) - hh
+                    current_pen = -np.maximum(dist_r, dist_z)
+
                 else:
-                    continue  # 只按“人是原语”的前提处理
+                    continue  # 暂不支持其他类型 (Sphere, Mesh等)
 
-                ms = float(sd.min())
-                if ms < min_signed:
-                    min_signed = ms
+                if current_pen.max() > max_pen_for_body:
+                    max_pen_for_body = current_pen.max()
 
-            # 穿入深度 = max(0, -min_signed)
-            if min_signed < 0.0:
-                pen_seq[t, sk_idx] = -min_signed
-            else:
-                pen_seq[t, sk_idx] = 0.0
+            pen_depth[t, sk_idx] = max(0.0, max_pen_for_body)
 
-    return pen_seq  # (T, B)
+    return pen_depth
+
+
+def quick_viz_penetration(
+        mj_model, body_local_clouds, obj_pts, body_pos_frame, body_rot_frame,
+        mj2sk, pen_depth_row=None, title="Penetration Check (Trimesh)"
+):
+    """
+    使用 trimesh 可视化单帧穿模情况
+    """
+    import trimesh
+    scene = trimesh.Scene()
+
+    # 颜色定义 [R, G, B, A]
+    COLOR_NORMAL = [200, 200, 200, 60]  # 灰色半透明 (正常)
+    COLOR_PENETRATE = [255, 0, 0, 200]  # 红色不透明 (穿模)
+    COLOR_OBJECT = [0, 255, 0, 255]  # 绿色 (物体)
+
+    # 1. 渲染机器人 Body 点云
+    for mj_body_id, local_cloud in body_local_clouds.items():
+        sk_idx = mj2sk.get(mj_body_id, -1)
+        if sk_idx < 0:
+            continue
+
+        # 坐标变换
+        pos = body_pos_frame[sk_idx]
+        rot_mat = sRot.from_quat(body_rot_frame[sk_idx]).as_matrix()
+        world_cloud = local_cloud @ rot_mat.T + pos
+
+        # 判定颜色：根据该关节的穿模深度
+        color = COLOR_NORMAL
+        if pen_depth_row is not None and pen_depth_row[sk_idx] > 0.005:  # 阈值 5mm
+            color = COLOR_PENETRATE
+
+        # 创建点云对象
+        # 采样：如果点太多，trimesh 可能会卡，这里可以根据需要 [::n]
+        body_pc = trimesh.points.PointCloud(world_cloud, colors=np.tile(color, (world_cloud.shape[0], 1)))
+        scene.add_geometry(body_pc)
+
+    # 2. 渲染物体点云
+    obj_pc = trimesh.points.PointCloud(obj_pts, colors=np.tile(COLOR_OBJECT, (obj_pts.shape[0], 1)))
+    scene.add_geometry(obj_pc)
+
+    # 3. 添加辅助装饰
+    # 坐标轴
+    scene.add_geometry(trimesh.creation.axis(axis_length=0.5))
+
+    # 地面 (灰色平面)
+    ground = trimesh.creation.box(extents=[10, 10, 0.001])
+    ground.visual.face_colors = [150, 150, 150, 50]
+    scene.add_geometry(ground)
+
+    print(f"Showing scene: {title}")
+    print("Controls: Left-Click to Rotate, Right-Click to Pan, Scroll to Zoom.")
+    root_center = body_pos_frame[0]
+    set_scene_camera_facing_human(scene, root_center)
+
+    # 显示场景
+    scene.show(title=title)

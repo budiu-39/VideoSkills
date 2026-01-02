@@ -97,7 +97,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_corrected')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_fixed')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
 
 
@@ -251,8 +251,8 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             eg2 = 0.00002
             eg3 = 0.00000000001
         class scales:
-            imitation = 1.0
-            # humanoid = 10.0
+            # imitation = 1.0
+            humanoid = 10.0
             obj = 100.0
             ig = 10.0
             cg = 10.0

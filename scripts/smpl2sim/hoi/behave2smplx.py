@@ -14,80 +14,64 @@ import torch
 import mujoco
 import numpy as np
 import smplx
+import subprocess
+import json
 
 from scripts.libsmpl.smplpytorch.pytorch.smpl_layer import SMPL_Layer
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
 from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.smpl2sim.hoi.mujoco_contact_inference import build_local_templates_by_body
-from scripts.smpl2sim.hoi.mujoco_contact_inference import quick_viz_frame, build_sk2mj_index
+from scripts.smpl2sim.hoi.mujoco_contact_inference import penetration_depth_sequence_ig, build_local_templates_by_body
+from scripts.smpl2sim.hoi.mujoco_contact_inference import quick_viz_ig_cg, build_sk2mj_index, quick_viz_penetration
 from scripts.render.mujoco_render import export_mujoco_video_hoi, create_temp_xml_with_object
-from scripts.render.render_smplh_hoi import render_smplh_hoi_video
-from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation
-from scripts.smpl2sim.hoi.hoi_retarget_utils import (load_behave_sequence, apply_cam2world_rotvec_trans,
-                                                     _quat_rotate_xyzw,
-                                                     angular_velocity_world_from_quat_xyzw, penetration_depth_sequence_ig,
-                                                     compute_cg_ig_via_smplh_contacts_yup, smplh_vert_part_from_custom_layer)
+from scripts.render.hoi_render import render_smpl_hoi_video_yup
+from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation, tranfrom_to_yup
+from scripts.smpl2sim.hoi.hoi_retarget_utils import (compute_cg_ig_via_smplh_contacts_yup, get_smpl_vert_part)
 
 
-def from_ydown_to_yup(smpl_model, poses, trans, betas, obj_trans, obj_angles, mesh_obj):
-    ''' 将 BEHAVE 数据集的 Y down 坐标系转换到 Y up 坐标系，输入输出都是 numpy 格式S '''
-    rotation_matrix_x = sRot.from_euler('x', -np.pi, degrees=False)
+def load_behave_sequence(sequence_path, parse_frame_times=True):
+    # 辅助加载函数：读取 npz 或返回空字典
+    def load_npz(name):
+        p = osp.join(sequence_path, name)
+        return np.load(p, allow_pickle=True) if osp.exists(p) else {}
 
-    smplx_output = smpl_model(
-        body_pose=torch.from_numpy(poses[:, 3:66]).float(),
-        global_orient=torch.from_numpy(poses[:, :3]).float(),
-        betas=torch.from_numpy(betas).float(),
-        transl=torch.from_numpy(trans).float()
-    )
-    pelvis = smplx_output.joints.detach().numpy()[:, 0, :]
+    f_s = load_npz("smpl_fit_all.npz")
+    f_o = load_npz("object_fit_all.npz")
 
-    # --- 1. 坐标系旋转 (World Transformation) ---
-    # 旋转人
-    rotvecs = poses[:, :3]
-    rotated_rotations = rotation_matrix_x * sRot.from_rotvec(rotvecs)
-    poses[:, :3] = rotated_rotations.as_rotvec()
-    trans = rotation_matrix_x.apply(trans)
+    # 1. SMPL 数据：直接用 np.array(..., dtype=np.float32) 强制转换
+    smpl = {k: np.array(f_s[k], dtype=np.float32) for k in ['poses', 'trans', 'betas'] if k in f_s}
+    smpl['gender'] = str(f_s.get('gender', 'neutral'))
 
-    # 旋转物体 (保持相对 pelvis 关系)
-    obj_trans_delta = rotation_matrix_x.apply(obj_trans - pelvis)
+    smpl['betas'] = smpl['betas']
 
-    rotated_rotations2 = rotation_matrix_x * sRot.from_rotvec(obj_angles)
-    obj_angles = rotated_rotations2.as_rotvec()
+    # 2. Object 数据
+    obj = {k: np.array(f_o[k], dtype=np.float32) for k in ['angles', 'trans'] if k in f_o}
 
-    # --- 2. SMPL 前向计算 (Pass 2: 旋转后) ---
-    # 这一步是为了拿到旋转后的人体顶点最低点
-    smplx_output = smpl_model(
-        body_pose=torch.from_numpy(poses[:, 3:66]).float(),
-        global_orient=torch.from_numpy(poses[:, :3]).float(),
-        betas=torch.from_numpy(betas).float(),
-        transl=torch.from_numpy(trans).float()
-    )
-    verts = smplx_output.vertices.detach().numpy()
-    pelvis = smplx_output.joints.detach().numpy()[:, 0, :]  # 更新后的 pelvis
+    # 针对带有 't' 前缀的 frame_times 进行内联处理
+    if 'frame_times' in f_o and parse_frame_times:
+        ft = f_o['frame_times']
+        # 如果是字符串数组（BEHAVE 常见情况），去掉 't' 再转 float；否则直接转
+        obj['frame_times'] = np.array([str(x).lstrip('tT') for x in ft],
+                                      dtype=np.float32) if ft.dtype.kind in 'SUO' else ft.astype(np.float32)
 
-    # 更新物体位置
-    obj_trans = pelvis + obj_trans_delta
+    # 3. Info JSON
+    info_p = osp.join(sequence_path, "info.json")
+    info = json.load(open(info_p)) if osp.exists(info_p) else {}
 
-    # --- 3. 落地校准 (Ground Alignment) ---
-    # 计算每一帧物体的顶点世界坐标，只取了前 30 帧用于计算最低点
-    angle_matrix = sRot.from_rotvec(obj_angles).as_matrix()
-    obj_verts_template = mesh_obj.vertices[None, ...]  # (1, V, 3)
-    obj_verts_template -= np.mean(obj_verts_template, axis=1, keepdims=True)
-    # R * V_T + T
-    obj_verts_motion = np.matmul(obj_verts_template, np.transpose(angle_matrix, (0, 2, 1))) + obj_trans[:, None, :]
+    # 4. 组装返回
+    out = {
+        'smpl': smpl,
+        'object': obj,
+        'info': {'gender': info.get('gender', 'neutral'), 'cat': info.get('cat', '')}
+    }
 
-    # 计算 diff
-    diff_fix = min(verts[:30, ..., 1].min(), obj_verts_motion[:30, ..., 1].min())
+    # 5. 最小化校验：确保关键数据存在
+    if 'poses' not in out['smpl'] or 'trans' not in out['smpl']:
+        raise ValueError(f"Data missing in {sequence_path}")
 
-    # 应用落地修正
-    obj_trans[..., 1] -= diff_fix
-    trans[..., 1] -= diff_fix
+    return out
 
-    obj = {'angles': obj_angles, 'trans': obj_trans, 'name': obj_name}
-    human = {'poses': poses, 'betas': betas, 'trans': trans, 'gender': gender}
-    return human, obj
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -100,6 +84,8 @@ if __name__ == "__main__":
     parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
                                                                         retargeted motion using scenepic animation.")
     parser.add_argument("--dst", type=str, default="dataset/smplx_motion/behave_small", help="Output path")
+    parser.add_argument("--penetration_check", action="store_true", default=False,
+                        help="Whether to perform penetration check and save the results.")
     args = parser.parse_args()
     output_dir = args.dst
 
@@ -141,17 +127,26 @@ if __name__ == "__main__":
     smplx_parser_n = SMPLX_Parser(
         model_path='data/SMPL/smplx',
         gender='neutral',
-        use_pca=False,  # 关键：不用 PCA，接受 45D/手
+        use_pca=False,
         create_transl=False,
         flat_hand_mean=True,
         num_betas=20  # SMPL-X 20 维 beta
     )
 
+    camera_config = {
+        'distance': 4.5,  # 相机距离目标的距离
+        'azimuth': 0,  # 水平旋转角度（度）
+        'elevation': -15,  # 仰角（度），负值通常表示从上往下看
+        'lookat_offset': np.array([0, 0, 0.7])  # 目标点相对于根节点的偏移（看人中心）
+    }
+
+    render_outdir = "renders/Behave"
     for sequence_dir in tqdm(all_sequences):
         if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")) and not osp.exists(osp.join(sequence_dir, "human.npz")):
             continue
 
         norm_path = osp.normpath(sequence_dir)
+        seq_name = norm_path.split(osp.sep)[-1]
         print("Processing", sequence_dir)
 
         # 导入人体 SMPL 数据，此时是相机坐标系(Y down)，先把它变成 渲染通用的坐标系(Y up)，再转化成 Z up。
@@ -175,6 +170,7 @@ if __name__ == "__main__":
         # 导入物体网格，并采样点云
         obj_mesh_path = osp.join(args.obj_root, "objects", obj_name, f"{obj_name}.obj")
         mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
+
         obj_file = os.path.dirname(obj_mesh_path)
         points_cache_path = os.path.join(obj_file, 'sampled_points.pt')
         if os.path.exists(points_cache_path):
@@ -185,16 +181,31 @@ if __name__ == "__main__":
             object_points = torch.from_numpy(pts).float().to(device)
             torch.save(object_points, points_cache_path)
 
-        human_yup, obj_yup = from_ydown_to_yup(smpl[gender], pose_aa_smpl, trans_smpl, betas_smpl,
-                                               obj_trans, obj_angles, mesh_obj)
+        obj = {'angles': obj_angles, 'trans': obj_trans, 'name': obj_name}
+        human = {'poses': pose_aa_smpl, 'betas': betas_smpl, 'trans': trans_smpl, 'gender': gender}
+
+        human_yup, obj_yup = tranfrom_to_yup(smpl[gender], human, obj, mesh_obj, origin_format='ydown')
 
         new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
                                                           smplx_parser_n, skeleton_tree)
 
+
         motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
 
         if args.render:
-            render_outdir = 'renders'
+            # 渲染原始人体与物体交互视频 (Y up)
+            output_mesh_video = f"{render_outdir}/origin/{seq_name}.mp4"
+            os.makedirs(os.path.dirname(output_mesh_video), exist_ok=True)
+
+            render_smpl_hoi_video_yup(
+                smpl_model=smpl[gender].to(device), human=human_yup, obj=obj_yup, output_path=output_mesh_video,
+                fps=30, camera_cfg=camera_config, obj_mesh_path=obj_mesh_path
+            )
+
+            # 渲染机器人与物体交互视频
+            retarget_outdir = f'{render_outdir}/retarget'
+            os.makedirs(retarget_outdir, exist_ok=True)
+            retarget_video_path = osp.join(retarget_outdir, f"{key_str}.mp4")
             N = new_sk_state.local_rotation.shape[0]
             os.makedirs(render_outdir, exist_ok=True)
             temp_xml = create_temp_xml_with_object("data/robots/smpl/smplx_humanoid_hand.xml", obj_mesh_path)
@@ -208,94 +219,141 @@ if __name__ == "__main__":
                 motion_traj,
                 obj_pos=object_dict['obj_pos'],
                 obj_quat_xyzw=object_dict['obj_rot'],
+                camera_cfg=camera_config,
                 xml_path=temp_xml,
-                output_path=osp.join(render_outdir, f"{key_str}.mp4"),
+                output_path=retarget_video_path
             )
 
-        # 9. 计算接触和交互信息(在 yup 坐标系下计算，然后旋转到 Zup)
+            compare_outdir = f'{render_outdir}/comparison'
+            os.makedirs(compare_outdir, exist_ok=True)
+            comparison_video_path = osp.join(compare_outdir, f"{key_str}.mp4")
 
-        # cg_np, ig_np = compute_cg_ig_via_smplh_contacts_yup(
-        #     smplh_layer=smplh_layer,
-        #     pose_aa=pose_aa_smpl,  # (T,D)
-        #     betas=betas_smpl,  # (10,) 或 (1,10)
-        #     trans=trans_smpl,  # (T,3)
-        #     obj_mesh_path=obj_mesh_path,  # 物体mesh（局部坐标）
-        #     obj_pos_world=obj_trans,  # (T,3)
-        #     obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),  # (T,4) xyzw
-        #     smplh_vert_part=smplh_vert_part_from_custom_layer(smplh_layer),
-        #     contact_threshold=0.01,
-        #     samples_per_object=1024,
-        # )
-        #
-        # ig_mj = ig_np[:, smpl_2_mujoco, :]  # (T,52,3)
-        # ig_mj = ig_mj @ np.array(R_cam2world_mat).T
-        # cg_mj = cg_np[:, smpl_2_mujoco]  # (T,52)
+            print(f"正在合成对比视频: {key_str}...")
+            filter_str = (
+                "[0:v]crop=720:720:(in_w-720)/2:(in_h-720)/2,setsar=1,format=yuv420p[v0];"
+                "[1:v]crop=720:720:(in_w-720)/2:(in_h-720)/2,setsar=1,format=yuv420p[v1];"
+                "[v0][v1]hstack"
+            )
 
-        # 穿模计算
-        # body_clouds, body_geoms, mj_model = build_local_templates_by_body(
-        #     "data/robots/smpl/smplx_humanoid_hand.xml",
-        #     samples_per_geom=500)
-        # mj_data = mujoco.MjData(mj_model)
-        # sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
-        #
-        # body_pos = new_sk_state.global_translation
-        # obj_pts_world = _quat_rotate_xyzw(q_xyzw, object_points) + p_w.unsqueeze(1)
-        # obj_pts_world_np = obj_pts_world.cpu().numpy().astype(np.float32)  # [T,P,3]
-        #
-        # pen_seq = penetration_depth_sequence_ig(
-        #     mj_model,
-        #     body_geoms,
-        #     mj2sk,
-        #     obj_pts_world_np,  # e.g. List[np.ndarray], len T, each (P_t,3)
-        #     body_pos.numpy().astype(np.float32),  # (T, B, 3)
-        #     new_sk_state.global_rotation.numpy().astype(np.float32),  # (T, B, 4) xyzw
-        # )
+            cmd = [
+                'ffmpeg', '-y',
+                '-r', '30', '-i', output_mesh_video,   # 强制输入0帧率为30
+                '-r', '30', '-i', retarget_video_path,  # 强制输入1帧率为30
+                '-filter_complex', filter_str,
+                '-r', '30',                            # 强制输出帧率为30
+                '-c:v', 'libx264',
+                '-pix_fmt', 'yuv420p',
+                comparison_video_path
+            ]
 
-        # quick_viz = True
-        # if quick_viz:
-        #     body_pos_t = new_sk_state.global_translation  # Tensor, 与上文一致
-        #     t = min(100, obj_pts_world_np.shape[0] - 1)
-        #
-        #     body_pos_frame = body_pos_t[t].cpu().numpy().astype(np.float64)
-        #     body_rot_frame = new_sk_state.global_rotation[t].cpu().numpy().astype(np.float64)
-        #
-        #     quick_viz_frame(
-        #         mj_model, mj_data,
-        #         body_local_clouds=body_clouds,
-        #         obj_pts=obj_pts_world_np[t],
-        #         body_rot_frame=body_rot_frame,
-        #         mj2sk=mj2sk,
-        #         title=f"seq:{key_str} t={t}",
-        #         body_pos_frame=body_pos_frame,
-        #         ig_frame=ig_mj[t],
-        #         contact_row=cg_mj[t],
-        #     )
+            try:
+                # 注意：这里将 stderr 改为 PIPE，以便失败时查看报错
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                print(f"✅ 对比视频已保存至: {comparison_video_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ FFmpeg 合成失败: {key_str}")
+                print("--- FFmpeg 错误日志 (Stderr) ---")
+                print(e.stderr)
+                print("-------------------------------")
+                break
 
-        # render_smplh_hoi_video(
-        #     smplh_layer=smplh_layer,
-        #     poses=pose_aa_smpl,  # 原始
-        #     trans=trans_smpl,
-        #     betas=betas_smpl[0:1, :10],
-        #     obj_mesh_path=obj_mesh_path,
-        #     obj_pos=obj_trans,
-        #     obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),
-        #     output_path=output_mesh_video,
-        #     fps=30
-        # )
-        #
-        # output_mesh_video = osp.join(output_dir_render, f"{key_str}_origin.mp4")
-        #
+        # 建立 mujoco 模型，用于穿模计算和可视化检查
+        body_clouds, body_geoms, mj_model = build_local_templates_by_body(
+            "data/robots/smpl/smplx_humanoid_hand.xml",
+            samples_per_geom=500)
+        mj_data = mujoco.MjData(mj_model)
+        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+
+        # 计算 cg 和 ig
+        smpl_vert_part = get_smpl_vert_part(smpl[gender])
+        smpl_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
+        cg_yup, ig_yup = compute_cg_ig_via_smplh_contacts_yup(
+            smpl_model=smpl[gender],
+            human=human_yup,
+            obj=obj_yup,
+            obj_mesh_path=obj_mesh_path,
+            smpl_vert_part=smpl_vert_part
+        )
+
+        # 注意：from_yup_to_simulation 内部会计算 R_yup2zup_mat (RotX 90)
+        # 交互信息 IG/CG 也需要相应旋转
+        R_yup2zup = sRot.from_euler('x', 90, degrees=True).as_matrix()
+
+        # IG 是方向向量，需要旋转；CG 是标签，不需要旋转
+        ig_mj = ig_yup[:, smpl_2_mujoco, :] @ R_yup2zup.T
+        cg_mj = cg_yup[:, smpl_2_mujoco]
+
+        if args.penetration_check:
+            # 准备数据, 获取物体的世界坐标系点云序列 (Z-up)
+            obj_pos = object_dict['obj_pos']  # (T, 3)
+            obj_rot = object_dict['obj_rot']  # (T, 4) xyzw
+            T_len = obj_pos.shape[0]
+
+            # 预先计算物体每一帧在世界系下的点云
+            # object_points 是局部点云 (1024, 3)
+            obj_pts_world_seq = []
+            for t in range(T_len):
+                r_mat = sRot.from_quat(obj_rot[t]).as_matrix()
+                pts_w = (object_points.cpu().numpy() @ r_mat.T) + obj_pos[t]
+                obj_pts_world_seq.append(pts_w)
+
+            body_pos = new_sk_state.global_translation.numpy()
+            body_rot = new_sk_state.global_rotation.numpy()  # xyzw
+
+            pen_seq = penetration_depth_sequence_ig(
+                mj_model,
+                body_geoms,
+                mj2sk,
+                obj_pts_world_seq,
+                body_pos,
+                body_rot
+            )
+
+            collision_tag = (pen_seq > 0.01).any(axis=1)
+
+        if args.debug:
+            t = min(50, len(cg_mj) - 1)
+            # 计算该帧物体点云 (Z-up)
+            o_pos = object_dict['obj_pos'][t]
+            o_quat = object_dict['obj_rot'][t]
+            r_mat = sRot.from_quat(o_quat).as_matrix()
+            # object_points 是循环前采样好的 (1024, 3) 局部点
+            object_points_world = (object_points.cpu().numpy() @ r_mat.T) + o_pos
+
+            quick_viz_penetration(
+                mj_model=mj_model,
+                body_local_clouds=body_clouds,
+                obj_pts=object_points_world,
+                body_pos_frame=new_sk_state.global_translation[t].cpu().numpy(),
+                body_rot_frame=new_sk_state.global_rotation[t].cpu().numpy(),
+                mj2sk=mj2sk,
+                pen_depth_row=pen_seq[t],
+                title=f"Penetration Check: {key_str} (Frame {t})"
+            )
+
+            quick_viz_ig_cg(
+                body_local_clouds=body_clouds,
+                obj_pts=object_points_world,
+                # 修复此处：直接从 new_sk_state 获取全局平移
+                body_pos_frame=new_sk_state.global_translation[t].cpu().numpy(),
+                body_rot_frame=new_sk_state.global_rotation[t].cpu().numpy(),
+                mj2sk=mj2sk,  # 关键！必须传入映射表
+                contact_row=cg_mj[t],  # cg_mj 已经是重排后的顺序
+                ig_frame=ig_mj[t],     # ig_mj 已经是重排后的顺序
+                title=f"Fixed Check: {key_str}"
+            )
+
         bundle = {
             "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
             "object": object_dict,
             "interaction": {
                 "ig": ig_mj,  # (T,52,3) float32（世界系）
                 "contact_robot": cg_mj,  # (T,52)   0/1 float32
-                "collision_tag": (pen_seq > 0).any(axis=1)
+                "collision_tag": collision_tag
             }
         }
 
-        output_dir_sequences = osp.join(output_dir, "sequences")
+        output_dir_sequences = osp.join(output_dir)
         os.makedirs(output_dir_sequences, exist_ok=True)
         save_path = osp.join(output_dir_sequences, f"{key_str}.npy")
         os.makedirs(osp.dirname(save_path), exist_ok=True)

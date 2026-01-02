@@ -7,18 +7,7 @@ sys.path.append(os.getcwd())
 from scipy.spatial.transform import Rotation as sRot
 import numpy as np
 from tqdm import tqdm
-import argparse
-import glob
 
-from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
-from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
-from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
-from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
-from scripts.smpl2sim.hoi.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
-from scripts.smpl2sim.hoi.mujoco_contact_inference import penetration_depth_sequence_ig
-from scripts.smpl2sim.hoi.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
-from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
-import smplx
 import trimesh
 import joblib
 import torch
@@ -26,7 +15,6 @@ import mujoco
 import json
 import numpy as np
 from scipy.spatial import cKDTree
-from scripts.libsmpl.smplpytorch.pytorch.smpl_layer import SMPL_Layer
 
 Q_UPRIGHT_XYZW = np.array([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
 Rupright = sRot.from_quat(Q_UPRIGHT_XYZW)
@@ -54,274 +42,92 @@ def _set_axes_equal(ax):
     ax.set_zlim3d([z_middle - max_range/2, z_middle + max_range/2])
 
 @torch.no_grad()
-def compute_cg_ig_via_smplh_contacts_zup(
-        body_model,  # 修改：现在期望是 BodyModel 实例
-        pose_aa: np.ndarray,  # (T, 156) SMPL-H 参数
-        betas: torch.Tensor,  # (10,) 或 (T, 10)
-        trans: np.ndarray,  # (T, 3)
-        obj_mesh_path: str,
-        obj_pos_world: np.ndarray,  # (T, 3)
-        obj_quat_xyzw: np.ndarray,  # (T, 4) xyzw
-        smplh_vert_part: np.ndarray,  # (V,)
+def compute_cg_ig_via_smplh_contacts_yup(
+        smpl_model,  # smplx.create() 创建的模型
+        human,  # human_yup 字典
+        obj,  # obj_yup 字典
+        obj_mesh_path,
+        smpl_vert_part: np.ndarray,  # (V,) 顶点到部位/关节的映射索引
         contact_threshold: float = 0.01,
         unconcat_threshold: float = 0.1,
         samples_per_object: int = 1024,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        viz_t: int = 1,
-        viz_max_arrows: int = 120,
-        viz_show: bool = False,
-):
-    T = pose_aa.shape[0]
-    smplh_vert_part = np.asarray(smplh_vert_part, dtype=np.int64)
-    body_cnt = int(smplh_vert_part.max()) + 1
-
-    body_model = body_model.to(device)
-
-    mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-    obj_pts_local = trimesh.sample.sample_surface_even(mesh_obj, count=samples_per_object, seed=2025)[0].astype(
-        np.float32)
-
-    betas = betas[None, :] if betas.ndim == 1 else betas
-    betas_th = betas.to(device)
-
-    cg = np.zeros((T, body_cnt), dtype=np.float32)
-    ig = np.zeros((T, body_cnt, 3), dtype=np.float32)
-
-    _viz_cache = {}
-
-    for t in range(T):
-        # 1. 准备姿态参数切片 (针对 SMPL-H)
-        # pose_aa 通常为: root_orient(3) + pose_body(63) + left_hand(45) + right_hand(45) = 156
-        curr_pose = torch.from_numpy(pose_aa[t:t + 1].astype(np.float32)).to(device)
-
-        root_orient = curr_pose[:, :3]
-        pose_body = curr_pose[:, 3:66]
-        # BodyModel 需要手部参数
-        left_hand_pose = curr_pose[:, 66:111]
-        right_hand_pose = curr_pose[:, 111:156]
-
-        trans_th = torch.from_numpy(trans[t:t + 1].astype(np.float32)).to(device)
-
-        # 2. 修改：调用 BodyModel 的前向传播
-        # BodyModel 返回的是一个包含 vertices 和 joints 属性的对象
-        out = body_model(
-            root_orient=root_orient,
-            pose_body=pose_body,
-            left_hand_pose=left_hand_pose,
-            right_hand_pose=right_hand_pose,
-            transl=trans_th,
-            betas=betas_th[t:t + 1]
-        )
-
-        # 3. 修改：获取顶点和关节的属性名称
-        verts = out.vertices[0].detach().cpu().numpy().astype(np.float32)  # (V, 3)
-        joints = out.joints[0].detach().cpu().numpy().astype(np.float32)  # (J, 3)
-
-        # 后续逻辑保持不变...
-        rot = sRot.from_quat(obj_quat_xyzw[t])
-        obj_pts_w = rot.apply(obj_pts_local) + obj_pos_world[t]
-
-        tree = cKDTree(obj_pts_w)
-        dist, _ = tree.query(verts, k=1, workers=-1)
-        contact_mask = dist < contact_threshold
-
-        if np.any(contact_mask):
-            hits = np.bincount(smplh_vert_part[contact_mask], minlength=body_cnt)
-            cg[t] = (hits > 0).astype(np.float32)
-
-        near_mask = dist <= unconcat_threshold
-        hits_near = np.bincount(smplh_vert_part[near_mask], minlength=body_cnt)
-        cg[t][hits_near == 0] = -1.0
-
-        _, qidx = tree.query(joints, k=1, workers=-1)
-        nearest = obj_pts_w[qidx]
-        ig_vecs = (nearest - joints).astype(np.float32)
-        ig[t] = ig_vecs
-
-        if viz_t is not None and t == viz_t:
-            _viz_cache["joints"] = joints
-            _viz_cache["obj_pts_w"] = obj_pts_w
-            _viz_cache["nearest"] = nearest
-            _viz_cache["ig_vecs"] = ig_vecs
-            _viz_cache["contact_mask"] = contact_mask
-            _viz_cache["smplh_vert_part"] = smplh_vert_part
-            _viz_cache["cg_row"] = cg[t].copy()
-
-    if viz_t is not None and "joints" in _viz_cache:
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D  # noqa
-        from mpl_toolkits.mplot3d.art3d import Line3DCollection  # 导入线段集合工具
-
-        joints = _viz_cache["joints"]  # (J,3)
-        obj_w = _viz_cache["obj_pts_w"]  # (P,3)
-        nearest = _viz_cache["nearest"]  # (J,3)
-
-        # 采样索引
-        J = joints.shape[0]
-        step = max(1, int(np.ceil(J / max(1, viz_max_arrows))))
-        sel = np.arange(0, J, step, dtype=int)
-
-        fig = plt.figure(figsize=(8, 7))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # 1. 绘制物体点云（灰色）
-        ax.scatter(obj_w[:, 0], obj_w[:, 1], obj_w[:, 2], s=1, color='gray', alpha=0.2)
-
-        # 2. 绘制关节（蓝色）
-        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], s=15, color='blue', label='Joints')
-
-        # 3. 【修改部分】绘制线段：从关节指向最近点
-        # 构造线段集合：形状为 (N_lines, 2, 3) -> 每一行包含 [起点, 终点]
-        segments = np.stack([joints[sel], nearest[sel]], axis=1)
-
-        # 创建线段集合对象
-        line_col = Line3DCollection(segments, colors='red', linewidths=0.8, alpha=0.6)
-        ax.add_collection3d(line_col)
-
-        # 4. 绘制最近点（红色小点，可选，用于确认连线终点位置）
-        ax.scatter(nearest[sel, 0], nearest[sel, 1], nearest[sel, 2], s=5, color='red')
-
-        # 轴设置
-        ax.set_title(f"Joint-to-Object Distance (IG) @ t={viz_t}")
-        ax.set_xlabel("X");
-        ax.set_ylabel("Y");
-        ax.set_zlabel("Z")
-        _set_axes_equal(ax)
-
-        if viz_show:
-            plt.tight_layout()
-            plt.show()
-
-    return cg, ig
-
-
-
-def compute_cg_ig_via_smplh_contacts_yup(
-    smplh_layer,                 # torch nn.Module，前向返回 (verts, joints)
-    pose_aa: np.ndarray,         # (T, D)
-    betas: torch.Tensor,         # (10,) 或 (T,10)
-    trans: np.ndarray,           # (T, 3)
-    obj_mesh_path: str,
-    obj_pos_world: np.ndarray,   # (T, 3)
-    obj_quat_xyzw: np.ndarray,   # (T, 4) xyzw
-    smplh_vert_part: np.ndarray, # (V,) in [0, body_cnt-1]
-    contact_threshold: float = 0.01,
-    unconcat_threshold: float = 0.1,
-    samples_per_object: int = 1024,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    # -------- 新增：可视化参数 --------
-    viz_t: int = 1,           # 指定要可视化的帧索引；None 则不画
-    viz_max_arrows: int = 120,   # 控制箭头数量，避免太密
-    viz_show: bool = False,       # 是否 plt.show()
 ):
     """
+    输入:
+      human: 包含 'poses' (T,156), 'trans' (T,3), 'betas' (1,10/16) 的字典 (Y-up)
+      obj:   包含 'angles' (T,3), 'trans' (T,3) 的字典 (Y-up)
     返回:
-      cg: (T, body_cnt) float32   # 每帧部位接触(0/1)
-      ig: (T, body_cnt, 3) float32 # 部位关节 -> 物体最近点 的向量(世界系)
+      cg: (T, body_cnt) float32   - 接触标签: 1.0接触, 0.0不接触, -1.0远离
+      ig: (T, body_cnt, 3) float32 - 关节到物体最近点的向量 (世界系)
     """
-    T = pose_aa.shape[0]
-    smplh_vert_part = np.asarray(smplh_vert_part, dtype=np.int64)
-    body_cnt = int(smplh_vert_part.max()) + 1
+    # 1. 解包与准备
+    poses = np.asarray(human['poses'])
+    trans = np.asarray(human['trans'])
+    betas = human['betas']
 
-    smplh_layer = smplh_layer.to(device)
+    obj_angles = np.asarray(obj['angles'])
+    obj_trans = np.asarray(obj['trans'])
 
+    T = poses.shape[0]
+    smpl_vert_part = np.asarray(smpl_vert_part, dtype=np.int64)
+    body_cnt = int(smpl_vert_part.max()) + 1
+
+    smpl_model = smpl_model.to(device)
+
+    # 2. 物体点云采样
     mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-    obj_pts_local = trimesh.sample.sample_surface_even(mesh_obj, count=samples_per_object, seed=2025)[0].astype(np.float32)
-
-    betas = betas[None, :] if betas.ndim == 1 else betas   # (1,10) 或 (T,10)
-    betas_th = betas.to(device)
+    obj_pts_local = trimesh.sample.sample_surface_even(
+        mesh_obj, count=samples_per_object, seed=2025
+    )[0].astype(np.float32)
 
     cg = np.zeros((T, body_cnt), dtype=np.float32)
     ig = np.zeros((T, body_cnt, 3), dtype=np.float32)
 
-    # 为可视化的那一帧缓存物体点与最近点（只在命中 viz_t 时赋值）
-    _viz_cache = {}
+    for t in tqdm(range(T), desc="Computing CG/IG", mininterval=5.0):
+        # A. SMPL 前向计算 (适配 smplx 库接口)
+        p_t = torch.from_numpy(poses[t:t + 1]).float().to(device)
+        tr_t = torch.from_numpy(trans[t:t + 1]).float().to(device)
+        betas_t =  torch.from_numpy(betas[t:t + 1]).float().to(device)
 
-    for t in range(T):
-        pose_th  = torch.from_numpy(pose_aa[t:t+1].astype(np.float32)).to(device)
-        trans_th = torch.from_numpy(trans[t:t+1].astype(np.float32)).to(device)
-        out = smplh_layer(pose_th, th_betas=betas_th[t:t+1], th_trans=trans_th)
-        verts  = out[0][0].detach().cpu().numpy().astype(np.float32)   # (V,3)
-        joints = out[1][0].detach().cpu().numpy().astype(np.float32)   # (J,3)
+        # 适配 SMPL-H / SMPL-X 常见的 156 维输入分段
+        # 0:3 global_orient, 3:66 body_pose, 66:111 l_hand, 111:156 r_hand
+        out = smpl_model(
+            global_orient=p_t[:, :3],
+            body_pose=p_t[:, 3:66],
+            left_hand_pose=p_t[:, 66:111],
+            right_hand_pose=p_t[:, 111:156],
+            betas=betas_t,
+            transl=tr_t,
+        )
+        verts = out.vertices[0].cpu().numpy()  # (V, 3)
+        joints = out.joints[0].cpu().numpy()[:body_cnt]  # (J, 3) 截取有效的身体关节
 
-        rot = sRot.from_quat(obj_quat_xyzw[t])                         # xyzw
-        obj_pts_w = rot.apply(obj_pts_local) + obj_pos_world[t]        # (P,3)
+        # B. 物体点云变换
+        rot_mat = sRot.from_rotvec(obj_angles[t]).as_matrix()
+        obj_pts_w = (obj_pts_local @ rot_mat.T) + obj_trans[t]
 
+        # C. 距离查询 (SDF/Interaction)
         tree = cKDTree(obj_pts_w)
-        dist, _ = tree.query(verts, k=1, workers=-1)
-        contact_mask = dist < contact_threshold
-        # penalty_mask = dist > unconcat_threshold
 
+        # 顶点到物体距离 (用于接触标签 CG)
+        dist_v, _ = tree.query(verts, k=1, workers=-1)
+
+        # 计算接触 mask
+        contact_mask = dist_v < contact_threshold
         if np.any(contact_mask):
-            hits = np.bincount(smplh_vert_part[contact_mask], minlength=body_cnt)
+            hits = np.bincount(smpl_vert_part[contact_mask], minlength=body_cnt)
             cg[t] = (hits > 0).astype(np.float32)
 
-        near_mask = dist <= unconcat_threshold
-        hits_near = np.bincount(smplh_vert_part[near_mask], minlength=body_cnt)
+        # 计算远离 mask (用于惩罚)
+        near_mask = dist_v <= unconcat_threshold
+        hits_near = np.bincount(smpl_vert_part[near_mask], minlength=body_cnt)
+        cg[t][hits_near == 0] = -1.0  # 标记为完全不接触且不靠近
 
-        # 对于在 near_mask 中计数为 0 的部位，说明该部位没有任何一个点靠近物体
-        cg[t][hits_near == 0] = -1.0
-
-        # 关节到最近点向量
+        # D. 关节到物体向量 (用于 IG)
         _, qidx = tree.query(joints, k=1, workers=-1)
-        nearest = obj_pts_w[qidx]                                      # (J,3)
-        ig_vecs = (nearest - joints).astype(np.float32)                # (J,3)
-        ig[t] = ig_vecs
-
-        # 命中可视化帧：把需要的东西先存起来
-        if viz_t is not None and t == viz_t:
-            _viz_cache["joints"] = joints
-            _viz_cache["obj_pts_w"] = obj_pts_w
-            _viz_cache["nearest"] = nearest
-            _viz_cache["ig_vecs"] = ig_vecs
-            _viz_cache["contact_mask"] = contact_mask
-            _viz_cache["smplh_vert_part"] = smplh_vert_part
-            _viz_cache["cg_row"] = cg[t].copy()
-
-    if viz_t is not None and "joints" in _viz_cache:
-        import matplotlib.pyplot as plt
-        from mpl_toolkits.mplot3d import Axes3D  # noqa
-        from mpl_toolkits.mplot3d.art3d import Line3DCollection  # 导入线段集合工具
-
-        joints = _viz_cache["joints"]  # (J,3)
-        obj_w = _viz_cache["obj_pts_w"]  # (P,3)
-        nearest = _viz_cache["nearest"]  # (J,3)
-
-        # 采样索引
-        J = joints.shape[0]
-        step = max(1, int(np.ceil(J / max(1, viz_max_arrows))))
-        sel = np.arange(0, J, step, dtype=int)
-
-        fig = plt.figure(figsize=(8, 7))
-        ax = fig.add_subplot(111, projection='3d')
-
-        # 1. 绘制物体点云（灰色）
-        ax.scatter(obj_w[:, 0], obj_w[:, 1], obj_w[:, 2], s=1, color='gray', alpha=0.2)
-
-        # 2. 绘制关节（蓝色）
-        ax.scatter(joints[:, 0], joints[:, 1], joints[:, 2], s=15, color='blue', label='Joints')
-
-        # 3. 【修改部分】绘制线段：从关节指向最近点
-        # 构造线段集合：形状为 (N_lines, 2, 3) -> 每一行包含 [起点, 终点]
-        segments = np.stack([joints[sel], nearest[sel]], axis=1)
-
-        # 创建线段集合对象
-        line_col = Line3DCollection(segments, colors='red', linewidths=0.8, alpha=0.6)
-        ax.add_collection3d(line_col)
-
-        # 4. 绘制最近点（红色小点，可选，用于确认连线终点位置）
-        ax.scatter(nearest[sel, 0], nearest[sel, 1], nearest[sel, 2], s=5, color='red')
-
-        # 轴设置
-        ax.set_title(f"Joint-to-Object Distance (IG) @ t={viz_t}")
-        ax.set_xlabel("X");
-        ax.set_ylabel("Y");
-        ax.set_zlabel("Z")
-        _set_axes_equal(ax)
-
-        if viz_show:
-            plt.tight_layout()
-            plt.show()
+        nearest_pts = obj_pts_w[qidx]
+        ig[t] = (nearest_pts - joints).astype(np.float32)
 
     return cg, ig
 
@@ -339,33 +145,6 @@ def _quat_rotate_xyzw(q, v):
     term = qw.unsqueeze(1)*v + cross_qv_v
     return v + 2.0*torch.cross(qv.unsqueeze(1).expand_as(v), term, dim=-1)
 
-def apply_cam2world_rotvec_trans(rotvec, trans, R3x3):
-    r_new = sRot.from_matrix(R3x3) * sRot.from_rotvec(rotvec)
-    t_new = (R3x3 @ trans.T).T
-    return r_new.as_rotvec().astype(np.float32), t_new.astype(np.float32)
-
-def apply_upright_quat_xyzw(q_xyzw):
-    # 人体做的是: global = global * Rupright.inv()  （SciPy右乘）
-    return (sRot.from_quat(q_xyzw) * Rupright.inv()).as_quat().astype(np.float32)
-
-def fix_trans_height(pose_aa, trans, betas, mesh_parser):
-    with torch.no_grad():
-        frame_check = pose_aa.shape[0]
-        betas = betas
-        mesh_parser = mesh_parser
-        height_tolorance = 0.0
-        vertices_curr, joints_curr = mesh_parser.get_joints_verts(pose_aa[:frame_check], betas[None,],
-                                                                  trans[:frame_check])
-
-        offset = joints_curr[:, 0] - trans[
-                                     :frame_check]  # account for SMPL root offset. since the root trans we pass in has been processed, we have to "add it back".
-
-        diff_fix = ((vertices_curr - offset[:, None])[:frame_check, ..., -1].min(
-            dim=-1).values - height_tolorance).min()  # Only acount the first 30 frames, which usually is a calibration phase.
-
-        trans[..., -1] -= diff_fix
-        return trans, diff_fix
-
 def _to_float32_safe(arr, allow_strings_prefix_t=False):
     """Cast to float32, optionally parse string like 't0003.000'."""
     if arr is None:
@@ -381,69 +160,6 @@ def _to_float32_safe(arr, allow_strings_prefix_t=False):
     # 把逗号小数换成点（以防万一）
     s = np.char.replace(s, ',', '.')
     return s.astype(np.float32)
-
-def load_behave_sequence(sequence_path, parse_frame_times=True, strict=True):
-    out = {'smpl': {}, 'object': {}, 'info': {}}
-
-    # --- SMPL fits ---
-    smpl_npz = osp.join(sequence_path, "smpl_fit_all.npz")
-    with np.load(smpl_npz, allow_pickle=True) as f:
-        for k in ['poses', 'trans', 'betas']:
-            if k not in f:
-                if strict:
-                    raise KeyError(f"`{k}` not found in {smpl_npz}")
-                else:
-                    out['smpl'][k] = None
-                    continue
-            out['smpl'][k] = _to_float32_safe(f[k])
-        out['smpl']['gender'] = f['gender']
-
-    # --- Object fits ---
-    obj_npz = osp.join(sequence_path, "object_fit_all.npz")
-    if osp.exists(obj_npz):
-        with np.load(obj_npz, allow_pickle=True) as f:
-            out['object']['angles'] = _to_float32_safe(f['angles']) if 'angles' in f else None
-            out['object']['trans']  = _to_float32_safe(f['trans'])  if 'trans'  in f else None
-            if 'frame_times' in f and parse_frame_times:
-                try:
-                    # 关键：允许像 't0003.000' 这样的字符串
-                    out['object']['frame_times'] = _to_float32_safe(f['frame_times'], allow_strings_prefix_t=True)
-                except Exception:
-                    # 解析失败就置 None（后续按固定 fps=30 处理）
-                    out['object']['frame_times'] = None
-            else:
-                out['object']['frame_times'] = None
-    else:
-        out['object'] = {'angles': None, 'trans': None, 'frame_times': None}
-
-    # --- Info JSON ---
-    info_json = osp.join(sequence_path, "info.json")
-    if osp.exists(info_json):
-        with open(info_json, 'r', encoding='utf-8') as f:
-            info = json.load(f)
-        out['info']['gender'] = info.get('gender', 'neutral')
-        out['info']['cat']    = info.get('cat', '')
-    else:
-        out['info'] = {'gender': 'neutral', 'cat': ''}
-
-    # --- 基本形状校验（保守一些） ---
-    poses, trans, betas = out['smpl']['poses'], out['smpl']['trans'], out['smpl']['betas']
-    if poses is None or trans is None:
-        raise ValueError(f"Missing poses/trans in {smpl_npz}")
-    if poses.ndim != 2 or poses.shape[1] != 156:
-        raise ValueError(f"`poses` expected (T,156), got {poses.shape}")
-    if trans.ndim != 2 or trans.shape[1] != 3:
-        raise ValueError(f"`trans` expected (T,3), got {trans.shape}")
-    T = poses.shape[0]
-    if trans.shape[0] != T:
-        raise ValueError(f"Length mismatch: poses(T={T}) vs trans(T={trans.shape[0]})")
-    if betas is not None and not (
-        betas.ndim == 1 or (betas.ndim == 2 and betas.shape[0] in (1, T))
-    ):
-        raise ValueError(f"`betas` shape unexpected: {betas.shape}")
-
-    return out
-
 
 def load_corrected_behave_sequence(sequence_path, parse_frame_times=True, strict=True):
     out = {'smpl': {}, 'object': {}, 'info': {}}
@@ -541,394 +257,14 @@ def angular_velocity_world_from_quat_xyzw(q_xyzw: np.ndarray, dt: float) -> np.n
         omega_w[t] = (R_prev @ w_local).astype(np.float32)
     return omega_w
 
-def smplh_vert_part_from_custom_layer(smpl_layer) -> np.ndarray:
+
+def get_smpl_vert_part(smpl_model) -> np.ndarray:
     """
-    返回: smplh_vert_part 形状 (V,), 值域 [0..J-1]
-    读取 smpl_layer.smpl_data['weights'] (可能是 chumpy/sparse/numpy/torch)，
-    转成 torch.FloatTensor 后做 argmax。
+    适配 smplx 官方库创建的模型。
+    返回: smpl_vert_part 形状 (V,), 值域 [0..J-1]
+    通过对 lbs_weights 取 argmax 得到每个顶点所属权重最大的关节索引。
     """
-    W = smpl_layer.smpl_data.get("weights", None)
-    if W is None:
-        raise ValueError("smpl_layer.smpl_data['weights'] not found.")
+    weights = smpl_model.lbs_weights
+    part = torch.argmax(weights, dim=1).cpu().numpy().astype(np.int64)
 
-    # ---- 统一转 numpy ----
-    try:
-        import chumpy as ch
-        if isinstance(W, ch.Ch):
-            W = W.r  # chumpy -> numpy
-    except Exception:
-        pass
-
-    # scipy.sparse 支持
-    try:
-        from scipy.sparse import issparse
-        if issparse(W):
-            W = W.toarray()
-    except Exception:
-        pass
-
-    if isinstance(W, torch.Tensor):
-        W_t = W
-    else:
-        W_t = torch.from_numpy(np.asarray(W))  # numpy/list/other -> torch
-
-    if W_t.dtype != torch.float32:
-        W_t = W_t.to(torch.float32)
-
-    part = torch.argmax(W_t, dim=1).cpu().numpy().astype(np.int64)  # (V,)
     return part
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--debug", action="store_true", default=False)
-    parser.add_argument("--src", type=str, default="", help="Path to BEHAVE dataset")
-    parser.add_argument("--process_split", type=str, default="train", choices=["train", "test", "valid"])
-    parser.add_argument("--render", action="store_true", default=False, help="Whether to render the \
-                                                                        retargeted motion using scenepic animation.")
-    parser.add_argument("--dst", type=str, default="dataset/smplx_motion/behave_small", help="Output path")
-    args = parser.parse_args()
-    output_dir = args.dst
-
-    robot_cfg = {
-        "mesh": False,
-        "rel_joint_lm": True,
-        "upright_start": True,
-        "remove_toe": False,
-        "real_weight": True,
-        "real_weight_porpotion_capsules": True,
-        "real_weight_porpotion_boxes": True,
-        "replace_feet": True,
-        "masterfoot": False,
-        "big_ankle": True,
-        "freeze_hand": False,
-        "box_body": False,
-        "master_range": 50,
-        "body_params": {},
-        "joint_params": {},
-        "geom_params": {},
-        "actuator_params": {},
-        "model": "smplx",
-    }
-    skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_hand.xml")
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
-
-
-    # BEHAVE dataset structure: each sequence contains SMPL fits and object interactions
-    # We look for sequences with SMPL fits
-    all_sequences = glob.glob(f"{args.src}/**/", recursive=True)
-    behave_full_motion_dict = {}
-
-    smplx_parser_n = SMPLX_Parser(
-        model_path='data/SMPL/smplx',
-        gender='neutral',
-        use_pca=False,  # 关键：不用 PCA，接受 45D/手
-        create_transl=False,
-        flat_hand_mean=True,
-        num_betas=20  # SMPL-X 20 维 beta
-    )
-
-    skipped_due_to_first_frame_collision = []
-
-    sequences_folder_names = []
-
-    for sequence_dir in tqdm(all_sequences):
-        if not osp.exists(osp.join(sequence_dir, "smpl_fit_all.npz")) and not osp.exists(osp.join(sequence_dir, "human.npz")):
-            continue
-
-        norm_path = osp.normpath(sequence_dir)
-        parent_name = osp.basename(osp.dirname(norm_path))
-
-        print("Processing", sequence_dir)
-
-        # Load BEHAVE sequence data
-        # sequence_data = load_corrected_behave_sequence(sequence_dir)
-        sequence_data = load_behave_sequence(sequence_dir)
-        smpl_data = sequence_data['smpl']
-        pose_aa_smpl = smpl_data['poses']
-        trans_smpl = smpl_data['trans']
-        betas_smpl = torch.from_numpy(smpl_data.get('betas').copy())
-        gender = sequence_data['smpl']['gender']
-
-        N = pose_aa_smpl.shape[0]
-        if N < 10:
-            print(f"Sequence too short ({N} frames), skipping")
-            continue
-
-        # 模型
-        D = pose_aa_smpl.shape[1]
-
-        # 1. 定义坐标系变换矩阵 (Camera -> World Z-up)
-        # ==========================================================
-        R_cam2world_mat = sRot.from_euler('x', -np.pi / 2, degrees=False).as_matrix()
-
-
-        # ==========================================================
-        # 3. 处理人体旋转 (基础旋转)
-        # ==========================================================
-        pose_aa = pose_aa_smpl.copy()
-        # 使用你已有的 apply_cam2world_rotvec_trans
-        # root_trans_world 此时是旋转后的 SMPL 原点在世界系下的坐标
-        pose_aa[:, :3], root_trans_world = apply_cam2world_rotvec_trans(
-            pose_aa_smpl[:, :3], trans_smpl, R_cam2world_mat
-        )
-
-        # ==========================================================
-        # 4. 处理骨架偏移 (SMPL Origin -> Pelvis)
-        # ==========================================================
-        # 获取机器人模型中 Pelvis 相对于 Origin 的偏移 (在 Z-up 系下)
-        # 比如 skeleton_tree_smpl.local_translation[0] 是 [0, 0, 0.1]
-        skeleton_tree_smpl = SkeletonTree.from_mjcf(f"data/robots/smpl/smpl_humanoid.xml")
-        pelvis_offset = skeleton_tree_smpl.local_translation[0].numpy()
-
-        # 此时的 root_trans_offset 是 Pelvis 在世界系下的“标准”起始位置
-        root_trans_offset_np = root_trans_world + pelvis_offset  # (T, 3)
-
-        # ==========================================================
-        # 5. 执行地面校准 (Height Fix / Grounding)
-        # ==========================================================
-        fix_height = True
-        if fix_height:
-            with torch.no_grad():
-                # 传入当前带有 pelvis_offset 的 root 坐标进行顶点计算
-                frame_check_idx = min(100, N)
-                pose_t = torch.from_numpy(pose_aa[:frame_check_idx]).float()
-                # 默认用全 0 betas 或 betas_smpl
-                beta_t = torch.zeros((1, 20)).float()
-                trans_t = torch.from_numpy(root_trans_offset_np[:frame_check_idx]).float()
-
-                verts, joints = smplx_parser_n.get_joints_verts(pose_t, beta_t, trans_t)
-                # 计算脚底到地面的距离修正值
-                diff_fix = verts[..., -1].min().item()
-
-                # 应用修正：人向下挪动
-                root_trans_offset_np[..., -1] -= diff_fix
-                # 记录全局平移量用于后续计算
-                world_shift = np.array([0, 0, -diff_fix], dtype=np.float32)
-
-        root_trans_offset = torch.from_numpy(root_trans_offset_np).float()
-
-        pose_aa_mj = pose_aa.reshape(N, 52, 3)
-        smpl_2_mujoco = [SMPLH_BONE_ORDER_NAMES.index(q) for q in SMPLH_MUJOCO_NAMES if q in SMPLH_BONE_ORDER_NAMES]
-        pose_aa_mj = pose_aa_mj[:, smpl_2_mujoco]
-
-        # 轴角 -> 四元数（注意 scipy 返回 [x,y,z,w]）
-        pose_quat = sRot.from_rotvec(pose_aa_mj.reshape(-1, 3)).as_quat().reshape(N, 52, 4)
-        # root_trans_offset = torch.zeros(N, 3) + root_trans
-        new_sk_state = SkeletonState.from_rotation_and_root_translation(
-            skeleton_tree,
-            torch.from_numpy(pose_quat),
-            root_trans_offset,
-            is_local=True)
-
-        # 局部坐标系旋转（这个是骨架区别）
-        if robot_cfg['upright_start']:
-            pose_quat_global = (sRot.from_quat(new_sk_state.global_rotation.reshape(-1, 4).numpy()) *
-                                sRot.from_quat([0.5, 0.5, 0.5, 0.5]).inv()).as_quat().reshape(N, -1, 4)
-            new_sk_state = SkeletonState.from_rotation_and_root_translation(skeleton_tree,
-                                                                            torch.from_numpy(pose_quat_global),
-                                                                            root_trans_offset, is_local=False)
-        fps = 30
-        motion = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30)
-
-        # 物体修正(Behave 世界坐标系 -> Isaac Gym 世界坐标系)
-        obj_angles = sequence_data.get('object', {}).get('angles', None)
-        obj_trans = sequence_data.get('object', {}).get('trans', None)
-        obj_times = sequence_data.get('object', {}).get('frame_times', None)
-        key_str = os.path.basename(os.path.normpath(sequence_dir))
-        object_name_str = key_str.split('_')[2]
-
-        model_root = 'data/smplh'
-        smplh_layer = SMPL_Layer(center_idx=0, gender=gender, num_betas=10,
-                               model_root=str(model_root), hands=True).to('cuda')
-
-        obj_root = "dataset/behave_correct/objects_centered"  # 根据你的资源路径调整
-        obj_name = object_name_str
-        obj_mesh_path = osp.join(obj_root, "objects", obj_name, f"{obj_name}.obj")
-        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
-        obj_points, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
-
-        obj_angles_w, _ = apply_cam2world_rotvec_trans(obj_angles, obj_trans, R_cam2world_mat)
-        obj_quat_xyzw = sRot.from_rotvec(obj_angles_w).as_quat().astype(np.float32)
-
-
-        # 位置
-        # 2. 计算：在相机坐标系下的原始相对偏移 (SMPL Origin -> Object)
-        # ==========================================================
-        # 注意：trans_smpl 是相机系下的 SMPL 原点，obj_trans 是物体原点
-        rel_v_camera = obj_trans - trans_smpl  # (T, 3)
-        # 将相对偏移向量旋转到世界系 (Z-up)
-        rel_v_world = sRot.from_matrix(R_cam2world_mat).apply(rel_v_camera)  # (T, 3)
-        obj_pos = (root_trans_offset.numpy() - pelvis_offset + rel_v_world).astype(np.float32)
-
-        # 速度
-        dt = 1.0 / fps
-        obj_pos_vel = np.zeros_like(obj_pos)
-        obj_pos_vel[1:] = (obj_pos[1:] - obj_pos[:-1]) / dt
-
-        # 角速度
-        obj_rot_vel = angular_velocity_world_from_quat_xyzw(obj_quat_xyzw, dt)
-
-        key_str = os.path.basename(os.path.normpath(sequence_dir))
-        object_name_str = key_str.split('_')[2]
-        motion_dict = motion.to_dict()  # 与 motion.to_file() 里保存的结构一致
-
-        # ==== 推理接触 ====
-        # 1) 准备 body_pos (世界坐标): [T,52,3]
-        body_pos_t = new_sk_state.global_translation  # Tensor, 与上文一致
-        if not isinstance(body_pos_t, torch.Tensor):
-            body_pos_t = torch.from_numpy(body_pos_t)
-        body_pos_t = body_pos_t.to(torch.float32)  # [T,52,3]
-
-        q_xyzw = torch.from_numpy(obj_quat_xyzw.astype(np.float32))  # [T,4]
-        p_w = torch.from_numpy(obj_pos.astype(np.float32))  # [T,3]
-        dt = 1.0 / fps
-
-        obj_points_local = torch.from_numpy(
-            trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)[0].astype(np.float32))
-        obj_pts_world = _quat_rotate_xyzw(q_xyzw, obj_points_local) + p_w.unsqueeze(1)  # [T,P,3]
-
-        with torch.no_grad():
-            # obj_pts_world 已在上文计算
-            ig_torch = compute_sdf(body_pos_t, obj_pts_world)  # [T,52,3]
-            ref_ig = ig_torch.cpu().numpy().astype(np.float32)
-
-        body_clouds, body_geoms, mj_model = build_local_templates_by_body("data/robots/smpl/smplx_humanoid_hand.xml",
-                                                                samples_per_geom=500)
-
-        qpos_seq_np = build_qpos_seq_from_state(mj_model, new_sk_state)
-
-        obj_pts_world_np = obj_pts_world.cpu().numpy().astype(np.float32)  # [T,P,3]
-        obj_pos_np = p_w.cpu().numpy().astype(np.float32)  # [T,3]
-        obj_vel_np = obj_pos_vel.astype(np.float32)  # [T,3]
-        obj_acc_np = np.zeros_like(obj_vel_np, dtype=np.float32)
-        obj_acc_np[1:] = (obj_vel_np[1:] - obj_vel_np[:-1]) / dt
-
-        sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
-        names = np.array([str(n) for n in skeleton_tree.node_names])  # or skeleton_tree.body_names
-        # 你想标记为“地面/脚/胸”的集合（名字要与 XML/Skeleton 一致）
-        mask_names = {"L_Ankle", "R_Ankle", "L_Toe", "R_Toe"}
-        # Skeleton 顺序的布尔掩码：True 表示该 body 属于“接地”集合
-        ground_mask_sk = np.isin(names, list(mask_names))
-        # 调 contacts + ig
-        # contact_robot, ig_np = contacts_from_xml_pointcloud(
-        #     mj_model, body_clouds,
-        #     qpos_seq=qpos_seq_np.astype(np.float32),
-        #     obj_pts_world=obj_pts_world_np,
-        #     obj_pos=obj_pos_np, vel=obj_vel_np, acc=obj_acc_np,
-        #     sigma_pad=ADAPTIVE_PAD, sigma_no_interact=FIXED_SIGMA_NO_INTERACT,
-        #     ground_height=0.0,
-        #     sk2mj=sk2mj, mj2sk=mj2sk,
-        #     ig_body_pos_world = body_pos_t.numpy().astype(np.float32),
-        #     ig_body_rot_world = new_sk_state.global_rotation.numpy().astype(np.float32),
-        #     ground_mask_sk=ground_mask_sk,
-        # )
-
-        pen_seq = penetration_depth_sequence_ig(
-            mj_model,
-            body_geoms,
-            mj2sk,
-            obj_pts_world_np,  # e.g. List[np.ndarray], len T, each (P_t,3)
-            body_pos_t.numpy().astype(np.float32),  # (T, B, 3)
-            new_sk_state.global_rotation.numpy().astype(np.float32),  # (T, B, 4) xyzw
-        )
-
-        first_frame_collided = (pen_seq[0] > 0).any()
-        if first_frame_collided:
-            key_str = os.path.basename(os.path.normpath(sequence_dir))  # 样本名
-            print(f"[SKIP-FIRST-FRAME-COLLISION] {key_str}")
-            skipped_due_to_first_frame_collision.append(key_str)
-            continue  # 直接跳到下一个 sequence
-
-
-        cg_np, ig_np = compute_cg_ig_via_smplh_contacts_yup(
-            smplh_layer=smplh_layer,
-            pose_aa=pose_aa_smpl,  # (T,D)
-            betas=betas_smpl,  # (10,) 或 (1,10)
-            trans=trans_smpl,  # (T,3)
-            obj_mesh_path=obj_mesh_path,  # 物体mesh（局部坐标）
-            obj_pos_world=obj_trans,  # (T,3)
-            obj_quat_xyzw=sRot.from_rotvec(obj_angles).as_quat(),  # (T,4) xyzw
-            smplh_vert_part=smplh_vert_part_from_custom_layer(smplh_layer),
-            contact_threshold=0.01,
-            samples_per_object=1024,
-        )
-
-        ig_mj = ig_np[:, smpl_2_mujoco, :]  # (T,52,3)
-        ig_mj = ig_mj @ np.array(R_cam2world_mat).T
-        cg_mj = cg_np[:, smpl_2_mujoco]  # (T,52)
-
-
-        # body_ids_wo_foot_ankel = np.where(~ground_mask_sk)[0]
-
-        bundle = {
-            "motion": motion_dict,  # SkeletonMotion 的 dict（含关节、根姿态、fps 等）
-            "object": {
-                "name": object_name_str,
-                "obj_pos": obj_pos,
-                "obj_rot": obj_quat_xyzw,  # xyzw —— Isaac Gym 对齐
-                "obj_pos_vel": obj_pos_vel,
-                "obj_rot_vel": obj_rot_vel,
-            },
-            "interaction": {
-                "ig": ig_mj,  # (T,52,3) float32（世界系）
-                "contact_robot": cg_mj,  # (T,52)   0/1 float32
-                "collision_tag": (pen_seq > 0).any(axis=1)
-            }
-        }
-
-        # === 可视化
-        t = min(100, obj_pts_world_np.shape[0] - 1)
-        mj_data = mujoco.MjData(mj_model)
-        mj_data.qpos[:] = qpos_seq_np[t]
-        mujoco.mj_forward(mj_model, mj_data)
-
-        body_pos_frame = body_pos_t[t].cpu().numpy().astype(np.float64)
-        body_rot_frame = new_sk_state.global_rotation[t].cpu().numpy().astype(np.float64)
-        # body_pos_frame = mj_data.xpos[sk2mj].copy()  # 严格用 MJCF body 原点
-        quick_viz = True
-
-        if quick_viz:
-            quick_viz_frame(
-                mj_model, mj_data,
-                body_local_clouds=body_clouds,
-                obj_pts=obj_pts_world_np[t],
-                contact_row=cg_mj[t],
-                body_rot_frame=body_rot_frame,
-                mj2sk=mj2sk,
-                title=f"seq:{key_str} t={t}",
-                body_pos_frame=body_pos_frame,
-                ig_frame=ig_mj[t],
-            )
-
-        if args.render:
-            temp_xml = create_temp_xml_with_object(
-                "data/robots/smpl/smplx_humanoid_hand.xml",
-                obj_mesh_path
-            )
-            motion_traj = {}
-            motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
-            motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
-            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_rotvec().reshape(N, -1, 3)
-            vis_mujoco_hoi(
-                motion_traj,
-                obj_pos=obj_pos,
-                obj_quat_xyzw=obj_quat_xyzw,
-                xml_path=temp_xml
-            )
-
-        # Construct save path
-        rel_path = osp.relpath(sequence_dir, args.src)
-        save_path = osp.join(output_dir, rel_path, f"{key_str}.npy")
-        os.makedirs(osp.dirname(save_path), exist_ok=True)
-        np.save(save_path, bundle, allow_pickle=True)
-
-        sequences_folder_names.append(parent_name)
-
-    with open("parent_dirs.txt", "w") as f:
-        # 如果只需要唯一的目录名，可以使用 set(parent_folder_names)
-        for item in sequences_folder_names:
-            f.write(f"{item}\n")
-
-
-    print("Done")
-
