@@ -92,7 +92,7 @@ def tranfrom_to_yup(smpl_model, human, obj, mesh_obj, origin_format):
     # 计算每一帧物体的顶点世界坐标，只取了前 30 帧用于计算最低点
     angle_matrix = sRot.from_rotvec(obj_angles).as_matrix()
     obj_verts_template = mesh_obj.vertices[None, ...]  # (1, V, 3)
-    obj_verts_template -= np.mean(obj_verts_template, axis=1, keepdims=True)
+    # obj_verts_template -= np.mean(obj_verts_template, axis=1, keepdims=True)
     # R * V_T + T
     obj_verts_motion = np.matmul(obj_verts_template, np.transpose(angle_matrix, (0, 2, 1))) + obj_trans[:, None, :]
 
@@ -168,7 +168,7 @@ def from_yup_to_simulation(human, obj, smpl_model, smplx_parser_n, skeleton_tree
     # B. 计算物体最低点
     # 准备物体模板顶点 (中心化，与 tranfrom_to_yup 逻辑保持一致)
     v_template = mesh_obj.vertices.copy()
-    v_template -= np.mean(v_template, axis=0)  # (V, 3)
+    # v_template -= np.mean(v_template, axis=0)  # (V, 3)
 
     # 取前 f_check 帧的物体旋转矩阵和平移
     R_obj_check = obj_angles_w[:f_check].as_matrix()  # (T_check, 3, 3)

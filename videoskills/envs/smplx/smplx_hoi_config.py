@@ -91,14 +91,14 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         self_collisions = 1
 
         default_dof_drive_mode = 1
-        asset_root = 'dataset/OMOMO_new/objects'
+        asset_root = 'data/omomo/objects'
         # asset_root = 'dataset/behave_correct/objects_centered'
 
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
         file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_select')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_fixed')
 
 
         # bodies = ['Pelvis', 'L_Hip', 'L_Knee', 'L_Ankle', 'L_Toe', 'R_Hip', 'R_Knee', 'R_Ankle', 'R_Toe',    # 9

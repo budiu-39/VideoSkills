@@ -166,7 +166,7 @@ if __name__ == "__main__":
         num_betas=20  # SMPL-X 20 维 beta
     )
 
-    OBJECT_PATH = "./data/omomo/objects_scaled_center"
+    OBJECT_PATH = "data/omomo/objects/objects"
     render_outdir = "renders/OMOMO"
 
     data_dict = get_omomo_data(args.src)
@@ -192,23 +192,36 @@ if __name__ == "__main__":
         if len(target_keys) == 0:
             print("Warning: No matching sequences found in the filter list!")
 
-    if not os.path.exists(OBJECT_PATH):
-        # os.rename(OBJECT_PATH_RAW, OBJECT_PATH)
-        shutil.copytree(args.obj_root, OBJECT_PATH)
+    OFFSET_FILE = "center_offset.npy"
 
-        for object in os.listdir(OBJECT_PATH):
-            for index in data_dict_seq:
-                seq_name = data_dict_seq[index]['seq_name']
-                obj_name = seq_name.split("_")[1]
-                if obj_name == object.split("_")[0]:
-                    print(obj_name)
-                    obj_scale = data_dict_seq[index]['obj_scale']
-                    mesh_obj = trimesh.load(os.path.join(OBJECT_PATH, f"{obj_name}_cleaned_simplified.obj"),
-                                            force='mesh')
-                    mesh_obj.vertices *= obj_scale[0]
-                    os.makedirs(os.path.join(OBJECT_PATH, f"{obj_name}"), exist_ok=True)
-                    mesh_obj.export(os.path.join(OBJECT_PATH, f"{obj_name}/{obj_name}.obj"))
-                    break
+    if not os.path.exists(OBJECT_PATH):
+        # 1. 复制目录 (会自动创建 OBJECT_PATH)
+        os.makedirs(os.path.dirname(OBJECT_PATH), exist_ok=True)
+        print("Preprocessing objects: Scaling and Centering...")
+
+        # 2. 快速构建 {obj_name: scale} 映射表
+        scale_map = {v['seq_name'].split("_")[1]: v['obj_scale'][0] for v in data_dict_seq.values()}
+
+        # 3. 遍历并处理
+        for obj_name in os.listdir(args.obj_root):
+            obj_name = obj_name.replace("_cleaned_simplified.obj", "")
+            obj_dir = os.path.join(OBJECT_PATH, obj_name)
+            os.makedirs(obj_dir, exist_ok=True)
+            raw_path = os.path.join(args.obj_root, f"{obj_name}_cleaned_simplified.obj")
+
+            # 校验：必须在数据字典中、必须有原始mesh文件
+            if obj_name not in scale_map or not os.path.exists(raw_path):
+                continue
+
+            # 加载 -> 缩放 -> 计算中心 -> 中心化
+            mesh = trimesh.load(raw_path, force='mesh')
+            mesh.vertices *= scale_map[obj_name]
+            center = mesh.vertices.mean(axis=0)
+            mesh.vertices -= center
+
+            mesh.export(os.path.join(obj_dir, f"{obj_name}.obj"))
+            np.save(os.path.join(obj_dir, OFFSET_FILE), center)
+            print(f"Processed {obj_name}: Offset={center}")
 
     MODEL_PATH = "data/SMPL"
     smpl_model_male = smplx.create(model_path=MODEL_PATH, model_type='smplx', gender='male', use_pca=False,
@@ -240,14 +253,31 @@ if __name__ == "__main__":
         seq_name = entry['seq_name']
         obj_name = obj['name']
         obj_angles = sRot.from_matrix(obj['rot']).as_rotvec()
-        obj_trans = obj['trans']
+        obj_trans_raw = obj['trans']
 
-        obj_mesh_path = osp.join(OBJECT_PATH, obj_name, f"{obj_name}.obj")
-        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')
+        # 2. 加载中心化后的 Mesh 和 Offset
+        obj_dir_path = osp.join(OBJECT_PATH, obj_name)
+        obj_mesh_path = osp.join(obj_dir_path, f"{obj_name}.obj")
+        offset_path = osp.join(obj_dir_path, "center_offset.npy")
 
-        output_mesh_video = f"{render_outdir}/origin/{seq_name}.mp4"
-        os.makedirs(os.path.dirname(output_mesh_video), exist_ok=True)
+        mesh_obj = trimesh.load(obj_mesh_path, force='mesh')  # 这是已经中心化的 Mesh
 
+        # 3. 修正物体平移轨迹
+        # 原理: T_new = T_raw + R * Offset
+        if os.path.exists(offset_path):
+            center_offset = np.load(offset_path)  # (3,)
+
+            # 计算每一帧的旋转对 Offset 的影响
+            # (T, 3, 3) * (3, 1) -> (T, 3)
+            # 使用 scipy Rotation 的 apply 方法最快
+            rot_obj = sRot.from_rotvec(obj_angles)
+            offset_world = rot_obj.apply(center_offset)
+
+            # 更新 obj_trans
+            obj_trans = obj_trans_raw + offset_world
+        else:
+            print(f"Warning: Offset file not found for {obj_name}, using raw trans.")
+            obj_trans = obj_trans_raw
 
 
         obj_file = os.path.dirname(obj_mesh_path)
@@ -264,11 +294,6 @@ if __name__ == "__main__":
         human = {'poses': pose_aa_smpl, 'betas': betas_smpl, 'trans': trans_smpl, 'gender': gender}
 
         human_yup, obj_yup = tranfrom_to_yup(smpl[gender], human, obj, mesh_obj, origin_format='zup')
-
-        render_smpl_hoi_video_yup(
-            smpl_model=smpl[gender].to(device), human=human_yup, obj=obj_yup, output_path=output_mesh_video,
-            fps=30, camera_cfg=camera_config, obj_mesh_path=obj_mesh_path
-        )
 
         new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
                                                           smplx_parser_n, skeleton_tree, mesh_obj)
