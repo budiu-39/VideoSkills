@@ -110,6 +110,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             points_cache_path = os.path.join(obj_file, 'sampled_points.pt')
             if os.path.exists(points_cache_path):
                 object_points = torch.load(points_cache_path, map_location=self.device)
+                print(f"Loaded cached points for object {object_name} from {points_cache_path}")
             else:
                 object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
                 object_points = to_torch(object_points)

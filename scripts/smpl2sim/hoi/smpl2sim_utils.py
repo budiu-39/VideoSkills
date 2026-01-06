@@ -6,7 +6,7 @@ sys.path.append(os.getcwd())
 from scipy.spatial.transform import Rotation as sRot
 import torch
 import numpy as np
-
+import mujoco
 
 from scripts.poselib.skeleton.skeleton3d import SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
@@ -229,3 +229,106 @@ def from_yup_to_simulation(human, obj, smpl_model, smplx_parser_n, skeleton_tree
               "obj_pos_vel": obj_pos_vel, "obj_rot_vel": obj_rot_vel}
 
     return new_sk_state, object
+
+
+def from_retarget_to_simulation(npz_path, mj_model, mj_data, skeleton_tree, device='cuda'):
+    """
+    读取 robot_retarget.py 的结果，并将其转换为仿真流程所需的格式。
+    """
+    # 1. 加载数据
+    data = np.load(npz_path, allow_pickle=True)
+    qpos = data["qpos"]  # (T, D)
+    fps = int(data["fps"]) if "fps" in data else 30
+
+    T = qpos.shape[0]
+
+    if "smpl_scale" in data:
+        # np.savez 存的是数组，如果是标量可能是 0-d array
+        smpl_scale = float(data["smpl_scale"])
+    else:
+        smpl_scale = 1.0
+
+    # 2. 解析 qpos (假设 MuJoCo 格式: Root(7) + Joints(N) + Object(7))
+    # 机器人部分
+    root_pos = qpos[:, 0:3]
+    root_quat = qpos[:, 3:7]  # wxyz
+
+    # 物体部分 (最后7位)
+    obj_pos = qpos[:, -7:-4]
+    obj_quat = qpos[:, -4:]  # wxyz
+
+    # 关节部分
+    joint_qpos = qpos[:, 7:-7]
+
+    # 3. 构建 object_dict
+    # 计算速度用于物理仿真（如果需要）
+    dt = 1.0 / fps
+    obj_pos_vel = np.zeros_like(obj_pos)
+    obj_pos_vel[1:] = (obj_pos[1:] - obj_pos[:-1]) / dt
+
+    # 简单的角速度计算 (wxyz -> 转换后计算)
+    # 注意：angular_velocity_world_from_quat_xyzw 需要 xyzw
+    # 这里为了简单，先暂存 wxyz
+    object_dict = {
+        'obj_pos': obj_pos,  # numpy (T, 3)
+        'obj_rot': obj_quat,  # numpy (T, 4) [w, x, y, z]
+        'obj_pos_vel': obj_pos_vel,
+        # 'obj_rot_vel': ... (如果有需要再计算，注意四元数顺序)
+        'name': 'unknown'  # 外部填充
+    }
+
+    # 4. 构建 motion_dict (用于直接保存和渲染)
+    motion_dict = {
+        'root_trans_offset': root_pos,
+        'root_rotation': root_quat,  # [w, x, y, z]
+        'dof': joint_qpos,
+        'fps': fps
+    }
+
+    # 5. 使用 MuJoCo 进行前向运动学 (FK)
+    global_trans_list = []
+    global_rot_list = []
+
+    # 遍历每一帧计算 FK
+    for t in range(T):
+        mj_data.qpos[:3] = root_pos[t]
+        mj_data.qpos[3:7] = root_quat[t]
+        mj_data.qpos[7:] = joint_qpos[t]  # 假设 xml 只有机器人，没有物体
+
+        mujoco.mj_kinematics(mj_model, mj_data)
+
+        # 获取所有 body 的位置和旋转
+        # mj_data.xpos: (nbody, 3)
+        # mj_data.xquat: (nbody, 4) [w, x, y, z]
+
+        # --- FIX: 去掉 [0]，我们要所有 body 的位置 ---
+        global_trans_list.append(mj_data.xpos.copy())
+
+        # --- FIX: wxyz -> xyzw ---
+        # PoseLib/SkeletonState 通常使用 [x, y, z, w]
+        global_rot_list.append(mj_data.xquat.copy()[:, [1, 2, 3, 0]])
+
+        # 转为 Tensor (T, N_body, 3/4)
+    # 注意：SkeletonState 需要在 CPU 上构建，或者与 device 匹配
+    global_trans_tensor = torch.tensor(np.array(global_trans_list), dtype=torch.float32)
+    global_rot_tensor = torch.tensor(np.array(global_rot_list), dtype=torch.float32)
+
+    # 6. 构建 SkeletonState
+    # from_rotation_and_root_translation 需要:
+    # rotations: (..., J, 4) - Global rotations (XYZW)
+    # root_translation: (..., 3) - Global root translation
+
+    # --- FIX: 只传入 Root 的 Translation ---
+    # global_trans_tensor[:, 0, :] 假设第 0 个 body 是 root (通常 World 或 Pelvis)
+    # 根据 SkeletonTree 的定义，通常索引 0 或 1 是 Root，取决于是否 drop_world
+    # 为了保险，直接使用输入的 root_pos 即可
+    root_pos_tensor = torch.tensor(root_pos, dtype=torch.float32)
+
+    new_sk_state = SkeletonState.from_rotation_and_root_translation(
+        skeleton_tree,
+        global_rot_tensor,  # 全局旋转
+        root_pos_tensor,  # 根节点位移
+        is_local=False  # 指定输入的是全局坐标
+    )
+
+    return new_sk_state, object_dict, motion_dict, smpl_scale

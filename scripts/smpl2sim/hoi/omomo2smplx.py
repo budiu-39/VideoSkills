@@ -26,7 +26,6 @@ import subprocess
 
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLX_BONE_ORDER_NAMES
-from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 
 from scripts.smpl2sim.hoi.mujoco_contact_inference import (build_local_templates_by_body, prepare_batch_body_cloud,
@@ -131,28 +130,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     output_dir = args.dst
 
-    robot_cfg = {
-        "mesh": False,
-        "rel_joint_lm": True,
-        "upright_start": True,
-        "remove_toe": False,
-        "real_weight": True,
-        "real_weight_porpotion_capsules": True,
-        "real_weight_porpotion_boxes": True,
-        "replace_feet": True,
-        "masterfoot": False,
-        "big_ankle": True,
-        "freeze_hand": False,
-        "box_body": False,
-        "master_range": 50,
-        "body_params": {},
-        "joint_params": {},
-        "geom_params": {},
-        "actuator_params": {},
-        "model": "smplx",
-    }
     skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/smplx_humanoid_hand.xml")
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
     all_sequences = glob.glob(f"{args.src}/**/", recursive=True)
     behave_full_motion_dict = {}
@@ -401,8 +379,7 @@ if __name__ == "__main__":
             motion_traj = {}
             motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
             motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
-            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_rotvec().reshape(
-                N, -1, 3)
+            motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_euler('XYZ').reshape(N, -1, 3)
             export_mujoco_video_hoi(
                 motion_traj,
                 obj_pos=object_dict['obj_pos'],

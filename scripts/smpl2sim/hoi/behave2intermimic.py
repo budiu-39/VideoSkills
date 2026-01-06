@@ -12,10 +12,9 @@ import glob
 
 from scripts.poselib.skeleton.skeleton3d import SkeletonTree, SkeletonMotion, SkeletonState
 from smpl_sim.smpllib.smpl_joint_names import SMPLH_MUJOCO_NAMES, SMPLH_BONE_ORDER_NAMES
-from smpl_sim.smpllib.smpl_local_robot import SMPL_Robot as LocalRobot
 from smpl_sim.smpllib.smpl_parser import SMPLX_Parser
 from scripts.smpl2sim.hoi.mujoco_contact_inference import build_local_templates_by_body, contacts_from_xml_pointcloud
-from scripts.smpl2sim.hoi.mujoco_contact_inference import build_qpos_seq_from_state, quick_viz_frame, build_sk2mj_index
+from scripts.smpl2sim.hoi.mujoco_contact_inference import build_qpos_seq_from_state, build_sk2mj_index
 from scripts.render.mujoco_render import vis_mujoco_hoi, create_temp_xml_with_object
 import trimesh
 import joblib
@@ -243,28 +242,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     output_dir = args.dst
 
-    robot_cfg = {
-        "mesh": False,
-        "rel_joint_lm": True,
-        "upright_start": True,
-        "remove_toe": False,
-        "real_weight": True,
-        "real_weight_porpotion_capsules": True,
-        "real_weight_porpotion_boxes": True,
-        "replace_feet": True,
-        "masterfoot": False,
-        "big_ankle": True,
-        "freeze_hand": False,
-        "box_body": False,
-        "master_range": 50,
-        "body_params": {},
-        "joint_params": {},
-        "geom_params": {},
-        "actuator_params": {},
-        "model": "smplx",
-    }
     skeleton_tree = SkeletonTree.from_mjcf(f"data/robots/smpl/omomo.xml")
-    smpl_local_robot = LocalRobot(robot_cfg, data_dir="data/SMPL/smplx")
 
 
     # BEHAVE dataset structure: each sequence contains SMPL fits and object interactions

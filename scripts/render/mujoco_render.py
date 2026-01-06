@@ -4,6 +4,7 @@ import mujoco
 import imageio
 from scipy.spatial.transform import Rotation as sRot
 import tqdm
+import numpy as np
 
 def export_mujoco_video(
         motion_traj: dict,
@@ -115,6 +116,145 @@ def vis_mujoco_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path):
             time.sleep(1/30)
 
 
+def export_mujoco_video_hoi_wxyz(motion_traj, obj_pos, obj_quat_wxyz, xml_path, camera_cfg,
+                            output_path="output.mp4", fps=30):
+    """
+    导出 MuJoCo 视频，专门处理 motion_dict 格式输入。
+
+    Args:
+        motion_traj (dict): 包含以下键的字典:
+            - 'root_trans_offset': (T, 3) 全局位移
+            - 'root_rotation': (T, 4) 全局旋转 [w, x, y, z] (MuJoCo格式)
+            - 'dof': (T, 29) 关节角度 (标量)
+        obj_pos (np.ndarray): (T, 3) 物体位置
+        obj_quat_wxyz (np.ndarray): (T, 4) 物体旋转 [w, x, y, z] (MuJoCo格式)
+        xml_path (str): 模型 XML 路径
+        camera_cfg (dict): 相机配置
+    """
+    # 1. 初始化模型
+    if not os.path.exists(xml_path):
+        raise FileNotFoundError(f"XML not found: {xml_path}")
+
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+
+    # --- 修复 Offscreen 缓冲区报错 (尤其是大分辨率下) ---
+    mj_model.vis.global_.offwidth = 1280
+    mj_model.vis.global_.offheight = 720
+    # -----------------------------------------------
+
+    mj_data = mujoco.MjData(mj_model)
+    renderer = mujoco.Renderer(mj_model, height=720, width=1280)
+
+    # 2. 相机设置
+    camera = mujoco.MjvCamera()
+    # 默认距离和角度，可通过 camera_cfg 覆盖
+    camera.distance = camera_cfg.get('distance', 3.0) + 1.0
+    camera.azimuth = camera_cfg.get('azimuth', 90) - 90
+    camera.elevation = camera_cfg.get('elevation', -15)
+    # 视点偏移 (相对于机器人根节点)
+    lookat_offset = camera_cfg.get('lookat_offset', np.zeros(3))
+
+    num_frames = len(motion_traj['root_trans_offset'])
+
+    # 3. 获取物体 Mocap ID (增加健壮性检查)
+    obj_mocap_id = -1
+    try:
+        # 查找名为 "object_body" 的 body ID
+        obj_bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "object_body")
+        if obj_bid != -1:
+            # 获取对应的 mocap ID
+            obj_mocap_id = mj_model.body_mocapid[obj_bid]
+        else:
+            print("⚠️ Warning: 'object_body' not found in XML. Object will not be rendered.")
+    except Exception as e:
+        print(f"⚠️ Warning: Error checking object body: {e}")
+
+    print(f"🎬 正在导出视频到: {output_path} (Frames: {num_frames})")
+
+    with imageio.get_writer(output_path, fps=fps) as video:
+        for t in tqdm.tqdm(range(num_frames), mininterval=1.0):
+
+            # --- A. 更新机器人状态 ---
+            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
+            mj_data.qpos[3:7] = motion_traj['root_rotation'][t]
+            mj_data.qpos[7:] = motion_traj['dof'][t]
+
+            # --- B. 更新物体状态 ---
+            if obj_mocap_id != -1:
+                mj_data.mocap_pos[obj_mocap_id] = obj_pos[t]
+                mj_data.mocap_quat[obj_mocap_id] = obj_quat_wxyz[t]
+
+            # --- C. 物理计算 (正向运动学) ---
+            # 必须调用此函数以更新几何体位置 (xpos, xquat 等)
+            mujoco.mj_forward(mj_model, mj_data)
+
+            # --- D. 更新相机视角 ---
+            # 让相机 LookAt 始终跟随机器人的根节点位置 + 偏移量
+            camera.lookat[:] = mj_data.qpos[:3] + lookat_offset
+
+            # --- E. 渲染 ---
+            renderer.update_scene(mj_data, camera=camera)
+            frame = renderer.render()
+            video.append_data(frame)
+
+    print(f"✅ 视频导出成功: {output_path}")
+
+def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, camera_cfg,
+                            output_path="output.mp4", fps=30):
+    # 1. 初始化模型
+    mj_model = mujoco.MjModel.from_xml_path(xml_path)
+
+    # --- 修复 Offscreen 缓冲区报错 ---
+    mj_model.vis.global_.offwidth = 1280
+    mj_model.vis.global_.offheight = 720
+    # ------------------------------
+
+    mj_data = mujoco.MjData(mj_model)
+    renderer = mujoco.Renderer(mj_model, height=720, width=1280)
+
+    # 3. 相机设置
+    # 不使用可能报错的 camera.type = ...，改用手动 lookat 跟随
+    camera = mujoco.MjvCamera()
+    camera.distance = camera_cfg['distance'] + 1.0
+    camera.azimuth = camera_cfg['azimuth'] + 90
+    camera.elevation = camera_cfg['elevation']
+
+    num_frames = len(motion_traj['root_trans_offset'])
+
+    def xyzw_to_wxyz(q): return q[[3, 0, 1, 2]]
+
+    # 4. 获取物体 mocap ID
+    obj_mocap_bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "object_body")
+    obj_mocap_id = mj_model.body_mocapid[obj_mocap_bid]
+
+    print(f"正在导出视频到: {output_path}...")
+
+    with imageio.get_writer(output_path, fps=fps) as video:
+        for t in tqdm.tqdm(range(num_frames), mininterval=1.0):
+            # 更新人体姿态
+            mj_data.qpos[:3] = motion_traj['root_trans_offset'][t]
+            mj_data.qpos[3:7] = xyzw_to_wxyz(motion_traj['root_rotation'][t])
+            mj_data.qpos[7:] = motion_traj['dof'][t].flatten()
+
+            # 更新物体位置
+            mj_data.mocap_pos[obj_mocap_id] = obj_pos[t]
+            mj_data.mocap_quat[obj_mocap_id] = xyzw_to_wxyz(obj_quat_xyzw[t])
+
+            # 物理计算更新
+            mujoco.mj_forward(mj_model, mj_data)
+
+            # --- 关键：摄像机跟随逻辑 ---
+            # 每一帧都让相机盯住人物当前的根节点位置 (root_xyz)
+            camera.lookat[:] = mj_data.qpos[:3] + camera_cfg['lookat_offset']
+            # --------------------------
+
+            # 渲染并写入
+            renderer.update_scene(mj_data, camera=camera)
+            frame = renderer.render()
+            video.append_data(frame)
+
+    print(f"✅ 视频已保存至: {output_path}")
+
 def export_mujoco_video_hoi(motion_traj, obj_pos, obj_quat_xyzw, xml_path, camera_cfg,
                             output_path="output.mp4", fps=30):
     # 1. 初始化模型
@@ -199,51 +339,84 @@ import os
 import tempfile
 from lxml import etree
 
-def create_temp_xml_with_object(base_xml_path, obj_mesh_path=None):
+
+def create_temp_xml_with_object(base_xml_path, obj_mesh_path, smpl_scale=1.0):
     """
-    基于现有 humanoid xml，添加一个 mocap 物体 body。
-    若 obj_mesh_path=None，则创建一个 box 占位。
-    返回：新 xml 的路径（临时文件，可直接传给 mujoco.MjModel.from_xml_path）
+    在现有 robot xml 中注入 object mesh 和 body。
+
+    Args:
+        base_xml_path: 机器人 XML 路径
+        obj_mesh_path: 物体 Mesh 路径
+        smpl_scale (float): 统一缩放比例 (应用到 x, y, z)
     """
-    tree = etree.parse(base_xml_path)
+    # 解析 XML
+    parser = etree.XMLParser(remove_blank_text=True)
+    tree = etree.parse(base_xml_path, parser)
     root = tree.getroot()
 
-    # 确保有 worldbody 和 asset
+    # 1. 准备 Mesh 路径和名称
+    if obj_mesh_path is None or not os.path.exists(obj_mesh_path):
+        # 如果没有物体，直接返回原文件或不做修改
+        return base_xml_path
+
+    mesh_name = os.path.splitext(os.path.basename(obj_mesh_path))[0]
+    abs_mesh_path = os.path.abspath(obj_mesh_path)
+
+    # 构造缩放字符串 "s s s"
+    scale_str = f"{smpl_scale} {smpl_scale} {smpl_scale}"
+
+    # 2. 确保 <asset> 标签存在
+    asset = root.find("asset")
+    if asset is None:
+        asset = etree.Element("asset")
+        root.insert(0, asset)
+
+    # 3. 注册 Mesh 资源 (Asset 去重 + 添加 Scale)
+    existing_mesh = asset.find(f"mesh[@name='{mesh_name}']")
+
+    if existing_mesh is not None:
+        # 如果已存在，更新路径和缩放
+        existing_mesh.set('file', abs_mesh_path)
+        existing_mesh.set('scale', scale_str)
+    else:
+        # 创建新的 mesh asset，包含 scale 属性
+        etree.SubElement(
+            asset, "mesh",
+            name=mesh_name,
+            file=abs_mesh_path,
+            scale=scale_str  # <--- 关键修改：设置缩放
+        )
+
+    # 4. 确保 <worldbody> 存在
     worldbody = root.find("worldbody")
     if worldbody is None:
         worldbody = etree.SubElement(root, "worldbody")
 
-    asset = root.find("asset")
-    if asset is None:
-        asset = etree.SubElement(root, "asset")
+    # 5. 添加 Object Body (Body 去重)
+    existing_body = worldbody.find("body[@name='object_body']")
+    if existing_body is not None:
+        worldbody.remove(existing_body)
 
-    # ---- 添加 mesh asset（可选） ----
-    geom_type = "box"
-    mesh_name = "MY_OBJ_MESH"
-    obj_mesh_path = os.path.abspath(obj_mesh_path) if obj_mesh_path is not None else None
-    if obj_mesh_path is not None and os.path.exists(obj_mesh_path):
-        geom_type = "mesh"
-        mesh_el = etree.SubElement(asset, "mesh", name=mesh_name, file=obj_mesh_path)
-
-    # ---- 添加 mocap body ----
+    # 添加新的 body
     body_el = etree.SubElement(worldbody, "body", name="object_body", mocap="true")
 
-    if geom_type == "mesh":
-        geom_el = etree.SubElement(
-            body_el, "geom",
-            name="object_geom", type="mesh", mesh=mesh_name,
-            rgba="0.2 0.8 0.2 0.6", contype="0", conaffinity="0"
-        )
-    else:
-        geom_el = etree.SubElement(
-            body_el, "geom",
-            name="object_geom", type="box", size="0.1 0.1 0.1",
-            rgba="0.2 0.8 0.2 0.6", contype="0", conaffinity="0"
-        )
+    # 添加 geom 引用 mesh
+    etree.SubElement(
+        body_el, "geom",
+        name="object_geom",
+        type="mesh",
+        mesh=mesh_name,
+        rgba="0.2 0.8 0.2 0.6",
+        contype="0",
+        conaffinity="0"
+    )
 
-    # ---- 写入临时文件 ----
-    tmp_dir = tempfile.gettempdir()
-    tmp_path = os.path.join(tmp_dir, "humanoid_with_object.xml")
-    tree.write(tmp_path, pretty_print=True, encoding="utf-8", xml_declaration=True)
-    print(f"✅ 临时 XML 生成: {tmp_path}")
-    return tmp_path
+    # 6. 保存
+    dir_name = os.path.dirname(os.path.abspath(base_xml_path))
+    base_name = os.path.basename(base_xml_path)
+    # 文件名加上 scale 标识防止混淆，或者直接覆盖
+    output_xml_path = os.path.join(dir_name, base_name.replace(".xml", f"_{mesh_name}_scaled.xml"))
+
+    tree.write(output_xml_path, pretty_print=True, encoding="utf-8", xml_declaration=True)
+
+    return output_xml_path
