@@ -47,6 +47,11 @@ class LeggedRobotHoi(LeggedRobotImi):
             obj_id = self._motion_lib.object_vocab.get(name, None)
             self.env_object_ids[i] = obj_id
 
+        # Physics Init Buffer Variables
+        self.physics_state_buffer = None
+        self.physics_init_candidates = 1  # Parameter: candidate number per frame
+        self.physics_buffer_initialized = False
+
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
         super()._build_env(env_id, env_ptr, humanoid_asset)
@@ -78,24 +83,36 @@ class LeggedRobotHoi(LeggedRobotImi):
         if not self.cfg.asset.load_object:
             # Stage 1: 创建一个虚拟的空点云，保证维度对齐 [1, 1024, 3]
             self.object_points = torch.zeros((1, 1024, 3), device=self.device)
-            self.object_name = ["none"]
+            # self.object_name = ["none"]
             return
-        # smplx
-        asset_root = self.cfg.asset.asset_root
-        self._obj_asset = []
-        points_num = []
-        self.object_points = []
-        for i, object_name in enumerate(self.object_name):
 
+        asset_root = self.cfg.asset.asset_root
+
+        # --- 修复核心：不再依赖 self._motion_lib ---
+        # 直接从 self.object_name (在 __init__ 已生成) 推导唯一物体列表
+        # 使用 sorted 确保顺序确定，这通常能与 MotionLib 的 vocab ID 对应上
+        unique_obj_names = sorted(list(set(self.object_name)))
+        num_unique_objs = len(unique_obj_names)
+
+        # 构建临时映射：Name -> Index (用于构建 _obj_asset 列表)
+        name_to_idx = {name: i for i, name in enumerate(unique_obj_names)}
+
+        unique_assets = []
+        unique_points = []
+
+        print(f"Loading {num_unique_objs} unique objects from {len(self.object_name)} motions...")
+
+        # 2. 只加载唯一的物体资源
+        for i, object_name in enumerate(unique_obj_names):
+
+            # --- Asset 加载 ---
             asset_file = object_name + ".urdf"
-            obj_file = asset_root + '/objects/' + object_name + '/' + object_name + '.obj'
             max_convex_hulls = 64
             density = self.object_density
 
             asset_options = gymapi.AssetOptions()
             asset_options.angular_damping = 0.01
             asset_options.linear_damping = 0.01
-
             asset_options.density = density
             asset_options.default_dof_drive_mode = gymapi.DOF_MODE_NONE
             asset_options.vhacd_enabled = True
@@ -103,24 +120,39 @@ class LeggedRobotHoi(LeggedRobotImi):
             asset_options.vhacd_params.max_num_vertices_per_ch = 64
             asset_options.vhacd_params.resolution = 300000
 
-            self._obj_asset.append(self.gym.load_asset(self.sim, asset_root, asset_file, asset_options))
+            # 加载一次 Asset
+            asset = self.gym.load_asset(self.sim, asset_root, asset_file, asset_options)
+            unique_assets.append(asset)
 
+            # --- Points 加载 ---
+            obj_file = asset_root + '/objects/' + object_name + '/' + object_name + '.obj'
             mesh_obj = trimesh.load(obj_file, force='mesh')
-            obj_file = os.path.dirname(obj_file)
-            points_cache_path = os.path.join(obj_file, 'sampled_points.pt')
+            obj_dir = os.path.dirname(obj_file)
+            points_cache_path = os.path.join(obj_dir, 'sampled_points.pt')
+
             if os.path.exists(points_cache_path):
-                object_points = torch.load(points_cache_path, map_location=self.device)
-                print(f"Loaded cached points for object {object_name} from {points_cache_path}")
+                pts = torch.load(points_cache_path, map_location=self.device)
             else:
-                object_points, object_faces = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
-                object_points = to_torch(object_points)
-                torch.save(object_points, points_cache_path)
+                pts, _ = trimesh.sample.sample_surface_even(mesh_obj, count=1024, seed=2025)
+                pts = to_torch(pts, device=self.device)
+                torch.save(pts, points_cache_path)
 
-            while object_points.shape[0] < 1024:
-                object_points = torch.cat([object_points, object_points[:1024 - object_points.shape[0]]], dim=0)
-            self.object_points.append(to_torch(object_points))
+            # 补齐点数
+            while pts.shape[0] < 1024:
+                pts = torch.cat([pts, pts[:1024 - pts.shape[0]]], dim=0)
 
-        self.object_points = torch.stack(self.object_points, dim=0)
+            unique_points.append(pts)
+
+        # 3. 生成 self.object_points [Num_Unique, 1024, 3]
+        self.object_points = torch.stack(unique_points, dim=0)
+
+        # 4. 生成 self._obj_asset
+        # 为每个 motion 匹配对应的 unique asset 引用
+        self._obj_asset = []
+        for name in self.object_name:
+            idx = name_to_idx[name]
+            self._obj_asset.append(unique_assets[idx])
+
         return
 
     def _build_obj_tensors(self):
@@ -167,6 +199,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         segmentation_id = 0
 
         default_pose = gymapi.Transform()
+        default_pose.p = gymapi.Vec3(self.env_origins[env_id, 0], self.env_origins[env_id, 1], 1.0)
 
         obj_handle = self.gym.create_actor(env_ptr, self._obj_asset[env_id % len(self.object_name)], default_pose,
                                               self.object_name[env_id % len(self.object_name)], col_group, col_filter,
@@ -212,18 +245,19 @@ class LeggedRobotHoi(LeggedRobotImi):
 
     def _reset_obj(self, env_ids):
         # 计算这些 env 对应的 motion_id 与 time
+        if self._state_init == 'physical' and not self.eval_mode:
+            return
+
         motion_ids = self._sampled_motion_ids[env_ids]  # [B]
         motion_times = self._motion_start_times[env_ids] # + self.episode_length_buf[env_ids] * self.dt  # [B]
 
         hoi_state = self._motion_lib.get_hoi_state(motion_ids, motion_times)
 
+
         self.obj_pos[env_ids] =  hoi_state["obj_pos"] + self.pos_offset['root'][env_ids]
         self.obj_quat[env_ids] = hoi_state["obj_rot"]  # xyzw
         self.obj_vel[env_ids] = hoi_state["obj_pos_vel"]
         self.obj_ang_vel[env_ids] = hoi_state["obj_rot_vel"]
-        self.ig[env_ids] = hoi_state['ig']
-        self.body_contact[env_ids] = hoi_state['contact_robot']
-
         return
 
     def compute_observations(self):
@@ -896,6 +930,226 @@ class LeggedRobotHoi(LeggedRobotImi):
         # obs, _, _, _, _ = self.step(
         #     torch.zeros(self.num_envs, self.num_actions, device=self.device, requires_grad=False))
         return self.obs_buf
+
+    def _init_phys_init_state_buffer(self):
+        """
+        Initializes the physics state buffer with the kinematic reference motion.
+        For each motion in the library, we pre-calculate the full trajectory (Robot + Object)
+        and store it as the initial 'valid' physics states.
+        Structure: self.physics_state_buffer[motion_id] -> Tensor shape (Length, Num_Candidates, State_Dim)
+        State Dim = Robot Root (13) + DoF Pos (Num_DoF) + DoF Vel (Num_DoF) + Obj State (13)
+        """
+        print("Initializing Physics State Buffer...")
+        self.physics_state_buffer = {}
+        num_motions = self._motion_lib.num_motions()
+
+        # We process motions one by one (or could batch if memory allows, but lengths differ)
+        for mid in range(num_motions):
+            motion_len_frames = int(self._motion_lib._motion_lengths[mid].item() / self.dt) + 1
+
+            # Create time steps for the entire motion length
+            times = torch.arange(motion_len_frames, device=self.device) * self.dt
+            # Batch motion id
+            mids = torch.full((motion_len_frames,), mid, dtype=torch.long, device=self.device)
+
+            # 1. Get Kinematic Robot State
+            motion_state = self._motion_lib.get_motion_state(mids, times)
+
+            # 2. Get Kinematic Object State (HOI)
+            hoi_state = self._motion_lib.get_hoi_state(mids, times)
+
+            # 3. Construct the State Vector
+            # Robot Root State: [Pos(3), Rot(4), LinVel(3), AngVel(3)] -> 13
+            # Note: MotionLib returns raw positions. We usually apply offsets in reset, but here we store RAW relative to ref,
+            # and apply offsets when resetting into Env.
+            # WAIT: If we store simulated states, they include the offset.
+            # To be consistent, let's store states *including* the standard offset applied in reset.
+            # However, the offset in reset is per-env (self.pos_offset['root'][env_ids]).
+            # Since the buffer is global per motion ID, we should store them *without* the per-environment random offset,
+            # or assume a canonical offset (e.g. zero) and add the specific env offset during reset.
+            # Strategy: Store Canonical State (Raw MotionLib + Base Offset if any, but usually Base is 0 for library).
+            # The reset function adds `self.pos_offset['root']`.
+
+            root_pos = motion_state["root_pos"]  # (T, 3)
+            root_rot = motion_state["root_rot"]  # (T, 4)
+            root_vel = motion_state["root_vel"]  # (T, 3)
+            root_ang_vel = motion_state["root_ang_vel"]  # (T, 3)
+
+            dof_pos = motion_state["dof_pos"]  # (T, num_dof)
+            dof_vel = motion_state["dof_vel"]  # (T, num_dof)
+
+            obj_pos = hoi_state["obj_pos"]  # (T, 3)
+            obj_rot = hoi_state["obj_rot"]  # (T, 4)
+            obj_pos_vel = hoi_state["obj_pos_vel"]  # (T, 3)
+            obj_rot_vel = hoi_state["obj_rot_vel"]  # (T, 3)
+
+            # Concatenate: Root(13) + DoF_Pos(N) + DoF_Vel(N) + Obj(13)
+            # Root State: Pos, Rot, LinVel, AngVel
+            robot_root_state = torch.cat([root_pos, root_rot, root_vel, root_ang_vel], dim=-1)
+            obj_state = torch.cat([obj_pos, obj_rot, obj_pos_vel, obj_rot_vel], dim=-1)
+
+            full_state = torch.cat([robot_root_state, dof_pos, dof_vel, obj_state], dim=-1)  # (T, D)
+
+            # Expand to (T, Num_Candidates, D)
+            # Initialize all candidates with the same kinematic reference
+            full_state_expanded = full_state.unsqueeze(1).repeat(1, self.physics_init_candidates, 1)
+
+            self.physics_state_buffer[mid] = full_state_expanded
+
+        print(f"Physics Buffer initialized for {num_motions} motions.")
+
+    def _reset_phys_state_init(self, env_ids):
+        """
+        Resets environment using states from the Physics State Buffer.
+        Also updates the buffer with current valid states from environments that lived long enough.
+        """
+        # 1. Update Buffer with current states from surviving environments
+        # Filter envs that have survived > 64 steps
+        cond_survived = self.episode_length_buf[env_ids] > 64
+        cond_prob = torch.rand(len(env_ids), device=self.device) < 0.1
+        survived_mask = cond_survived & cond_prob
+        update_env_ids = env_ids[survived_mask]
+
+        if len(update_env_ids) > 0:
+            root_offset = self.pos_offset['root'][update_env_ids]
+
+            # Capture Robot State
+            curr_root_pos = self.base_pos[update_env_ids] - root_offset
+            curr_root_rot = self.base_quat[update_env_ids]
+            curr_root_lin_vel = self.root_states[update_env_ids, 7:10]
+            curr_root_ang_vel = self.root_states[update_env_ids, 10:13]
+
+            curr_dof_pos = self.dof_pos[update_env_ids]
+            curr_dof_vel = self.dof_vel[update_env_ids]
+
+            # Capture Object State
+            curr_obj_pos = self.obj_pos[update_env_ids] - root_offset
+            curr_obj_rot = self.obj_quat[update_env_ids]
+            curr_obj_lin_vel = self.obj_vel[update_env_ids]
+            curr_obj_ang_vel = self.obj_ang_vel[update_env_ids]
+
+            curr_robot_root = torch.cat([curr_root_pos, curr_root_rot, curr_root_lin_vel, curr_root_ang_vel], dim=-1)
+            curr_obj_state = torch.cat([curr_obj_pos, curr_obj_rot, curr_obj_lin_vel, curr_obj_ang_vel], dim=-1)
+            captured_state = torch.cat(
+                [curr_robot_root, curr_dof_pos, curr_dof_vel, curr_obj_state], dim=-1)
+
+            curr_motion_ids = self._sampled_motion_ids[update_env_ids]
+            curr_motion_times = self._motion_start_times[update_env_ids] + self.episode_length_buf[
+                update_env_ids] * self.dt
+            curr_frames = (curr_motion_times / self.dt).long()
+
+            # --- Dynamic Trim Logic ---
+            # Formula: 16 / length * 32 = 512 / length
+            # Note: length > 64 checked above, so division is safe.
+            curr_lengths = self.episode_length_buf[update_env_ids].float()
+            curr_trim_frames = (512.0 / curr_lengths).long()
+
+            unique_mids = torch.unique(curr_motion_ids)
+            for mid_tensor in unique_mids:
+                mid = int(mid_tensor.item())
+                mid_mask = (curr_motion_ids == mid)
+
+                batch_frames = curr_frames[mid_mask]
+                batch_states = captured_state[mid_mask]
+                batch_trim = curr_trim_frames[mid_mask]  # Get trim for these specific envs
+
+                motion_buffer = self.physics_state_buffer[mid]
+                max_frame = motion_buffer.shape[0]
+
+                # Check bounds with dynamic trim (Vectorized)
+                # valid if: trim < frame < max - trim
+                valid_frame_mask = (batch_frames > batch_trim) & (batch_frames < (max_frame - batch_trim))
+
+                if not valid_frame_mask.any(): continue
+
+                final_frames = batch_frames[valid_frame_mask]
+                final_states = batch_states[valid_frame_mask]
+                cand_indices = torch.randint(0, self.physics_init_candidates, (final_frames.shape[0],),
+                                             device=self.device)
+
+                self.physics_state_buffer[mid][final_frames, cand_indices] = final_states
+
+        # 2. Reset the requested environments using the buffer
+        # A. Sample Motion IDs
+        self.sample_motions(env_ids)
+
+        num_resets = len(env_ids)
+        reset_mids = self._sampled_motion_ids[env_ids]
+
+        motion_lens_sec = self._motion_lib._motion_lengths[reset_mids]
+
+        # 计算总帧数 (与 _init_physics_state_buffer 中的逻辑对齐: int(len/dt) + 1)
+        motion_lens_frames = (motion_lens_sec / self.dt).long() + 1
+
+        # Sample frames: Full range [0, Len)
+        # 只要 buffer 初始化正确，首尾的 Kinematic 数据也是合法的采样点
+        rand_factors = torch.rand(num_resets, device=self.device)
+        sampled_frames = (rand_factors * motion_lens_frames).long()
+
+        # C. Sample Candidate Index
+        rand_candidates = torch.randint(0, self.physics_init_candidates, (num_resets,), device=self.device)
+
+        # D. Gather States from Buffer
+        # Since buffer is a Dict, we iterate or gather.
+        # Given heterogenous shapes in dict, we likely loop or group by motion ID.
+        # Grouping by motion ID is more efficient on GPU than single loops.
+
+        # Placeholders for extracted data
+        # Dim: 13 + 2*dof + 13
+        state_dim = 13 + 2 * self.num_dofs + 13
+        target_states = torch.zeros((num_resets, state_dim), device=self.device)
+
+        unique_mids = torch.unique(reset_mids)
+        for umid in unique_mids:
+            mask = (reset_mids == umid)
+            frames_for_mid = sampled_frames[mask]
+            cands_for_mid = rand_candidates[mask]
+
+            # Fetch from buffer
+            # buffer[mid]: (T, C, D)
+            # Indexing: [frames, candidates]
+            states = self.physics_state_buffer[int(umid.item())][frames_for_mid, cands_for_mid]
+            target_states[mask] = states
+
+        # E. Apply States to Environment Variables
+        # Split target_states
+        # Robot Root (13)
+        idx_root = 13
+        r_root = target_states[:, 0:idx_root]
+
+        # Robot DoF Pos (Num_Dof)
+        idx_dof_pos = idx_root + self.num_dofs
+        r_dof_pos = target_states[:, idx_root:idx_dof_pos]
+
+        # Robot DoF Vel (Num_Dof)
+        idx_dof_vel = idx_dof_pos + self.num_dofs
+        r_dof_vel = target_states[:, idx_dof_pos:idx_dof_vel]
+
+        # Object State (13)
+        r_obj = target_states[:, idx_dof_vel:]
+
+        # Apply Offsets
+        env_root_offset = self.pos_offset['root'][env_ids]
+
+        # Set Robot State
+        self.robot_states[env_ids, 0:3] = r_root[:, 0:3] + env_root_offset  # Pos
+        self.robot_states[env_ids, 3:7] = r_root[:, 3:7]  # Rot
+        self.robot_states[env_ids, 7:10] = r_root[:, 7:10]  # LinVel
+        self.robot_states[env_ids, 10:13] = r_root[:, 10:13]  # AngVel
+
+        self.dof_pos[env_ids] = r_dof_pos
+        self.dof_vel[env_ids] = r_dof_vel
+
+        # Set Object State (for _reset_obj usage later)
+        self.obj_pos[env_ids] = r_obj[:, 0:3] + env_root_offset
+        self.obj_quat[env_ids] = r_obj[:, 3:7]
+        self.obj_vel[env_ids] = r_obj[:, 7:10]
+        self.obj_ang_vel[env_ids] = r_obj[:, 10:13]
+
+        # Set Tracking Times
+        self._motion_start_times[env_ids] = sampled_frames * self.dt
+
+
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):

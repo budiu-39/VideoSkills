@@ -47,7 +47,7 @@ def train(args):
                    dir=log_dir,
                    config={**vars(args), **class_to_dict(train_cfg), ** class_to_dict(env_cfg)})
     if args.dev:
-        train_cfg.runner.eval_interval = 30
+        train_cfg.runner.eval_interval = 10
         env.early_termination_distance = torch.tensor([0.5] * len(env.early_termination_distance)
                                                            , device='cuda') ** 2
 
@@ -59,7 +59,7 @@ def train(args):
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
 
         # reset_motion_lib_dir(ppo_runner, train_batch_dir)
-        ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=True)
+        ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=False)
 
         result = ppo_runner.eval()
         print('Evaluation result: ', result)

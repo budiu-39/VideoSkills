@@ -22,7 +22,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_ppo'
 
-        run_name = 'omomo_wo_collison_check'
+        run_name = 'omomo_wo_collison'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -68,7 +68,8 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLXRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        type = 'hybrid'
+        type = 'physical'
+        # type = 'random'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:

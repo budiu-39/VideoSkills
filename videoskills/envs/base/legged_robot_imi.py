@@ -372,6 +372,11 @@ class LeggedRobotImi(LeggedRobot):
             self._reset_ref_state_init(env_ids)
         elif (self._state_init == 'hybrid'):
             self._reset_ref_state_init(env_ids)
+        elif (self._state_init == 'physical'):
+            if not self.physics_buffer_initialized:
+                self._init_phys_init_state_buffer()
+                self.physics_buffer_initialized = True
+            self._reset_phys_state_init(env_ids)
 
         self.motion_lengths = self._motion_lib.get_motion_length(self._sampled_motion_ids[env_ids])/ self.dt
         # from 0, therefore the real length is (int(motion_lengths) + 1)
