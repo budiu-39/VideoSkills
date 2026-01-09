@@ -22,7 +22,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_ppo'
 
-        run_name = 'omomo_wo_collison'
+        run_name = 'omomo_psi_score'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -100,7 +100,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_wo_collision_check')
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_omniretargeted')
 
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_fixed')
 
@@ -256,7 +256,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             eg3 = 0.00000000001
         class scales:
             # imitation = 1.0
-            humanoid = 10.0
+            humanoid = 0.1
             obj = 100.0
             ig = 10.0
             cg = 10.0

@@ -33,9 +33,9 @@ from scripts.smpl2sim.hoi.mujoco_contact_inference import (build_local_templates
                                                            quick_viz_ig_cg, build_sk2mj_index,
                                                            quick_viz_penetration_vhacd, penetration_depth_vhacd_cuda)
 from scripts.smpl2sim.hoi.omomo_utils import rotate_at_frame_w_obj, get_smpl_parents
-from scripts.render.mujoco_render import export_mujoco_video_hoi, create_temp_xml_with_object
+from scripts.render.mujoco_render import export_mujoco_video_hoi_wxyz, create_temp_xml_with_object, export_mujoco_video_hoi
 from scripts.render.hoi_render import render_smpl_hoi_video_yup
-from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation, tranfrom_to_yup
+from scripts.smpl2sim.hoi.smpl2sim_utils import from_yup_to_simulation, tranfrom_to_yup, from_retarget_to_simulation
 from scripts.smpl2sim.hoi.hoi_retarget_utils import (compute_cg_ig_via_smplh_contacts_yup, get_smpl_vert_part)
 
 sys.path.append(os.getcwd())
@@ -127,6 +127,8 @@ if __name__ == "__main__":
                         help="Whether to perform penetration check.")
     parser.add_argument("--filter_file", type=str, default=None,
                         help="Path to a txt file containing specific sequences to process.")
+    parser.add_argument("--result_src", type=str, required=True,
+                        help="Path to the directory containing Omniretarget .npz results.")
     args = parser.parse_args()
     output_dir = args.dst
 
@@ -145,7 +147,7 @@ if __name__ == "__main__":
     )
 
     OBJECT_PATH = "data/omomo/objects_scaled/objects"
-    render_outdir = "renders/OMOMO"
+    render_outdir = "renders/OMOMO_Omniretargeted"
 
     data_dict = get_omomo_data(args.src)
     data_dict_seq = {data_dict[k]['seq_name']: data_dict[k] for k in data_dict}
@@ -216,6 +218,8 @@ if __name__ == "__main__":
         'lookat_offset': np.array([0, 0, 0.7])  # 目标点相对于根节点的偏移（看人中心）
     }
 
+    retarget_seq_list = glob.glob(osp.join(args.result_src, "*.npz"))
+
     for seq_key in tqdm(target_keys):
         human, obj = omomo_preprocess(data_dict_seq[seq_key])
         entry = data_dict_seq[seq_key]
@@ -232,6 +236,13 @@ if __name__ == "__main__":
         obj_name = obj['name']
         obj_angles = sRot.from_matrix(obj['rot']).as_rotvec()
         obj_trans_raw = obj['trans']
+
+        # 导入 Omniretarget 数据
+        if seq_name + "_original.npz" not in [osp.basename(p) for p in retarget_seq_list]:
+            print(f"Skipping {seq_name}, no retargeted result found.")
+            continue
+        else:
+            npz_path = osp.join(args.result_src, f"{seq_name}_original.npz")
 
         # 2. 加载中心化后的 Mesh 和 Offset
         obj_dir_path = osp.join(OBJECT_PATH, obj_name)
@@ -273,17 +284,23 @@ if __name__ == "__main__":
 
         human_yup, obj_yup = tranfrom_to_yup(smpl[gender], human, obj, mesh_obj, origin_format='zup')
 
-        new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
-                                                          smplx_parser_n, skeleton_tree, mesh_obj)
+        # new_sk_state, object_dict = from_yup_to_simulation(human_yup, obj_yup, smpl[gender],
+        #                                                   smplx_parser_n, skeleton_tree, mesh_obj)
 
-        motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
-
-        # 建立 mujoco 模型，用于穿模计算和可视化检查
         body_clouds, body_geoms, mj_model = build_local_templates_by_body(
             "data/robots/smpl/smplx_humanoid_hand.xml",
             samples_per_geom=500)
         mj_data = mujoco.MjData(mj_model)
         sk2mj, mj2sk = build_sk2mj_index(mj_model, skeleton_tree, drop_world=True)
+
+        new_sk_state, object_dict, _, smpl_scale = from_retarget_to_simulation(
+            npz_path, mj_model, mj_data, skeleton_tree, device=device
+        )
+
+        motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
+
+        # 建立 mujoco 模型，用于穿模计算和可视化检查
+
 
         # 计算 cg 和 ig
         smpl_vert_part = get_smpl_vert_part(smpl[gender])
@@ -375,11 +392,19 @@ if __name__ == "__main__":
             N = new_sk_state.local_rotation.shape[0]
             os.makedirs(render_outdir, exist_ok=True)
             temp_xml = create_temp_xml_with_object("data/robots/smpl/smplx_humanoid_hand.xml", obj_mesh_path)
+            # ROBOT_XML = "data/robots/smpl/smplx_humanoid_hand.xml"
+            # temp_xml = create_temp_xml_with_object(
+            #     ROBOT_XML,
+            #     obj_mesh_path,
+            #     smpl_scale=smpl_scale  # <--- 传入 Scale
+            # )
 
             motion_traj = {}
             motion_traj['root_trans_offset'] = new_sk_state.root_translation.numpy()
             motion_traj['root_rotation'] = new_sk_state.global_root_rotation.numpy()
             motion_traj['dof'] = sRot.from_quat(new_sk_state.local_rotation[:, 1:].reshape(-1, 4)).as_euler('XYZ').reshape(N, -1, 3)
+
+            # camera_config['azimuth'] = 180
             export_mujoco_video_hoi(
                 motion_traj,
                 obj_pos=object_dict['obj_pos'],
@@ -388,6 +413,15 @@ if __name__ == "__main__":
                 xml_path=temp_xml,
                 output_path=retarget_video_path
             )
+
+            # export_mujoco_video_hoi_wxyz(
+            #     motion_dict,
+            #     obj_pos=object_dict['obj_pos'],
+            #     obj_quat_wxyz=object_dict['obj_rot'],
+            #     camera_cfg=camera_config,
+            #     xml_path=temp_xml,
+            #     output_path=retarget_video_path
+            # )
 
             compare_outdir = f'{render_outdir}/comparison'
             os.makedirs(compare_outdir, exist_ok=True)

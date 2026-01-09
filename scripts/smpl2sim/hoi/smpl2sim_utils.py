@@ -257,7 +257,7 @@ def from_retarget_to_simulation(npz_path, mj_model, mj_data, skeleton_tree, devi
     obj_pos = qpos[:, -7:-4]
     obj_quat = qpos[:, -4:]  # wxyz
 
-    # 关节部分
+    # 关节部分，这一部分是 dof 数据，也就是欧拉？
     joint_qpos = qpos[:, 7:-7]
 
     # 3. 构建 object_dict
@@ -271,7 +271,7 @@ def from_retarget_to_simulation(npz_path, mj_model, mj_data, skeleton_tree, devi
     # 这里为了简单，先暂存 wxyz
     object_dict = {
         'obj_pos': obj_pos,  # numpy (T, 3)
-        'obj_rot': obj_quat,  # numpy (T, 4) [w, x, y, z]
+        'obj_rot': obj_quat[:, [1, 2, 3, 0]],  # numpy (T, 4) [w, x, y, z]
         'obj_pos_vel': obj_pos_vel,
         # 'obj_rot_vel': ... (如果有需要再计算，注意四元数顺序)
         'name': 'unknown'  # 外部填充
@@ -285,32 +285,45 @@ def from_retarget_to_simulation(npz_path, mj_model, mj_data, skeleton_tree, devi
         'fps': fps
     }
 
+    sk_node_names = skeleton_tree.node_names
+    mj_body_indices = []
+
+    for name in sk_node_names:
+        # MuJoCo 中查找对应名称的 body ID
+        # 注意：有时候命名可能有差异（例如 mj_model 中有前缀），需要根据实际情况调整
+        idx = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, name)
+        if idx == -1:
+            print(f"Warning: Skeleton node '{name}' not found in MuJoCo model!")
+            # 如果找不到，可能需要 fallback 或者报错，这里暂且填 0 (World) 防止崩溃，但逻辑是错的
+            idx = 0
+        mj_body_indices.append(idx)
+
+    mj_body_indices = np.array(mj_body_indices, dtype=np.int32)
+
     # 5. 使用 MuJoCo 进行前向运动学 (FK)
-    global_trans_list = []
+    # global_trans_list = []
     global_rot_list = []
 
     # 遍历每一帧计算 FK
     for t in range(T):
         mj_data.qpos[:3] = root_pos[t]
         mj_data.qpos[3:7] = root_quat[t]
-        mj_data.qpos[7:] = joint_qpos[t]  # 假设 xml 只有机器人，没有物体
+        mj_data.qpos[7:] = joint_qpos[t]  # 这个 qpos 是 dof
 
         mujoco.mj_kinematics(mj_model, mj_data)
 
         # 获取所有 body 的位置和旋转
         # mj_data.xpos: (nbody, 3)
         # mj_data.xquat: (nbody, 4) [w, x, y, z]
+        current_frame_quats_wxyz = mj_data.xquat[mj_body_indices]  # (NumNodes, 4)  # 核心问题就在于之前把 root 也算进去了
+        # wxyz -> xyzw
+        current_frame_quats_xyzw = current_frame_quats_wxyz[:, [1, 2, 3, 0]]
 
-        # --- FIX: 去掉 [0]，我们要所有 body 的位置 ---
-        global_trans_list.append(mj_data.xpos.copy())
-
-        # --- FIX: wxyz -> xyzw ---
-        # PoseLib/SkeletonState 通常使用 [x, y, z, w]
-        global_rot_list.append(mj_data.xquat.copy()[:, [1, 2, 3, 0]])
+        global_rot_list.append(current_frame_quats_xyzw)
 
         # 转为 Tensor (T, N_body, 3/4)
     # 注意：SkeletonState 需要在 CPU 上构建，或者与 device 匹配
-    global_trans_tensor = torch.tensor(np.array(global_trans_list), dtype=torch.float32)
+    # global_trans_tensor = torch.tensor(np.array(global_trans_list), dtype=torch.float32)
     global_rot_tensor = torch.tensor(np.array(global_rot_list), dtype=torch.float32)
 
     # 6. 构建 SkeletonState

@@ -49,7 +49,8 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # Physics Init Buffer Variables
         self.physics_state_buffer = None
-        self.physics_init_candidates = 1  # Parameter: candidate number per frame
+        self.physics_state_scores = None  # 新增：用于存储分数的 Buffer
+        self.physics_init_candidates = 3  # Parameter: candidate number per frame
         self.physics_buffer_initialized = False
 
 
@@ -520,9 +521,9 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         if self.mask_interaction_reward:
             # Stage 1: 屏蔽物体奖励
-            rew_obj = torch.ones_like(rew_h)
-            rew_ig = torch.ones_like(rew_h)
-            rew_cg = torch.ones_like(rew_h)
+            rew_obj = torch.ones_like(self.num_envs)
+            rew_ig = torch.ones_like(self.num_envs)
+            rew_cg = torch.ones_like(self.num_envs)
         else:
             # Stage 2/3: 逐步开启
             rew_obj = self._reward_obj()
@@ -540,7 +541,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.episode_sums["humanoid"] += rew_h
 
         # 最终奖励相乘或相加
-        self.rew_buf[:] = rew_h * rew_obj * rew_ig * rew_cg
+        self.rew_buf[:] = rew_obj * rew_ig * rew_cg * rew_h
         if self.cfg.rewards.only_positive_rewards:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
         return
@@ -941,6 +942,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         """
         print("Initializing Physics State Buffer...")
         self.physics_state_buffer = {}
+        self.physics_state_scores = {} # 新增
         num_motions = self._motion_lib.num_motions()
 
         # We process motions one by one (or could batch if memory allows, but lengths differ)
@@ -996,6 +998,16 @@ class LeggedRobotHoi(LeggedRobotImi):
 
             self.physics_state_buffer[mid] = full_state_expanded
 
+            scores = torch.zeros((motion_len_frames, self.physics_init_candidates), device=self.device,
+                                 dtype=torch.float) + 0.1
+
+            # 【关键修改】
+            # 给 Candidate 0 一个"及格分" (例如 50.0，相当于存活了 1.5秒)
+            # 这意味着如果仿真出的状态能存活 > 50帧，它就比原始参考更具吸引力
+            scores[:, 0] = 50.0
+
+            self.physics_state_scores[mid] = scores
+
         print(f"Physics Buffer initialized for {num_motions} motions.")
 
     def _reset_phys_state_init(self, env_ids):
@@ -1006,11 +1018,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         # 1. Update Buffer with current states from surviving environments
         # Filter envs that have survived > 64 steps
         cond_survived = self.episode_length_buf[env_ids] > 64
-        cond_prob = torch.rand(len(env_ids), device=self.device) < 0.1
+        # 这里的随机概率可以调高一点，因为我们现在有优胜劣汰机制了，不用担心 Buffer 被垃圾数据填满
+        cond_prob = torch.rand(len(env_ids), device=self.device) < 0.25
         survived_mask = cond_survived & cond_prob
         update_env_ids = env_ids[survived_mask]
 
         if len(update_env_ids) > 0:
+
             root_offset = self.pos_offset['root'][update_env_ids]
 
             # Capture Robot State
@@ -1042,6 +1056,9 @@ class LeggedRobotHoi(LeggedRobotImi):
             # Formula: 16 / length * 32 = 512 / length
             # Note: length > 64 checked above, so division is safe.
             curr_lengths = self.episode_length_buf[update_env_ids].float()
+
+            curr_scores = self.episode_length_buf[update_env_ids].float() # (N_update,)
+
             curr_trim_frames = (512.0 / curr_lengths).long()
 
             unique_mids = torch.unique(curr_motion_ids)
@@ -1051,23 +1068,43 @@ class LeggedRobotHoi(LeggedRobotImi):
 
                 batch_frames = curr_frames[mid_mask]
                 batch_states = captured_state[mid_mask]
-                batch_trim = curr_trim_frames[mid_mask]  # Get trim for these specific envs
+                batch_scores = curr_scores[mid_mask]  # 当前这批数据的分数
+                batch_trim = curr_trim_frames[mid_mask]
 
                 motion_buffer = self.physics_state_buffer[mid]
+                score_buffer = self.physics_state_scores[mid]  # 获取分数 Buffer
                 max_frame = motion_buffer.shape[0]
 
-                # Check bounds with dynamic trim (Vectorized)
-                # valid if: trim < frame < max - trim
                 valid_frame_mask = (batch_frames > batch_trim) & (batch_frames < (max_frame - batch_trim))
-
                 if not valid_frame_mask.any(): continue
 
                 final_frames = batch_frames[valid_frame_mask]
                 final_states = batch_states[valid_frame_mask]
-                cand_indices = torch.randint(0, self.physics_init_candidates, (final_frames.shape[0],),
-                                             device=self.device)
+                final_new_scores = batch_scores[valid_frame_mask]
 
-                self.physics_state_buffer[mid][final_frames, cand_indices] = final_states
+                # --- 核心修改：优胜劣汰逻辑 ---
+
+                # 1. 获取 Buffer 中对应帧的所有候选者分数
+                # current_buffer_scores: (Num_Updates, Num_Candidates)
+                current_buffer_scores = score_buffer[final_frames]
+
+                # 2. 找到每个帧中最差的候选者 (Min Value) 及其索引 (Argmin)
+                # 注意：因为我们初始化时给了 Index 0 极高分 (10000)，所以 min() 永远不会选中 Index 0
+                # 这样就自动实现了“保留原始参考”的功能
+                min_scores, min_indices = torch.min(current_buffer_scores, dim=1)
+
+                # 3. 只有当 新分数 > 旧的最低分 时，才执行替换
+                replace_mask = final_new_scores > min_scores
+
+                if replace_mask.any():
+                    # 筛选出值得更新的
+                    update_frames = final_frames[replace_mask]
+                    update_indices = min_indices[replace_mask]  # 要覆盖的槽位
+
+                    # 执行写入状态
+                    self.physics_state_buffer[mid][update_frames, update_indices] = final_states[replace_mask]
+                    # 执行更新分数
+                    self.physics_state_scores[mid][update_frames, update_indices] = final_new_scores[replace_mask]
 
         # 2. Reset the requested environments using the buffer
         # A. Sample Motion IDs
@@ -1097,18 +1134,29 @@ class LeggedRobotHoi(LeggedRobotImi):
         # Placeholders for extracted data
         # Dim: 13 + 2*dof + 13
         state_dim = 13 + 2 * self.num_dofs + 13
+
         target_states = torch.zeros((num_resets, state_dim), device=self.device)
 
         unique_mids = torch.unique(reset_mids)
         for umid in unique_mids:
             mask = (reset_mids == umid)
-            frames_for_mid = sampled_frames[mask]
-            cands_for_mid = rand_candidates[mask]
+            frames_for_mid = sampled_frames[mask]  # (N_subset,)
 
-            # Fetch from buffer
-            # buffer[mid]: (T, C, D)
-            # Indexing: [frames, candidates]
-            states = self.physics_state_buffer[int(umid.item())][frames_for_mid, cands_for_mid]
+            # 获取这些帧的分数分布
+            # scores: (N_subset, Num_Candidates)
+            scores = self.physics_state_scores[int(umid.item())][frames_for_mid]
+
+            # 转换为概率 (Softmax 或直接归一化)
+            # 直接归一化即可，分数越高概率越大
+            # 加一个 epsilon 防止除以 0
+            probs = scores / (scores.sum(dim=1, keepdim=True) + 1e-6)
+
+            # 采样
+            # torch.multinomial 需要 2D 输入，对每一行采样 1 个索引
+            cand_indices = torch.multinomial(probs, num_samples=1).squeeze(-1)  # (N_subset,)
+
+            # 获取状态
+            states = self.physics_state_buffer[int(umid.item())][frames_for_mid, cand_indices]
             target_states[mask] = states
 
         # E. Apply States to Environment Variables
