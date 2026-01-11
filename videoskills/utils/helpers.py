@@ -206,7 +206,10 @@ def get_args():
          "help": "Path to teacher checkpoint for distillation/DAgger."},
         {"name": "--teacher_config", "type": str, "default": None,
          "help": "Path to teacher config for distillation/DAgger."},
-        {"name": "--distill_value", "action": "store_true", "default": False}
+        {"name": "--distill_value", "action": "store_true", "default": False},
+
+        # VAE resume
+        {"name": '--vae_ckpt', "type": str, "default":None, "help": 'Path to the distilled VAE checkpoint (dagger_student_*.pt)'}
     ]
     # parse arguments
     args = gymutil.parse_arguments(

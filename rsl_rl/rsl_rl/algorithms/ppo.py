@@ -136,10 +136,18 @@ class PPO:
             ctx = cuda_autocast(enabled=self.use_mixed_precision) if self.use_mixed_precision else nullcontext()
 
             with ctx:
-                self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
-                actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
-                value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch,
-                                                         hidden_states=hid_states_batch[1])
+                if self.actor_critic.is_recurrent:
+                    # 如果是 RNN/LSTM，需要传入 masks 和 hidden_states
+                    self.actor_critic.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+                    actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+                    value_batch = self.actor_critic.evaluate(critic_obs_batch, masks=masks_batch,
+                                                             hidden_states=hid_states_batch[1])
+                else:
+                    # 如果是 MLP (train_z 用的就是这个)，不要传 masks
+                    self.actor_critic.act(obs_batch)
+                    actions_log_prob_batch = self.actor_critic.get_actions_log_prob(actions_batch)
+                    value_batch = self.actor_critic.evaluate(critic_obs_batch)
+
                 mu_batch = self.actor_critic.action_mean
                 sigma_batch = self.actor_critic.action_std
                 entropy_batch = self.actor_critic.entropy

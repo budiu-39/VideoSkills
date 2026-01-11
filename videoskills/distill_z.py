@@ -65,13 +65,6 @@ def main():
     with torch.inference_mode():
         env.reset()
 
-    # 聚合缓冲
-    # seg_buf = SegmentReplayBuf(
-    #     capacity_segments=cfg.replay_capacity // cfg.steps_per_env,
-    #     steps_per_env=cfg.steps_per_env,
-    #     device=device,
-    # )
-
     rb = ReplayBuf(
         capacity=cfg.replay_capacity,
         device=device,
@@ -94,31 +87,15 @@ def main():
         # 1) 学生主导 rollout，老师打标签
         # TODO: 要补充一个config!
 
-        t0 = time.perf_counter()
-
         obs_flat, mu_flat, std_flat, v_flat, reset_flat = rollout_dagger(env, teacher, student, decoder,
                                                                          prior, cfg.steps_per_env, beta, device)
-        t_rollout = time.perf_counter()
 
-        # seg_buf.add_rollout(obs_flat, mu_flat, std_flat, v_flat, reset_flat, num_envs=env.num_envs)
         rb.add(obs_flat, mu_flat, std_flat, v_flat)
-        t_buffer = time.perf_counter()
-
 
         stats = train_step(
             student, optimizer, rb, cfg,
             decoder=decoder, prior=prior
         )
-        # stats = train_step_segment(student, optimizer, seg_buf, cfg, decoder, prior)
-        t_train = time.perf_counter()
-
-        dt_rollout = t_rollout - t0
-        dt_buffer = t_buffer - t_rollout
-        dt_train = t_train - t_buffer
-        dt_total = t_train - t0
-
-        print(f"[DAgger] it={it:05d} timing: rollout={dt_rollout:.3f}s, buffer={dt_buffer:.3f}s,"
-              f"train={dt_train:.3f}s, total={dt_total:.3f}s, replay_buf_size:{len(rb):.3f}")
 
         loss = stats["total"]
         klv = stats.get("beh_kl", 0.0)
@@ -126,9 +103,10 @@ def main():
         ar1 = stats.get("ar1", 0.0)
 
         # 3) 日志/保存
-        if it % cfg.log_interval == 0 or it == 1:
+        log_interval = train_cfg.runner.log_interval
+        if it % log_interval == 0 or it == 1:
             dt = time.time() - t_last
-            fps = cfg.steps_per_env * env.num_envs / (cfg.log_interval * dt)
+            fps = cfg.steps_per_env * env.num_envs / (log_interval * dt)
             print(f"[DAgger] it={it:05d} | β={beta:.3f} "
                   f"| loss={loss:.3f} (beh={klv:.3f}, lat={kl_lat:.3f}, ar1={ar1: .3f}) "
                   f"| fps≈{fps:.1f}")
@@ -145,7 +123,8 @@ def main():
                 "fps": cfg.steps_per_env * env.num_envs / (time.time() - t_last + 1e-6)
             }, step=it)
 
-        if it % cfg.save_interval == 0 or it == cfg.max_iters:
+
+        if it % train_cfg.runner.save_interval == 0 or it == cfg.max_iters:
             ckpt_name = f"dagger_student_{it}.pt"
             path = os.path.join(log_dir, ckpt_name)
 
@@ -159,7 +138,7 @@ def main():
             }, path)
             print(f"[DAgger] saved => {path}")
 
-        if it % 100 == 0:
+        if it % train_cfg.runner.eval_interval == 0:
             print(f"\n[DAgger] Eval at iteration {it} ...")
 
             if eval_runner is None:

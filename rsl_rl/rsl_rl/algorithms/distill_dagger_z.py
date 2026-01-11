@@ -70,10 +70,6 @@ class DAggerCfg:
     use_mixed_precision: bool = True
     amp_dtype = torch.bfloat16
 
-    # 日志/保存
-    log_interval: int = 10
-    save_interval: int = 100
-
 
 def build_env_and_cfg(args):
     from videoskills.utils.task_registry import task_registry
@@ -91,12 +87,13 @@ def load_teacher(train_cfg, ckpt_path, env, device):
     num_critic_obs = env.num_privileged_obs if env.num_privileged_obs is not None else env.num_obs
     num_actions    = env.num_actions
 
-    teacher = ActorCriticMLP(
+    teacher = ActorCritic(
         num_actor_obs=num_actor_obs,
         num_critic_obs=num_critic_obs,
         num_actions=num_actions,
         **policy_cfg
     ).to(device)
+
     ckpt = torch.load(ckpt_path, map_location=device)
     state = ckpt.get('model_state_dict', ckpt)
     teacher.load_state_dict(state, strict=False)
@@ -120,9 +117,6 @@ def build_student(env, train_cfg, device):
     """
     # 1) 超参
     cfg = train_cfg.policy
-    d_model      = cfg.d_model
-    depth_actor  = cfg.depth_actor
-    depth_critic = cfg.depth_critic
     fixed_std    = cfg.fixed_std
     init_std     = cfg.init_noise_std
 
@@ -130,28 +124,29 @@ def build_student(env, train_cfg, device):
     proprio_dim = cfg.proprioception_dim
     task_dim = cfg.task_dim
     action_dim  = env.num_actions
-    phase_dim   = cfg.phase_dim
     z_dim       = cfg.z_dim
     encoder_obs_dim = proprio_dim + task_dim
-
-    enc_backbone= MLPBackbone(in_dim=encoder_obs_dim, hidden=(3072, 1024, 512)).to(device)  # C_ctx=上下文通道数
-    critic_backbone = MLPBackbone(in_dim=encoder_obs_dim, hidden=(512, 512)).to(device)
+    actor_hidden_dims = cfg.actor_hidden_dims
+    critic_hidden_dims = cfg.critic_hidden_dims
+    #
+    # enc_backbone= MLPBackbone(in_dim=encoder_obs_dim, hidden=(3072, 1024, 512)).to(device)  # C_ctx=上下文通道数
+    # critic_backbone = MLPBackbone(in_dim=encoder_obs_dim, hidden=(512, 512)).to(device)
 
     # 4) 实例化新版 ActorCritic（它会在内部做 obs RMS、actor_head/critic_head 与分布）
+    policy_cfg = class_to_dict(train_cfg.policy)
     student = ActorCritic(
         num_actor_obs=encoder_obs_dim,  # 保持兼容
         num_critic_obs=encoder_obs_dim,
         num_actions=z_dim,
-        actor_network=enc_backbone,
-        critic_network=critic_backbone,
         d_model=512,
         init_noise_std=init_std,
         fixed_std=fixed_std,
+        actor_hidden_dims=actor_hidden_dims,
+        critic_hidden_dims=critic_hidden_dims,
     ).to(device)
 
     student.proprioception_dim = proprio_dim
     student.action_dim = action_dim
-    student.phase_dim = phase_dim
     student.z_dim = z_dim
     student.encoder_obs_dim = encoder_obs_dim
     student.task_dim = task_dim
@@ -161,23 +156,23 @@ def build_student(env, train_cfg, device):
 def build_decoder_and_prior(train_cfg, device):
     cfg = train_cfg.policy
     proprio_dim = cfg.proprioception_dim
-    action_dim  = cfg.num_actions
+    action_dim  = cfg.action_dim
     z_dim       = cfg.z_dim
 
-    decoder_backbone = BodyGraphZ(
-        obs_dim=proprio_dim,
-        z_dim=z_dim,
-        num_bodies=24,
-        d_model=256,
-        n_heads=4,
-        depth=4,
-    )
-    decoder = FrameDecoder(decoder_backbone, d_model=256, action_dim=action_dim).to(device)
-    prior = FramePrior(proprio_dim, d_z=z_dim, hidden=(2048, 1024, 256)).to(device)
+    # decoder_backbone = BodyGraphZ(
+    #     obs_dim=proprio_dim,
+    #     z_dim=z_dim,
+    #     num_bodies=24,
+    #     d_model=256,
+    #     n_heads=4,
+    #     depth=4,
+    # )
+    # decoder = FrameDecoder(decoder_backbone, d_model=256, action_dim=action_dim).to(device)
+    # prior = FramePrior(proprio_dim, d_z=z_dim, hidden=(2048, 1024, 256)).to(device)
 
-    # decoder_backbone = MLPBackbone(in_dim=proprio_dim + z_dim, hidden=(2048, 1024, 512)).to(device)
-    # decoder = FrameDecoder(decoder_backbone, d_model=512, action_dim=action_dim).to(device)
-    # prior = FramePrior(proprio_dim, d_z=z_dim, hidden=(2048, 1024, 512)).to(device)
+    decoder_backbone = MLPBackbone(in_dim=proprio_dim + z_dim, hidden=(2048, 1024, 512)).to(device)
+    decoder = FrameDecoder(decoder_backbone, d_model=512, action_dim=action_dim).to(device)
+    prior = FramePrior(proprio_dim, d_z=z_dim, hidden=(2048, 1024, 512)).to(device)
 
     return decoder, prior
 
@@ -185,14 +180,9 @@ def build_decoder_and_prior(train_cfg, device):
 
 @torch.no_grad()
 def teacher_outputs(teacher, obs, critic_obs):
-    obs_t = obs[..., :teacher.obs_dim]
-    critic_t = critic_obs[..., :teacher.critic_obs_dim]
-
-    teacher.update_distribution(obs_t)
-    mu = teacher.action_mean
-    std = teacher.action_std
-    v = teacher.evaluate(critic_t)
-    return mu, std, v
+    mu_q, lv_q, std_q = teacher.update_latent_distribution(obs)
+    v = teacher.evaluate(critic_obs)
+    return mu_q, lv_q, v
 
 
 def kl_gaussians(mu_t, std_t, mu_s, std_s, eps=1e-8):

@@ -146,7 +146,7 @@ if __name__ == "__main__":
         num_betas=20  # SMPL-X 20 维 beta
     )
 
-    OBJECT_PATH = "data/omomo/objects_scaled/objects"
+    OBJECT_PATH = "data/omomo/objects/objects"
     render_outdir = "renders/OMOMO_Omniretargeted"
 
     data_dict = get_omomo_data(args.src)
@@ -296,6 +296,7 @@ if __name__ == "__main__":
         new_sk_state, object_dict, _, smpl_scale = from_retarget_to_simulation(
             npz_path, mj_model, mj_data, skeleton_tree, device=device
         )
+        object_dict['name'] = obj_name
 
         motion_dict = SkeletonMotion.from_skeleton_state(new_sk_state, fps=30).to_dict()
 

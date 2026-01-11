@@ -7,12 +7,29 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
-        actor_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156 # 含义  humanoid_obs, mimic_obs, obj_obs, hoi_obs(2个 156), self.body_contact, self.actions
-        critic_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        # actor_input_dim = 778
+        # critic_input_dim = 778
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
-        activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
-        use_z = False
+        # activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
+        use_z = True
+
+        # Z 相关配置(训练 prior 和 decoder)
+        # proprioception_dim = 778
+        # task_dim = 528
+        # action_dim = 153
+        # z_dim = 32
+        # num_actions = 153
+
+        # Z 相关配置(训练encoder 用于下游任务)
+        proprioception_dim = 778
+        task_dim = 528 + 21 + 156 + 156 + 52 + 153 # 这里的 153 是上一次 action，对于 decoder 来说，输入是 task obs, 输出是 32
+        action_dim = 153
+        z_dim = 32
+        # num_actions = 153
+
+
+
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -21,12 +38,12 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         normalize_obs = True
 
     class runner(LeggedRobotCfgPPO.runner):
-        experiment_name = 'smplx_hoi_ppo'
+        experiment_name = 'smplx_hoi_z_ppo'
 
-        run_name = 'omomo_omniretargeted'
+        run_name = 'omomo_pulse_prior'
 
         use_amp_runner = False # 可以联动！和 amp
-        max_iterations = 38000  # number of policy updates
+        max_iterations = 1000  # number of policy updates
         # load_run = 'SOTA_smpl_universal'
         # checkpoint = 10000
         # load_run = 'obs_norm'
@@ -34,8 +51,9 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # load_run = 'SOTA_2e-8torque_norm_obs'
 
         # checkpoint = '6000'
-        save_interval = 1000  # check for potential saves every this many iterations
-        eval_interval = 1000
+        save_interval = 100  # check for potential saves every this many iterations
+        eval_interval = 100
+        log_interval = 10
 
         num_steps_per_env = 32  # per iteration
         num_learning_epochs = 6
@@ -160,13 +178,14 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         episode_length_s = 10  # 5 秒应该有 60 hz
         eval_mode = False
         land_event_detect = False
-        num_envs = 2048
+        num_envs = 4096
         num_actions = 153
         # TODO: now is the simplified edition
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
         activate_quat_to_tan_norm = True
         norm_num_observations = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        proprio_dim = 778
 
     class control:
         # PD Drive parameters:

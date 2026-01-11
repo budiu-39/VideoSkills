@@ -35,10 +35,6 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         else:
             num_critic_obs = self.env.num_obs
 
-        if 'use_z' not in self.policy_cfg:
-            self.policy_cfg['use_z'] = False
-
-        # 旧版
         if self.policy_cfg['use_z']:
             train_cfg=  dict_to_class(train_cfg)
             actor_critic = build_actor_critic_with_z(env, train_cfg, self.device)
@@ -65,12 +61,11 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         # init storage and model
         init_storage = self.cfg.get("init_storage", True)  # 新增：默认不为 eval 分配storage
         if init_storage:
-            # self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
-            #                       [self.policy_cfg['actor_input_dim']],
-            #                       [self.policy_cfg['critic_input_dim']], [self.env.num_actions])
-
             self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
                                   [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
+            if self.policy_cfg['use_z']:
+                self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+                                      [self.env.num_obs], [num_critic_obs], [self.policy_cfg['z_dim']])
 
         # Log
         self.log_dir = log_dir
@@ -128,7 +123,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for i in range(self.num_steps_per_env):
                 with torch.no_grad():
                     if self.policy_cfg['use_z']:
-                        obs = obs[:, :-self.env.num_actions]
+                        # obs = obs[:, :-self.env.num_actions]
                         critic_obs = obs
                         actions_z = self.alg.act(obs, critic_obs)
                         actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=True)
@@ -262,7 +257,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for step in range(max_steps):  # max(range) = length + 1, therefore
                 with torch.no_grad():
                     if self.policy_cfg['use_z']:
-                        obs = obs[:, :-self.env.num_actions]
+                        obs = obs[:, :self.policy_cfg['proprioception_dim']+self.policy_cfg['task_dim']]
                         actions_z = self.alg.actor_critic.act_inference(obs)
                         actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=False)
                     else:

@@ -54,70 +54,64 @@ class MotionLibHoi(MotionLib):
         print(f"[MotionLibHoi] Loading {len(motion_files)} HOI motions...")
 
         for curr_file in tqdm(motion_files):
-            try:
-                payload = np.load(curr_file, allow_pickle=True).item()
-                if "motion" in payload:
-                    curr_motion = SkeletonMotion.from_dict(payload["motion"])
-                else:
-                    # 非 HOI 数据，调用基类加载逻辑
-                    curr_motion = SkeletonMotion.from_file(curr_file)
+            payload = np.load(curr_file, allow_pickle=True).item()
+            if "motion" in payload:
+                curr_motion = SkeletonMotion.from_dict(payload["motion"])
+            else:
+                # 非 HOI 数据，调用基类加载逻辑
+                curr_motion = SkeletonMotion.from_file(curr_file)
 
-                if self._rotate_motion:
-                    curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
+            if self._rotate_motion:
+                curr_motion = self.apply_rotation(curr_motion, curr_motion.fps)
 
-                # 计算 DOF 速度
-                curr_motion.dof_vels = self._compute_motion_dof_vels_vectorized(
-                    curr_motion, cpu_dof_body_ids, cpu_dof_offsets
-                )
+            # 计算 DOF 速度
+            curr_motion.dof_vels = self._compute_motion_dof_vels_vectorized(
+                curr_motion, cpu_dof_body_ids, cpu_dof_offsets
+            )
 
-                if "object" in payload:
-                    objd = payload["object"]
-                    hoi = payload["interaction"]
-                    self._has_object = True
-                else:
-                    # 伪造全零物体数据 (Stage 1 使用)
-                    num_f = curr_motion.tensor.shape[0]
-                    objd = {
-                        "obj_pos": np.zeros((num_f, 3)),
-                        "obj_rot": np.tile(np.array([0, 0, 0, 1]), (num_f, 1)),  # 单位四元数
-                        "obj_pos_vel": np.zeros((num_f, 3)),
-                        "obj_rot_vel": np.zeros((num_f, 3)),
-                        "name": "none"
-                    }
-                    hoi = {
-                        "ig": np.zeros((num_f, 52, 3)),  # 假设 52 个 body
-                        "contact_robot": np.zeros((num_f, 52)),
-                        "collision_tag": np.zeros(num_f, dtype=bool)
-                    }
-
-                to_f32 = lambda a: torch.as_tensor(a, dtype=torch.float32)
-
-                self._obj_pos_list.append(to_f32(objd["obj_pos"]))
-                self._obj_rot_list.append(to_f32(objd["obj_rot"]))
-                self._obj_pos_vel_list.append(to_f32(objd["obj_pos_vel"]))
-                self._obj_rot_vel_list.append(to_f32(objd["obj_rot_vel"]))
-                self.ig_list.append(to_f32(hoi["ig"]))
-                self.contact_robot_list.append(to_f32(hoi["contact_robot"]))
-                self.collision_tag_list.append(torch.as_tensor(hoi["collision_tag"], dtype=torch.bool).view(-1))
-                self._motion_obj_names.append(objd.get("name", "unknown"))
-
-                # 基础信息存储
-                motion_fps = curr_motion.fps
-                num_frames = curr_motion.tensor.shape[0]
-                self._motions.append(curr_motion)
-                self._motion_fps.append(motion_fps)
-                self._motion_dt.append(1.0 / motion_fps)
-                self._motion_num_frames.append(num_frames)
-                self._motion_lengths.append((num_frames - 1) / motion_fps)
-                self._motion_files.append(curr_file)
-                self._motion_keys.append(self._get_motion_key(curr_file))
+            if "object" in payload:
+                objd = payload["object"]
+                hoi = payload["interaction"]
                 self._has_object = True
+            else:
+                # 伪造全零物体数据 (Stage 1 使用)
+                num_f = curr_motion.tensor.shape[0]
+                objd = {
+                    "obj_pos": np.zeros((num_f, 3)),
+                    "obj_rot": np.tile(np.array([0, 0, 0, 1]), (num_f, 1)),  # 单位四元数
+                    "obj_pos_vel": np.zeros((num_f, 3)),
+                    "obj_rot_vel": np.zeros((num_f, 3)),
+                    "name": "none"
+                }
+                hoi = {
+                    "ig": np.zeros((num_f, 52, 3)),  # 假设 52 个 body
+                    "contact_robot": np.zeros((num_f, 52)),
+                    "collision_tag": np.zeros(num_f, dtype=bool)
+                }
 
+            to_f32 = lambda a: torch.as_tensor(a, dtype=torch.float32)
 
+            self._obj_pos_list.append(to_f32(objd["obj_pos"]))
+            self._obj_rot_list.append(to_f32(objd["obj_rot"]))
+            self._obj_pos_vel_list.append(to_f32(objd["obj_pos_vel"]))
+            self._obj_rot_vel_list.append(to_f32(objd["obj_rot_vel"]))
+            self.ig_list.append(to_f32(hoi["ig"]))
+            self.contact_robot_list.append(to_f32(hoi["contact_robot"]))
+            self.collision_tag_list.append(torch.as_tensor(hoi["collision_tag"], dtype=torch.bool).view(-1))
+            self._motion_obj_names.append(objd.get("name", "unknown"))
 
-            except Exception as e:
-                print(f"Failed to load {curr_file}: {e}")
-                continue
+            # 基础信息存储
+            motion_fps = curr_motion.fps
+            num_frames = curr_motion.tensor.shape[0]
+            self._motions.append(curr_motion)
+            self._motion_fps.append(motion_fps)
+            self._motion_dt.append(1.0 / motion_fps)
+            self._motion_num_frames.append(num_frames)
+            self._motion_lengths.append((num_frames - 1) / motion_fps)
+            self._motion_files.append(curr_file)
+            self._motion_keys.append(self._get_motion_key(curr_file))
+            self._has_object = True
+
 
         # 重要：在此处进行排序并转换为 Tensor，否则基类 __init__ 后半部分会报错
         self._sort_motions_by_length()

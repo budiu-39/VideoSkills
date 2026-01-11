@@ -28,6 +28,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.object_name = [motion_example.split('/')[-1].split('_')[1].split('.')[0] for motion_example in self.motion_file]
         else:
             self.mask_interaction_reward = True
+            self.object_name = ["none" for _ in range(len(self.motion_file))]
         self.object_density = self.cfg.object.object_density
         self.reward_weights = self.cfg.rewards.weight
         self.et_counter = {
@@ -39,6 +40,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         }
         self.reward_subterm_sums = {}
         super().__init__(self.cfg, sim_params, physics_engine, sim_device, headless)
+
         env_obj_names = [self.object_name[i % len(self.object_name)] for i in range(self.num_envs)]
         # 将名字映射到 MotionLibHoi 的词表索引
         self.env_object_ids = torch.empty(self.num_envs, dtype=torch.long, device=self.device)
@@ -259,6 +261,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.obj_quat[env_ids] = hoi_state["obj_rot"]  # xyzw
         self.obj_vel[env_ids] = hoi_state["obj_pos_vel"]
         self.obj_ang_vel[env_ids] = hoi_state["obj_rot_vel"]
+        # self.ref_ig[env_ids] = hoi_state["ig"]
+        # self.body_contact[env_ids] = hoi_state["contact_robot"]
+
         return
 
     def compute_observations(self):
@@ -438,27 +443,29 @@ class LeggedRobotHoi(LeggedRobotImi):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
                 body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                obj_near_env = body_pos_env + ig_env
-                #
                 num_lines = body_pos_env.shape[0]
-                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
-                #
-                verts[0::2] = body_pos_env
-                verts[1::2] = obj_near_env
 
-                # 颜色（蓝色）
+                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_env = body_pos_env + ig_env
+                # #
+                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # # #
+                # verts[0::2] = body_pos_env
+                # verts[1::2] = obj_near_env
+                #
+                # # 颜色（蓝色）
                 # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
                 # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
-                # self.ref_ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
+                # 如果要渲染参考 ig
+                self.ref_ig[i].cpu().numpy()  # (52, 3)
+                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
 
-                # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
-                # verts_ref[0::2] = body_pos_env
-                # verts_ref[1::2] = obj_near_ref
-                # colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
-                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
+                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                verts_ref[0::2] = body_pos_env
+                verts_ref[1::2] = obj_near_ref
+                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
 
                 for j in range(self.num_bodies):
                     # if j in self.body_no_hand_ids:
@@ -521,9 +528,9 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         if self.mask_interaction_reward:
             # Stage 1: 屏蔽物体奖励
-            rew_obj = torch.ones_like(self.num_envs)
-            rew_ig = torch.ones_like(self.num_envs)
-            rew_cg = torch.ones_like(self.num_envs)
+            rew_obj = torch.ones(self.num_envs, device=self.device)
+            rew_ig = torch.ones(self.num_envs, device=self.device)
+            rew_cg = torch.ones(self.num_envs, device=self.device)
         else:
             # Stage 2/3: 逐步开启
             rew_obj = self._reward_obj()

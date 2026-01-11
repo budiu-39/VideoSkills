@@ -49,7 +49,10 @@ class ActorCritic(nn.Module):
                  use_embedding: bool = False,
                  num_embeddings: int = 138,  # 动作总数
                  embedding_dim: int = 32,  # 编码后的向量维度
-                 **kwargs):
+                 actor_hidden_dims = [256, 256],
+                 critic_hidden_dims = [256, 256],
+                 **kwargs
+                 ):
         super().__init__()
         self.num_actor_obs = num_actor_obs
         self.num_critic_obs = num_critic_obs
@@ -58,20 +61,20 @@ class ActorCritic(nn.Module):
         if actor_backbone == 'MLP':
             self.actor_network = self.build_mlp(
                 input_dim=num_actor_obs,
-                hidden_dims=kwargs.get('actor_hidden_dims'),
+                hidden_dims=actor_hidden_dims,
                 activation=nn.SiLU
             )
 
         if critic_backbone == 'MLP':
             self.critic_network = self.build_mlp(
                 input_dim=num_critic_obs,
-                hidden_dims=kwargs.get('critic_hidden_dims'),
+                hidden_dims=critic_hidden_dims,
                 activation=nn.SiLU
             )
 
         # 如果为 None 就取最后一层隐藏层的维度
-        if d_model is None:
-            d_model = kwargs.get('actor_hidden_dims')[-1]
+
+        d_model = actor_hidden_dims[-1]
 
         self.use_embedding = use_embedding
         if self.use_embedding:
@@ -137,7 +140,7 @@ class ActorCritic(nn.Module):
     #                              Forward (policy)
     # --------------------------------------------------------------------- #
 
-    def act(self, observations, **kwargs):
+    def act(self, observations):
         # [修改] 使用新的预处理函数
         obs = self._preprocess_obs(observations, self.actor_obs_rms)
 
@@ -205,7 +208,7 @@ class ActorCritic(nn.Module):
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
-    def evaluate(self, critic_observations, **kwargs):
+    def evaluate(self, critic_observations):
         # [修改] Critic 也使用预处理函数
         # 注意：如果 Critic 输入不包含 ID，这里需要单独逻辑。
         # 假设 Critic 输入结构与 Actor 类似（包含 ID），则复用逻辑

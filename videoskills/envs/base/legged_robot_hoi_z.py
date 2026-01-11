@@ -2,12 +2,13 @@
 import torch
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
+from videoskills.envs.base.legged_robot_hoi import LeggedRobotHoi
 
-class LeggedRobotImiZ(LeggedRobotImi):
+class LeggedRobotHoiZ(LeggedRobotHoi):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
         self._z_provider = None
-        self._proprio_dim = 358
+        self._proprio_dim = self.cfg.env.proprio_dim
 
     def set_z_decoder(self, fn):
         self._z_decoder = fn

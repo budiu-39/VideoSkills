@@ -2,7 +2,7 @@ from isaacgym import gymapi
 import torch
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 from videoskills.envs.base.legged_robot_imi_window_z import LeggedRobotImiWinZ
-from videoskills.envs.base.legged_robot_imi_z import LeggedRobotImiZ
+# from videoskills.envs.base.legged_robot_hoi_z import LeggedRobotImiZ
 from videoskills.envs.base.legged_robot_hoi import LeggedRobotHoi
 
 

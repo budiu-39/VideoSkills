@@ -16,7 +16,8 @@ from .smplx.smplx_phc_config import SMPLXRobotCfg, SMPLXRoughCfgPPO
 from .smplx.smplx_attention_config import SMPLXRobotCfg as SMPLXRobotCfg_attn, SMPLXRoughCfgPPO as SMPLXRoughCfgPPO_attn
 from .smplx.smplx_env import SMPLXRobot
 from .smplx.smplx_hoi_env import SMPLXRobotHoi
-
+from .smplx.smplx_hoi_config_z import SMPLXRobotCfg as SMPLXRobotCfg_HOI_Z, SMPLXRoughCfgPPO as SMPLXRoughCfgPPO_HOI_Z
+from .smplx.smplx_hoi_env_z import SMPLXRobotHoiZ
 
 from videoskills.utils.task_registry import task_registry
 
@@ -24,6 +25,7 @@ task_registry.register( "h1", H1Robot, H1RoughCfg(), H1RoughCfgPPO())
 task_registry.register( "g1", G1Robot, G1RoughCfg(), G1RoughCfgPPO())
 task_registry.register( "smpl", SMPLRobot, SMPLRobotCfg(), SMPLRoughCfgPPO())
 task_registry.register( "smpl_z", SMPLRobot, SMPLRobotCfg_Z(), SMPLRoughCfgPPO_Z())
+task_registry.register( "smplx_hoi_z", SMPLXRobotHoiZ, SMPLXRobotCfg_HOI_Z(), SMPLXRoughCfgPPO_HOI_Z())
 task_registry.register( "smpl_win_z", SMPLRobot, SMPLRobotCfg_WinZ(), SMPLRoughCfgPPO_WinZ())
 task_registry.register( "smpl_attn", SMPLRobot, SMPLRobotCfg_attn(), SMPLRoughCfgPPO_attn())
 task_registry.register( "smplx_hoi", SMPLXRobotHoi, SMPLXRobotCfg_HOI(), SMPLXRoughCfgPPO_HOI())

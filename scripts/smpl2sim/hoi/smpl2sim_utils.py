@@ -273,7 +273,7 @@ def from_retarget_to_simulation(npz_path, mj_model, mj_data, skeleton_tree, devi
         'obj_pos': obj_pos,  # numpy (T, 3)
         'obj_rot': obj_quat[:, [1, 2, 3, 0]],  # numpy (T, 4) [w, x, y, z]
         'obj_pos_vel': obj_pos_vel,
-        # 'obj_rot_vel': ... (如果有需要再计算，注意四元数顺序)
+        'obj_rot_vel': angular_velocity_world_from_quat_xyzw(obj_quat[:, [1, 2, 3, 0]], dt),
         'name': 'unknown'  # 外部填充
     }
 
