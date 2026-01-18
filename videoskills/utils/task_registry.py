@@ -105,7 +105,7 @@ class TaskRegistry():
 
         return env, env_cfg
 
-    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_dir=None) -> Tuple[OnPolicyRunner, LeggedRobotCfgPPO]:
+    def make_alg_runner(self, env, name=None, args=None, train_cfg=None, log_dir=None, eval_mode=False) -> Tuple[OnPolicyRunner, LeggedRobotCfgPPO]:
         """ Creates the training algorithm  either from a registered namme or from the provided config file.
 
         Args:
@@ -141,7 +141,10 @@ class TaskRegistry():
 
         log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
         if log_dir is None:
-            log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
+            if eval_mode:
+                log_dir = os.path.join(log_root, args.load_run)
+            else:
+                log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
 
         use_amp_runner = train_cfg.runner.use_amp_runner  # ✅ 从 cfg 中读取
         if train_cfg.runner.run_name.split('_')[-1] == 'test':

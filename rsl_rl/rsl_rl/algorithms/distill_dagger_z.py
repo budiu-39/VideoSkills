@@ -133,11 +133,14 @@ def build_student(env, train_cfg, device):
     # critic_backbone = MLPBackbone(in_dim=encoder_obs_dim, hidden=(512, 512)).to(device)
 
     # 4) 实例化新版 ActorCritic（它会在内部做 obs RMS、actor_head/critic_head 与分布）
-    policy_cfg = class_to_dict(train_cfg.policy)
+    if cfg.res_act:
+        num_action = z_dim + action_dim
+    else:
+        num_action = z_dim
     student = ActorCritic(
         num_actor_obs=encoder_obs_dim,  # 保持兼容
         num_critic_obs=encoder_obs_dim,
-        num_actions=z_dim,
+        num_actions=num_action,
         d_model=512,
         init_noise_std=init_std,
         fixed_std=fixed_std,

@@ -89,7 +89,6 @@ def build_local_templates_by_body(xml_path, samples_per_geom=1500, drop_world=Tr
     for g in range(mj_model.ngeom):
         gtype = geom_type[g]
         size  = geom_size[g]
-        pts_g = None  # 在 geom 局部坐标系下的点
 
         if gtype == mujoco.mjtGeom.mjGEOM_SPHERE:
             r = float(size[0])
@@ -227,6 +226,7 @@ def contacts_from_xml_pointcloud(
     B = len(sk2mj)
     contact = np.zeros((T, B), dtype=np.float32)
     ig      = np.zeros((T, B, 3), dtype=np.float32)
+    ig_indices = np.zeros((T, B), dtype=np.int64)
 
     mj_data = mujoco.MjData(mj_model)
     it = range(T)
@@ -264,6 +264,7 @@ def contacts_from_xml_pointcloud(
         d, idx = tree.query(body_pos_for_ig, k=1, workers=workers)       # (B,)
         nn = obj_pts_world[t][idx]                                  # (B,3)
         ig[t] = body_pos_for_ig - nn                                     # (B,3)
+        ig_indices[t] = idx
 
         # —— 各 body 最小距离（对“几何点云”），n_bodies 用 mj_model.nbody 作为全局索引空间 ——
         # 研究下这里
@@ -314,7 +315,7 @@ def contacts_from_xml_pointcloud(
         # 中性：剩下的自然是 0
         contact[t, :] = tristate  # 新增：-1/0/+1
 
-    return contact, ig
+    return contact, ig, ig_indices
 
 
 def quick_viz_ig_cg(
@@ -419,7 +420,7 @@ def build_qpos_seq_from_state(mj_model, new_sk_state):
 
     # 其余关节（xyzw -> 轴角）
     local_quat = new_sk_state.local_rotation[:, 1:].reshape(T, -1, 4).numpy()    # (T, J-1, 4) xyzw
-    dof_axis_angle = sRot.from_quat(local_quat.reshape(-1, 4)).as_rotvec().reshape(T, -1)  # (T, 3*(J-1))
+    dof_axis_angle = sRot.from_quat(local_quat.reshape(-1, 4)).as_euler('xyz').reshape(T, -1)  # (T, 3*(J-1))
 
     assert qpos_seq.shape[1] == 7 + dof_axis_angle.shape[1], \
         f"nq mismatch: model.nq={qpos_seq.shape[1]}, dof_len={7 + dof_axis_angle.shape[1]}"
@@ -839,7 +840,7 @@ def quick_viz_penetration_vhacd(
         world_pts = local_pts @ rot.T + body_pos_frame[sk_idx] # 注意变量名
 
         color = [180, 180, 180, 60]  # 正常灰色透明
-        if pen_depth_row is not None and pen_depth_row[sk_idx] > 0.005:
+        if pen_depth_row is not None and pen_depth_row[sk_idx] > 0:
             color = [255, 0, 0, 180]  # 穿模红色
 
         # 修复：将 world_cloud 改为 world_pts
@@ -980,7 +981,7 @@ def penetration_depth_vhacd_cuda(
         pts_in_obj = torch.matmul(pts_rel, R_obj)
 
         # 5. AABB Broad Phase
-        padding = 0.005
+        padding = 0.1
         in_aabb = (
                 (pts_in_obj[..., 0] >= obj_aabb_min[0] - padding) & (pts_in_obj[..., 0] <= obj_aabb_max[0] + padding) &
                 (pts_in_obj[..., 1] >= obj_aabb_min[1] - padding) & (pts_in_obj[..., 1] <= obj_aabb_max[1] + padding) &
@@ -1006,16 +1007,23 @@ def penetration_depth_vhacd_cuda(
 
             # V-HACD Narrow Phase
             for (n_cuda, d_cuda) in planes_cuda:
-                # n: (F, 3), d: (F,)
+                # 计算点到当前凸包所有平面的有符号距离
                 dists = active_pts @ n_cuda.T + d_cuda
+
+                # 【简化逻辑】严格判定：必须在所有平面的背面 (距离 < 0) 才算穿模
                 is_inside = torch.all(dists < 0, dim=1)
 
                 if is_inside.any():
-                    # depth = -max(dist)
-                    depths = -torch.max(dists[is_inside], dim=1)[0]
-                    # Update max penetration
-                    current = active_pen[is_inside]
-                    active_pen[is_inside] = torch.maximum(current, depths)
+                    # 1. 找出在该凸包内，离表面最近的那个距离 (是负数，例如 -0.005)
+                    #    因为在凸包内 d 都是负的，max(d) 就是最接近 0 的那个 d
+                    max_neg_dist = torch.max(dists[is_inside], dim=1)[0]
+
+                    # 2. 转换为正的深度值 (例如 -(-0.005) = 0.005)
+                    current_depths = -max_neg_dist
+
+                    # 3. 更新该点的最大穿模深度 (可能同时在多个凸包内，取最大的那个深度)
+                    old_val = active_pen[is_inside]
+                    active_pen[is_inside] = torch.maximum(old_val, current_depths)
 
             # Scatter Reduce (Max pooling to joints)
             flat_idx = active_t * B + active_b
@@ -1030,3 +1038,132 @@ def penetration_depth_vhacd_cuda(
 
     # 合并结果
     return torch.cat(pen_seq_chunks, dim=0)
+
+
+import trimesh
+import torch
+import numpy as np
+
+
+def debug_viz_vhacd_cuda_step(
+        t, body_pos_seq, body_rot_seq, all_body_local_pts, body_indices,
+        obj_pos_seq, obj_rot_seq, obj_aabb_min, obj_aabb_max,
+        obj_mesh_path, hulls_template, device='cuda'
+):
+    print(f"\n--- Debugging Frame {t}: Red = Inside Hull, Blue = Outside ---")
+
+    # 1. 坐标变换：将身体点云变换到物体局部坐标系
+    b_pos = body_pos_seq[t].unsqueeze(0)
+    b_rot = body_rot_seq[t].unsqueeze(0)
+    o_pos = obj_pos_seq[t]
+    o_rot = obj_rot_seq[t]
+    N_pts = all_body_local_pts.shape[0]
+
+    idx_pos = body_indices.view(1, -1, 1).expand(1, -1, 3)
+    idx_rot = body_indices.view(1, -1, 1).expand(1, -1, 4)
+    batch_pts_pos = torch.gather(b_pos, 1, idx_pos)
+    batch_pts_quat = torch.gather(b_rot, 1, idx_rot)
+
+    batch_rot_mat = quat_to_rotmat_torch(batch_pts_quat)
+    pts_local_exp = all_body_local_pts.view(1, N_pts, 3, 1)
+    pts_world = (batch_rot_mat @ pts_local_exp).squeeze(-1) + batch_pts_pos
+
+    R_obj = quat_to_rotmat_torch(o_rot)
+    pts_rel = pts_world - o_pos.view(1, 1, 3)
+    pts_in_obj = torch.matmul(pts_rel, R_obj).squeeze(0)  # (N, 3)
+
+    # 2. 计算穿模状态
+    # (A) AABB 粗筛
+    padding = 0.01  # 稍微大一点，保证蓝色点能显示全
+    in_aabb_mask = (
+            (pts_in_obj[:, 0] >= obj_aabb_min[0] - padding) & (pts_in_obj[:, 0] <= obj_aabb_max[0] + padding) &
+            (pts_in_obj[:, 1] >= obj_aabb_min[1] - padding) & (pts_in_obj[:, 1] <= obj_aabb_max[1] + padding) &
+            (pts_in_obj[:, 2] >= obj_aabb_min[2] - padding) & (pts_in_obj[:, 2] <= obj_aabb_max[2] + padding)
+    )
+
+    # (B) Narrow Phase: 判断是否在 Hull 内部
+    is_penetrating = torch.zeros_like(in_aabb_mask, dtype=torch.bool)
+    margin = 0.000  # 5mm 宽容度
+
+    # 只有在 AABB 内的点才需要算
+    if in_aabb_mask.any() and hulls_template:
+        candidates = pts_in_obj[in_aabb_mask]
+
+        # 遍历所有凸包
+        for h in hulls_template:
+            # 兼容性处理：Mesh 对象
+            if isinstance(h, trimesh.Trimesh):
+                n = torch.tensor(h.face_normals, device=device, dtype=torch.float32)
+                v = torch.tensor(h.vertices[h.faces[:, 0]], device=device, dtype=torch.float32)
+                d = -torch.sum(n * v, dim=1)
+
+                # dist < margin 表示在内部
+                dists = candidates @ n.T + d
+                inside_hull = torch.all(dists < margin, dim=1)
+
+                # 更新全局 mask
+                # 需要将 candidates 的局部索引映射回全局索引
+                global_indices = torch.nonzero(in_aabb_mask).squeeze()
+                if global_indices.dim() == 0: global_indices = global_indices.unsqueeze(0)
+                is_penetrating[global_indices[inside_hull]] = True
+
+    # 3. 分类点云
+    pts_np = pts_in_obj.detach().cpu().numpy()
+    mask_pen_np = is_penetrating.detach().cpu().numpy()  # 真正的穿模
+    mask_aabb_np = in_aabb_mask.detach().cpu().numpy()  # 在 AABB 附近
+
+    # 🔴 红色：穿模点 (Inside Hull)
+    red_pts = pts_np[mask_pen_np]
+
+    # 🔵 蓝色：在 AABB 内，但没穿模 (Near but Outside Hull)
+    # 逻辑：在 AABB 里 AND 不在 Hull 里
+    blue_mask = mask_aabb_np & (~mask_pen_np)
+    blue_pts = pts_np[blue_mask]
+
+    # ⚪ 灰色：在 AABB 外 (Far away)
+    grey_mask = ~mask_aabb_np
+    grey_pts = pts_np[grey_mask]
+
+    # 4. 构建场景
+    scene = trimesh.Scene()
+
+    # (A) 绿色物体参考 (高透明)
+    try:
+        mesh = trimesh.load(obj_mesh_path, force='mesh')
+        mesh.visual.face_colors = [0, 255, 0, 50]
+        scene.add_geometry(mesh)
+    except:
+        pass
+
+    # (B) 黄色凸包 (线框参考)
+    if hulls_template and isinstance(hulls_template[0], trimesh.Trimesh):
+        for h in hulls_template:
+            h_viz = h.copy()
+            h_viz.visual.face_colors = [255, 255, 0, 50]
+            scene.add_geometry(h_viz)
+
+    # (C) 绘制点云
+    # 1. 红色点 (穿模) - 不降采样，全部显示
+    if len(red_pts) > 0:
+        scene.add_geometry(trimesh.points.PointCloud(red_pts, colors=[255, 0, 0, 255]))
+        print(f"[Viz] RED points (Penetrating): {len(red_pts)}")
+
+    # 2. 蓝色点 (附近) - 稍微降采样
+    if len(blue_pts) > 0:
+        # if len(blue_pts) > 5000: blue_pts = blue_pts[::2]
+        scene.add_geometry(trimesh.points.PointCloud(blue_pts, colors=[0, 0, 255, 200]))
+        print(f"[Viz] BLUE points (Near but safe): {len(blue_pts)}")
+
+    # 3. 灰色点 (远处) - 大幅降采样，只作为姿态参考
+    if len(grey_pts) > 0:
+        if len(grey_pts) > 2000: grey_pts = grey_pts[::int(len(grey_pts) / 2000)]
+        scene.add_geometry(trimesh.points.PointCloud(grey_pts, colors=[100, 100, 100, 50]))
+
+    scene.add_geometry(trimesh.creation.axis(axis_length=0.1))
+
+    print("Opening Debug Window...")
+    print("  🔴 RED  = Inside Hull (Penetrating)")
+    print("  🔵 BLUE = Inside AABB but Outside Hull")
+    print("  ⚪ GREY = Far away")
+
+    scene.show(title=f"Red/Blue Penetration Check Frame {t}")

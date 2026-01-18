@@ -518,7 +518,7 @@ class MotionLib():
         """
         import os
         parts = filepath.split(os.sep)
-        if 'AMASS' or 'amass' in parts:
+        if 'AMASS' in parts or 'amass' in parts:
             subset = parts[-3]
             subfolder = parts[-2]
             filename = os.path.splitext(parts[-1])[0]

@@ -22,6 +22,7 @@ class MotionLibHoi(MotionLib):
         self.ig_list = []
         self.contact_robot_list = []
         self.collision_tag_list = []
+        self.ig_index_list = []
 
         # 2. 调用基类构造函数
         # 注意：这会触发 self._load_motions -> self._sort_motions_by_length
@@ -68,14 +69,13 @@ class MotionLibHoi(MotionLib):
             curr_motion.dof_vels = self._compute_motion_dof_vels_vectorized(
                 curr_motion, cpu_dof_body_ids, cpu_dof_offsets
             )
-
+            num_f = curr_motion.tensor.shape[0]
             if "object" in payload:
                 objd = payload["object"]
                 hoi = payload["interaction"]
                 self._has_object = True
             else:
                 # 伪造全零物体数据 (Stage 1 使用)
-                num_f = curr_motion.tensor.shape[0]
                 objd = {
                     "obj_pos": np.zeros((num_f, 3)),
                     "obj_rot": np.tile(np.array([0, 0, 0, 1]), (num_f, 1)),  # 单位四元数
@@ -86,10 +86,12 @@ class MotionLibHoi(MotionLib):
                 hoi = {
                     "ig": np.zeros((num_f, 52, 3)),  # 假设 52 个 body
                     "contact_robot": np.zeros((num_f, 52)),
-                    "collision_tag": np.zeros(num_f, dtype=bool)
+                    "collision_tag": np.zeros((num_f, 52)),
+                    "ig_index": np.zeros((num_f, 52), dtype=np.int64)  # [NEW] 伪造索引
                 }
 
             to_f32 = lambda a: torch.as_tensor(a, dtype=torch.float32)
+            to_long = lambda a: torch.as_tensor(a, dtype=torch.long)
 
             self._obj_pos_list.append(to_f32(objd["obj_pos"]))
             self._obj_rot_list.append(to_f32(objd["obj_rot"]))
@@ -97,7 +99,14 @@ class MotionLibHoi(MotionLib):
             self._obj_rot_vel_list.append(to_f32(objd["obj_rot_vel"]))
             self.ig_list.append(to_f32(hoi["ig"]))
             self.contact_robot_list.append(to_f32(hoi["contact_robot"]))
-            self.collision_tag_list.append(torch.as_tensor(hoi["collision_tag"], dtype=torch.bool).view(-1))
+            self.collision_tag_list.append(torch.as_tensor(hoi["collision_tag"], dtype=torch.bool))
+            if "ig_index" in hoi:
+                self.ig_index_list.append(to_long(hoi["ig_index"]))
+                self.has_ig_index = True
+            else:
+                # 如果旧数据没有 ig_index，默认全0
+                self.ig_index_list.append(torch.zeros((num_f, 52), dtype=torch.long))
+                self.has_ig_index = False
             self._motion_obj_names.append(objd.get("name", "unknown"))
 
             # 基础信息存储
@@ -145,6 +154,7 @@ class MotionLibHoi(MotionLib):
             self.contact_robot_list = [self.contact_robot_list[i] for i in arg_indices]
             self.collision_tag_list = [self.collision_tag_list[i] for i in arg_indices]
             self._motion_obj_names = [self._motion_obj_names[i] for i in arg_indices]
+            self.ig_index_list = [self.ig_index_list[i] for i in arg_indices]
 
         # 3. 核心修复：将 list 转换为 torch.Tensor，确保基类 roll() 不报错
         self._motion_lengths = torch.tensor(self._motion_lengths, device=self._device, dtype=torch.float32)
@@ -164,6 +174,7 @@ class MotionLibHoi(MotionLib):
         self.ig = torch.cat(self.ig_list, dim=0).to(dev)
         self.contact_robot = torch.cat(self.contact_robot_list, dim=0).to(dev)
         self.collision_tag = torch.cat(self.collision_tag_list, dim=0).to(dev)
+        self.ig_index = torch.cat(self.ig_index_list, dim=0).to(dev)
 
         # 构建物体词表
         uniq_names = sorted(set(self._motion_obj_names))
@@ -220,6 +231,8 @@ class MotionLibHoi(MotionLib):
             "obj_rot_vel": self.obj_rot_vel[f0l],
             "ig": self.ig[f0l],
             "contact_robot": self.contact_robot[f0l],
+            "ig_index": self.ig_index[f0l],  # [NEW] 返回索引
+            "collision_tag": self.collision_tag[f0l],
         }
 
     def sample_motions_by_object(self, object_ids: torch.Tensor) -> torch.Tensor:

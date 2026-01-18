@@ -7,6 +7,7 @@ from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
 from videoskills.utils.torch_utils import to_torch
 import trimesh
+from isaacgym import gymtorch, gymapi, gymutil
 from videoskills.utils.motion_lib_hoi import MotionLibHoi
 import time
 from videoskills.utils.torch_utils import calc_heading_quat_inv, calc_heading_quat, quat_to_tan_norm, quat_rotate
@@ -14,7 +15,7 @@ from videoskills.utils.torch_utils import to_torch, quat_mul, quat_conjugate, qu
 from videoskills.envs.base.legged_robot_imi import (
     compute_humanoid_observations_jit,
 )
-
+from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
 
 class LeggedRobotHoi(LeggedRobotImi):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -36,6 +37,9 @@ class LeggedRobotHoi(LeggedRobotImi):
             "object": 0,
             "ig": 0,
             "contact": 0,
+            "cg_hand": 0,
+            "cg_body": 0,
+            "cg_no_contact": 0,
             "total": 0,
         }
         self.reward_subterm_sums = {}
@@ -185,7 +189,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         return
 
     def _init_buffers(self):
-        self.contact_reset = torch.zeros((self.num_envs,2), device=self.device, dtype=torch.long)
+        self.contact_reset = torch.zeros((self.num_envs,4), device=self.device, dtype=torch.long)
         self.kinematic_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.ig_reset = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         self.ig = torch.zeros((self.num_envs, self.num_bodies, 3), device=self.device, dtype=torch.float)
@@ -289,19 +293,28 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.ref_contact= hoi_state["contact_robot"]
 
         # 要做的是 环境数 * 人体点数 * 3   对于物体做一个 view 先把变成 环境数 * 物体点数，3
-        # ref_obj_rot_extend = hoi_state['obj_rot'].unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
-        object_points_extend = self.object_points[self.env_object_ids].unsqueeze(0).view(-1, 3)
-        # ref_obj_points = (quat_rotate(ref_obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3)
-        #               + self.ref_obj_pos.unsqueeze(1))
+        if self._motion_lib.has_ig_index:
+            ref_ig_idx = hoi_state["ig_index"]
+            batch_obj_points = self.object_points[self.env_object_ids]
+            batch_indices = torch.arange(self.num_envs, device=self.device).unsqueeze(1).expand(-1, self.num_bodies)
+            target_points_local = batch_obj_points[batch_indices, ref_ig_idx, :]
+            # 变换到世界坐标系 P_world = R_curr * P_local + T_curr
+            curr_obj_rot_exp = self.obj_quat.unsqueeze(1).expand(-1, self.num_bodies, -1)
+            q_flat = curr_obj_rot_exp.reshape(-1, 4)  # (Batch * 52, 4)
+            v_flat = target_points_local.reshape(-1, 3)  # (Batch * 52, 3)
+            v_rot_flat = quat_rotate(q_flat, v_flat)  # (Batch * 52, 3)
+            curr_obj_pos_exp = self.obj_pos.unsqueeze(1)  # (Batch, 1, 3)
+            target_points_world = v_rot_flat.view(self.num_envs, self.num_bodies, 3) + curr_obj_pos_exp
+            ig = target_points_world - self.body_pos.view(self.num_envs, self.num_bodies, 3)
+            self.ig = ig.detach()
 
-        # ref_ig = compute_sdf(self.ref_body_pos.view(-1, 52, 3), ref_obj_points).view(-1, 3)
-        # self.ref_ig = ref_ig.detach().view(self.num_envs, -1, 3)
+        else:
+            object_points_extend = self.object_points[self.env_object_ids].unsqueeze(0).view(-1, 3)
+            obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
+            obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
+            ig = -compute_sdf(self.body_pos.view(-1, 52, 3), obj_points)  # 人到物体
+            self.ig = ig.detach().view(self.num_envs, -1, 3)
 
-        obj_rot_extend = self.obj_quat.unsqueeze(1).repeat(1, self.object_points.shape[1], 1).view(-1, 4)
-        obj_points = (quat_rotate(obj_rot_extend, object_points_extend).view(self.num_envs, -1, 3) + self.obj_pos.unsqueeze(1))
-        ig = -compute_sdf(self.body_pos.view(-1, 52, 3), obj_points).view(-1, 3)  # 人到物体
-
-        self.ig = ig.detach().view(self.num_envs, -1, 3)
 
 
         humanoid_obs = compute_humanoid_observations_jit(self.base_pos, self.base_quat,
@@ -311,166 +324,69 @@ class LeggedRobotHoi(LeggedRobotImi):
         mimic_obs = self.compute_mimic_observations()
 
         if self.cfg.asset.load_object:
-
             obj_obs = compute_obj_observations_jit(self.base_pos, self.base_quat, self.obj_states,
                                                    self.ref_obj_pos, self.ref_obj_rot, self.ref_obj_pos_vel, self.ref_obj_rot_vel)
-
             hoi_obs = compute_hoi_observation_jit(self.base_quat.unsqueeze(1).repeat(1, self.num_bodies, 1), self.ref_ig.view(-1, 3)
-                                                  , ig)
+                                                  , ig.view(-1, 3))
             self.body_contact = torch.any(torch.abs(self.contact_forces[:, self.body_ids]) > 0.1, dim=-1).float()
         else:
             obj_obs = torch.zeros((self.num_envs, 21), device=self.device) # 根据你的 JIT 函数计算出的维度
             hoi_obs = torch.zeros((self.num_envs, self.num_bodies * 6), device=self.device)
             self.body_contact[:] = 0.0
 
+        contact_force_flat = self.contact_forces[:, self.body_ids].view(self.num_envs, -1)
+        # self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, hoi_obs, self.body_contact, self.actions), dim=-1)
+        self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, hoi_obs, self.body_contact, self.ref_contact,
+                                  contact_force_flat, self.actions), dim=-1)
 
-        self.obs_buf = torch.cat((humanoid_obs, mimic_obs, obj_obs, hoi_obs, self.body_contact, self.actions), dim=-1)
-
-
-
-    # @torch.no_grad()
-    def play_hoi(self,
-                 motion_ids: torch.Tensor = None,
-                 random_start: bool = False,
-                 real_time: bool = True,
-                 max_loops: int = 1,
-                 sleep_when_render: bool = True):
-        """
-        HOI 专用播放（仅按参考轨迹逐帧写入人物与物体状态，不走策略网络）。
-
-        Args:
-            motion_ids: [num_envs] 每个 env 播放的轨迹 ID。None 则按对象类别采样。
-            random_start: True 从随机时间开始；False 从 0 开始。
-            real_time: True 尽量按 dt 实时播放（需渲染）；False 尽快跑。
-            max_loops: 轨迹播完循环次数。
-            sleep_when_render: 渲染时是否用 sleep 做节流。
-        """
-        # 播放期：固定、可复现
-        self.eval_mode = False
-        self.early_termination = False
-
-        env_ids = torch.arange(self.num_envs, device=self.device)
-
-        # 1) 选择要播的 motion
-        if motion_ids is None:
-            # HOI: 按对象类别采样对应的动作
-            self.sample_motions(env_ids)                 # -> 填充 self._sampled_motion_ids
-            motion_ids = self._sampled_motion_ids.clone()
-        else:
-            assert motion_ids.shape[0] == self.num_envs
-            self._sampled_motion_ids[:] = motion_ids
-
-        # 2) 初始化到起始帧
-        # self.reset_with_motion_ids(motion_ids, random=random_start)
-        # 清掉提前终止/timeout
-        self.reset_buf[:] = 0
-        self.time_out_buf[:] = 0
-        self.early_termination_buf[:] = 0
-
-        # 3) 获取各 env 轨迹时长(秒)，确定一次 loop 的步数
-        motion_lens = self._motion_lib.get_motion_length(motion_ids)    # [num_envs]
-        steps_per_loop = int(float(motion_lens.max().item()) / self.dt) + 1
-
-        for loop in range(max_loops):
-            # 从头来一遍
-            self.episode_length_buf[:] = 0
-            self._motion_start_times[:] = 0.0
-
-            for step_idx in range(steps_per_loop):
-                # 当前参考时间
-                progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt     # [num_envs]
-                motion_times = progress + self._motion_start_times                     # [num_envs]
-
-                # a) 取人物参考状态
-                motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
-                # b) 取物体参考状态（HOI）
-                hoi = self._motion_lib.get_hoi_state(self._sampled_motion_ids, motion_times)
-
-                # c) 写人物状态（root / dof / key bodies）
-                self._set_env_state(
-                    env_ids=env_ids,
-                    root_pos=motion_state["root_pos"] + self.pos_offset['root'],
-                    root_rot=motion_state["root_rot"],
-                    dof_pos=motion_state["dof_pos"],
-                    root_vel=motion_state["root_vel"],
-                    root_ang_vel=motion_state["root_ang_vel"],
-                    dof_vel=motion_state["dof_vel"],
-                    key_pos=motion_state["key_pos"] + self.pos_offset['body'],
-                    key_rot=motion_state["key_rot"],
-                    key_vel=motion_state["key_vel"],
-                    key_ang_vel=motion_state["key_ang_vel"]
-                )
-
-                # self._reset_obj(env_ids)   # 直接写入物体状态
-                # d) 写物体状态（到缓存 _target_states）
-                self.obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
-                self.obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
-                self.obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
-                self.obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
-                self.ig[env_ids] = hoi['ig']
-                self.body_contact[env_ids] = hoi['contact_robot']
-
-                # e) 把缓存写回 sim（注意 dof_pos contiguous）
-                self._reset_env_tensors(env_ids)   # LeggedRobotHoi 覆盖版会同时推 actor_root（人物+物体）
-
-                # f) 推仿真 + 渲染（为显示；物理不会主导状态）
-                self.gym.simulate(self.sim)
-                # self.gym.fetch_results(self.sim, True)
-                # if (step_idx % 4) == 0:
-                self.gym.step_graphics(self.sim)
-                self.gym.clear_lines(self.viewer)
-                self.render()
-
-                # g) 推进内部计步器
-                self.episode_length_buf += 1
-
-                # h) 实时节流
-                # if real_time and sleep_when_render and not self.headless:
-                #     target_elapsed = (loop * steps_per_loop + step_idx + 1) * self.dt
-                #     now = time.perf_counter() - t0                #     remain = target_elapsed - now
-                #     if remain > 0:
-                #         time.sleep(min(remain, self.dt))
-
-        # 让最后一帧停顿一下（看清）
-        if not self.headless:
-            time.sleep(0.5)
 
 
     def render(self):
         if not self.headless:
+
+
             max_vis_envs = self.num_envs
             for i in range(max_vis_envs):
                 env_ptr = self.envs[i]  # 当前环境的指针
 
-                body_pos_env = self.body_pos[i].detach().cpu().numpy()  # (52, 3)
-                num_lines = body_pos_env.shape[0]
+                # 画目标 joint 位置
+                T = gymapi.Transform()
+                if hasattr(self, 'ref_body_pos'):
+                    pts = self.ref_body_pos[i][self.no_hand_body_mask].cpu().numpy()  # (K,3)
+                    for p in pts:
+                        T.p.x, T.p.y, T.p.z = map(float, p)
+                        gymutil.draw_lines(self._sphere_geom,
+                                           self.gym,
+                                           self.viewer,
+                                           env_ptr,
+                                           T)
 
-                # ig_env = self.ig[i].cpu().numpy()  # (52, 3)
-                # obj_near_env = body_pos_env + ig_env
-                # #
-                # verts = np.empty((num_lines * 2, 3), dtype=np.float32)
-                # # #
-                # verts[0::2] = body_pos_env
-                # verts[1::2] = obj_near_env
-                #
-                # # 颜色（蓝色）
-                # colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
-                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
+                # 画 ig 线段
+                body_pos_env = self.body_pos[i][self.no_hand_body_mask].detach().cpu().numpy()  # (52, 3)
+                num_lines = body_pos_env.shape[0]
+                ig_env = self.ig[i][self.no_hand_body_mask].cpu().numpy()  # (52, 3)
+                obj_near_env = body_pos_env + ig_env
+                verts = np.empty((num_lines * 2, 3), dtype=np.float32)
+                verts[0::2] = body_pos_env
+                verts[1::2] = obj_near_env
+                colors = np.tile(np.array([[0.2, 0.2, 1.0]], dtype=np.float32), (num_lines * 2, 1))
+                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts, colors)
 
                 # 如果要渲染参考 ig
-                self.ref_ig[i].cpu().numpy()  # (52, 3)
-                obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
+                # self.ref_ig[i].cpu().numpy()  # (52, 3)
+                # obj_near_ref = self.ref_body_pos[i].detach().cpu().numpy() + self.ref_ig[i].cpu().numpy()
+                # verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
+                # verts_ref[0::2] = body_pos_env
+                # verts_ref[1::2] = obj_near_ref
+                # colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
+                # self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
 
-                verts_ref = np.empty((num_lines * 2, 3), dtype=np.float32)
-                verts_ref[0::2] = body_pos_env
-                verts_ref[1::2] = obj_near_ref
-                colors_ref = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float32), (num_lines * 2, 1))
-                self.gym.add_lines(self.viewer, env_ptr, num_lines, verts_ref, colors_ref)
-
+                # 根据接触情况改变 body 颜色
                 for j in range(self.num_bodies):
                     # if j in self.body_no_hand_ids:
                     #     self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                     #                                   gymapi.Vec3(1., 0., 0.))
+                    # self.ref_contact
                     if self.body_contact[i, j] > 0:
                         self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                                                       gymapi.Vec3(1., 0., 0.))
@@ -481,7 +397,7 @@ class LeggedRobotHoi(LeggedRobotImi):
                         self.gym.set_rigid_body_color(env_ptr, 0, j, gymapi.MESH_VISUAL,
                                                       gymapi.Vec3(1., 1., 1.))
 
-        super().render()
+        super(LeggedRobotImi, self).render()
 
     def check_termination(self):
         """ Check if environments need to be reset
@@ -498,7 +414,12 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.ig_reset = torch.zeros_like(self.robot_reset)
         kinematic_reset = torch.logical_or(self.robot_reset, self.object_reset)
         self.kinematic_reset = torch.logical_or(self.ig_reset, kinematic_reset)
-        contact_fail = torch.any(self.contact_reset > 10, dim=-1) & (self.episode_length_buf > 1)
+
+        # 只要任意一种类型失败，该环境就 Reset
+        contact_fails_per_type = self.contact_reset > 10  # 返回 [N, 4] 的 Bool
+        contact_fail_any = torch.any(contact_fails_per_type, dim=-1)  # [N]
+        contact_fail = contact_fail_any & (self.episode_length_buf > 1)
+
         self.early_termination_buf = self.kinematic_reset | contact_fail
         self.time_out_buf = time_out | ref_out
         self.reset_buf = self.time_out_buf | self.early_termination_buf
@@ -520,6 +441,11 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.et_counter["object"] += torch.sum(self.object_reset).item()
             self.et_counter["ig"] += torch.sum(self.ig_reset).item()
             self.et_counter["contact"] += torch.sum(contact_fail).item()
+
+            fails_masked = contact_fails_per_type & contact_fail.unsqueeze(-1)
+            self.et_counter["cg_hand"] += torch.sum(fails_masked[:, 0]).item() + torch.sum(fails_masked[:, 1]).item()
+            self.et_counter["cg_body"] += torch.sum(fails_masked[:, 2]).item()
+            self.et_counter["cg_no_contact"] += torch.sum(fails_masked[:, 3]).item()
 
 
     def compute_reward(self):
@@ -552,6 +478,28 @@ class LeggedRobotHoi(LeggedRobotImi):
         if self.cfg.rewards.only_positive_rewards:
             self.rew_buf[:] = torch.clip(self.rew_buf[:], min=0.)
         return
+
+    def _reward_action_rate(self):
+        # Action Rate Reward: 惩罚动作的剧烈变化 (抖动)
+        # 此时 self.actions 是当前策略输出的动作
+        # self.last_actions 是上一物理步的动作 (在 post_physics_step 此时还未更新为当前动作)
+
+        # 计算动作差的平方
+        action_diff = self.actions - self.last_actions
+        # 对所有关节求和或求平均 (这里使用 sum，对全身抖动敏感)
+        error = torch.sum(torch.square(action_diff), dim=1)
+
+        # 获取灵敏度系数 k，如果没有配置则给默认值 0.1
+        # 建议在 cfg.rewards.task_w 中添加 k_action_rate
+        k_ar = getattr(self.cfg.rewards.task_w, "k_action_rate", 0.1)
+
+        # 计算高斯核奖励: exp(-k * error)
+        rar = torch.exp(-k_ar * error)
+
+        # 记录子项日志
+        self._accum_subterm("Humanoid/ActionRateTerm", rar)
+
+        return rar
 
 
     def _reward_imitation(self):
@@ -629,7 +577,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         energy = torch.abs(torch.multiply(self.dof_force_tensor[:, dof_nohand], self.dof_vel[:, dof_nohand])).sum(dim=-1)
         energy = energy.mul(-w.eg1).exp()
 
-        rb = rp * rr * rpv * rrv * energy
+
+        rar = self._reward_action_rate()
+
+        # [修改] 将 rar 乘入最终奖励 rb
+        # rb = rp * rr * rpv * rrv * energy
+        rb = rp * rr * rpv * rrv * energy * rar
+
         self.robot_reset = (self.ref_body_pos[:, body_nohand] - self.body_pos[:, body_nohand]).norm(dim=-1).mean(dim=-1) > 0.5
         self.robot_reset *= (self.episode_length_buf > 1)
 
@@ -685,7 +639,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         # obj_energy = obj_energy.mul(-w.eg2).exp()
         ro = rop * ror * ropv * rorv
 
-        pos_thresh = 0.50  # 位置阈值（米），按需要调整
+        pos_thresh = 0.40  # 位置阈值（米），按需要调整
         rot_thresh = 1.0  # 朝向阈值（弧度），~57°，按需要调整
 
         pos_err = torch.norm(ref_local_obj_pos - local_obj_pos, dim=-1)  # [N]
@@ -727,7 +681,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         rel_err_ref = sq_err.sqrt() / torch.clamp((ref_ig ** 2).sum(dim=-1).sqrt(), min=0.5)  # (N, B)
         rel_err_cur = sq_err.sqrt() / torch.clamp((ig ** 2).sum(dim=-1).sqrt(), min=0.5)  # (N, B)
 
-        th = 4.0
+        th = 2.0
         reset_ig_1 = rel_err_ref.mean(dim=-1) > th  # (N,)
         reset_ig_2 = rel_err_cur.mean(dim=-1) > th  # (N,)
         self.ig_reset = torch.logical_or(reset_ig_1, reset_ig_2) & (self.episode_length_buf > 1)
@@ -743,22 +697,51 @@ class LeggedRobotHoi(LeggedRobotImi):
         w = self.reward_weights
         ref_human_contact = self.ref_contact  # 0, 1, -1
         human_contact = self.body_contact[:, self.body_ids]
-        left_contact_hand_ids = list(range(17, 33))
 
+        #  情况 1： 参考运动发生了接触， 但当前没有接触
+        left_contact_hand_ids = list(range(17, 33))
+        left_thumb_ids = list(range(30, 33))
+        left_other_ids = list(range(18, 30))
+        right_contact_hand_ids = list(range(36, 52))
+        right_thumb_ids = list(range(49, 52))
+        right_other_ids = list(range(36, 49))
+
+        # ref_left_active = torch.any(self.ref_contact[:, left_contact_hand_ids] > contact_thres, dim=-1).float()
+        # ref_right_active = torch.any(self.ref_contact[:, right_contact_hand_ids] > contact_thres, dim=-1).float()
+        #
+        # curr_l_thumb = torch.any(human_contact[:, left_thumb_ids], dim=-1).float()
+        # curr_l_other = torch.any(human_contact[:, left_other_ids], dim=-1).float()
+        #
+        # curr_r_thumb = torch.any(human_contact[:, right_thumb_ids], dim=-1).float()
+        # curr_r_other = torch.any(human_contact[:, right_other_ids], dim=-1).float()
+        # # 奖励公式：只有当 Ref 激活时，才奖励 (拇指 * 其他手指)
+        # # 这是一个非常强的“对握”信号。如果没有对握，奖励为 0。
+        # # 对握奖励
+        # rcg_left = ref_left_active * (curr_l_thumb * curr_l_other) + (1 - ref_left_active)
+        # rcg_right = ref_right_active * (curr_r_thumb * curr_r_other) + (1 - ref_right_active)
+        #
+        # rcg_hand = rcg_left * rcg_right
+        #
+        # left_reset_val = torch.zeros_like(ref_left_active).unsqueeze(-1)
+        # right_reset_val = torch.zeros_like(ref_right_active).unsqueeze(-1)
+
+        # 软性接触奖励
         ref_left_contact_hand = ref_human_contact[:, left_contact_hand_ids]
         ref_left_contact_hand_any = torch.any(ref_left_contact_hand > contact_thres, dim=-1).float()
         left_hand_contact = human_contact[:, left_contact_hand_ids].clone()
         left_hand_contact_any = torch.any(left_hand_contact > contact_thres, dim=-1, keepdim=True).float()
 
+        ref_human_contact[:, left_contact_hand_ids] = ref_left_contact_hand_any.unsqueeze(-1)
+        # 一但接触就鼓励整个手接触
         ecg_left = (((ref_left_contact_hand_any.unsqueeze(-1) > contact_thres) * torch.abs(
             left_hand_contact - ref_left_contact_hand_any.unsqueeze(-1))).mean(dim=-1))
         rcg_left = 0.5 * (1 + torch.exp(-ecg_left * w.cg_hand)) * (ref_left_contact_hand_any) + (
                     1 - ref_left_contact_hand_any)
 
-        right_contact_hand_ids = list(range(36, 52))
-
         ref_right_contact_hand = ref_human_contact[:, right_contact_hand_ids]
         ref_right_contact_hand_any = torch.any(ref_right_contact_hand > contact_thres, dim=-1).float()
+        # if any right hand contact in reference, set whole hand contact to 1
+        ref_human_contact[:, right_contact_hand_ids] = ref_right_contact_hand_any.unsqueeze(-1)
         right_hand_contact = human_contact[:, right_contact_hand_ids].clone()
         right_hand_contact_any = torch.any(right_hand_contact > contact_thres, dim=-1, keepdim=True).float()
 
@@ -767,38 +750,67 @@ class LeggedRobotHoi(LeggedRobotImi):
         rcg_right = 0.5 * (1 + torch.exp(-ecg_right * w.cg_hand)) * (ref_right_contact_hand_any) + (
                     1 - ref_right_contact_hand_any)
 
-        contact_reset = torch.cat([
-            torch.abs(
-                ref_left_contact_hand_any.unsqueeze(-1) - left_hand_contact_any) * ref_left_contact_hand_any.unsqueeze(
-                -1),
-            torch.abs(ref_right_contact_hand_any.unsqueeze(
-                -1) - right_hand_contact_any) * ref_right_contact_hand_any.unsqueeze(-1),
-        ], dim=-1)
-
         rcg_hand = rcg_left * rcg_right
 
+        left_reset_val = torch.abs(
+            ref_left_contact_hand_any.unsqueeze(-1) - left_hand_contact_any) * ref_left_contact_hand_any.unsqueeze(-1)
+        right_reset_val = torch.abs(
+            ref_right_contact_hand_any.unsqueeze(-1) - right_hand_contact_any) * ref_right_contact_hand_any.unsqueeze(
+            -1)
+
+
+        # 计算身体其他部位接触误差
         other_ids = [i for i in range(len(self.body_ids)) if
                      i not in left_contact_hand_ids and i not in right_contact_hand_ids]
+
+
         ref_other_contact = ref_human_contact[:, other_ids]
         other_contact = human_contact[:, other_ids]
         ecg_other = ((torch.abs(other_contact - ref_other_contact) * (ref_other_contact > contact_thres))).mean(dim=-1)
         rcg_other = torch.exp(-ecg_other * w.cg_other)
 
+        contact_error_joint = (torch.abs(other_contact - ref_other_contact) * (ref_other_contact > contact_thres))
+        body_reset_val = torch.any(contact_error_joint, dim=-1, keepdim=True).float()
+
+        if not getattr(self.cfg.early_termination, "reset_on_body_contact", False):
+            body_reset_val[:] = 0.0
+
+        # 情况 2：参考运动没有接触 < 0，但当前发生了接触（对应
+        # 这个是参考运动没有接触，但当前发生了接触的惩罚，这里不应该考虑脚！因为脚会和地面接触
+        foot_names = ['L_Ankle', 'L_Toe', 'R_Ankle', 'R_Toe']
+        foot_ids = [i for i, name in enumerate(self.body_names) if any(fn in name for fn in foot_names)]
+        no_contact_ids = [i for i in range(len(self.body_ids)) if i not in foot_ids]
+
         no_contact = torch.abs(human_contact) < contact_thres
-        ecg_all = (torch.abs(no_contact + ref_human_contact) * (ref_human_contact < -contact_thres)).mean(dim=-1)
-        rcg_all = torch.exp(-ecg_all * w.cg_all)
+        ecg_all = (torch.abs(no_contact + ref_human_contact) * (ref_human_contact < -contact_thres))[:, no_contact_ids].mean(dim=-1)
+        not_contact_error_joint = (torch.abs(no_contact + ref_human_contact) * (ref_human_contact < -contact_thres))[:, no_contact_ids]
+        not_contact_reset_val = torch.any(not_contact_error_joint, dim=-1, keepdim=True).float()
+        rcg_no_contact = torch.exp(-ecg_all * w.cg_all)
+
+        if not getattr(self.cfg.early_termination, "reset_on_no_contact", False):
+            not_contact_reset_val[:] = 0.0
+        current_reset_vec = torch.cat([
+            left_reset_val,
+            right_reset_val,
+            body_reset_val,
+            not_contact_reset_val
+        ], dim=-1)
+
+        # 更新计数器 (逻辑：如果当前帧有错误，计数器累加；如果当前帧无错误，计数器清零)
+        # 这是一个常用的 Trick，用来计算“连续 N 帧错误”
+        self.contact_reset = (self.contact_reset + current_reset_vec) * current_reset_vec
 
         contact_all = self.contact_forces.clone().abs().sum(dim=-1).sum(dim=-1)
         contact_energy = contact_all.pow(2).mul(-w.eg3).exp()
 
-        rcg = rcg_hand * rcg_other * rcg_all * contact_energy
-        self.contact_reset = (self.contact_reset + contact_reset) * contact_reset
+        rcg = rcg_hand * rcg_other * rcg_no_contact * contact_energy
+
 
         self._accum_subterm("ContactGraph/LeftHandTerm", rcg_left)
         self._accum_subterm("ContactGraph/RightHandTerm", rcg_right)
         self._accum_subterm("ContactGraph/HandsCombinedTerm", rcg_hand)
         self._accum_subterm("ContactGraph/OtherBodiesTerm", rcg_other)
-        self._accum_subterm("ContactGraph/NoContactConsistencyTerm", rcg_all)
+        self._accum_subterm("ContactGraph/NoContactConsistencyTerm", rcg_no_contact)
         self._accum_subterm("ContactGraph/ContactEnergyTerm", contact_energy)
 
         return rcg
@@ -1005,13 +1017,31 @@ class LeggedRobotHoi(LeggedRobotImi):
 
             self.physics_state_buffer[mid] = full_state_expanded
 
+            frames = torch.arange(motion_len_frames, device=self.device, dtype=torch.float)
             scores = torch.zeros((motion_len_frames, self.physics_init_candidates), device=self.device,
-                                 dtype=torch.float) + 0.1
+                                 dtype=torch.float)
 
-            # 【关键修改】
-            # 给 Candidate 0 一个"及格分" (例如 50.0，相当于存活了 1.5秒)
-            # 这意味着如果仿真出的状态能存活 > 50帧，它就比原始参考更具吸引力
-            scores[:, 0] = 50.0
+            # 【核心修复】
+            # 1. 计算期望的目标分数：当前帧 + 30
+            target_scores = frames + 30.0
+
+            # 2. 设定分数的物理上限：动作总长度
+            # 注意：这里减去 0.1 是为了制造 "可被超越" 的空间。
+            # 如果物理仿真完美跑完全程，它的 Score 会是 motion_len_frames (例如 100)。
+            # 而我们将初始分限制在 99.9。
+            # 这样 100 > 99.9，物理数据就能成功替换掉参考数据。
+            max_index = float(motion_len_frames - 1)
+            scores = torch.clamp(target_scores, max=max_index - 0.1).repeat(self.physics_init_candidates, 1).T
+
+            # --- 碰撞处理逻辑 (保持不变) ---
+            collision_tag = hoi_state["collision_tag"]
+            collision_any = (collision_tag > 0).any(dim=1)
+
+            # 碰撞帧分数降为当前帧 (即剩余寿命=0)
+            scores[collision_any, 0] = frames[collision_any]
+
+            if collision_any[0].item():
+                scores[:, 0] = frames
 
             self.physics_state_scores[mid] = scores
 
@@ -1022,28 +1052,64 @@ class LeggedRobotHoi(LeggedRobotImi):
         Resets environment using states from the Physics State Buffer.
         Also updates the buffer with current valid states from environments that lived long enough.
         """
-        # 1. Update Buffer with current states from surviving environments
-        # Filter envs that have survived > 64 steps
-        cond_survived = self.episode_length_buf[env_ids] > 64
-        # 这里的随机概率可以调高一点，因为我们现在有优胜劣汰机制了，不用担心 Buffer 被垃圾数据填满
+        # --- 1. 准备数据 ---
+
+        # 计算当前物理状态对应的绝对帧索引 (Absolute Frame Index)
+        # 这代表了当前 agent "走到了哪里"
+        curr_motion_times = self._motion_start_times[env_ids] + self.episode_length_buf[env_ids] * self.dt
+        curr_frames = (curr_motion_times / self.dt).long()
+
+        # 计算起始帧索引 (Start Frame Index)
+        env_start_frames = (self._motion_start_times[env_ids] / self.dt).long()
+
+        env_mids = self._sampled_motion_ids[env_ids]
+        N = env_ids.shape[0]
+
+        # --- 2. 准入筛选 (Entry Condition) ---
+        # 逻辑：比较 [当前绝对帧] vs [Buffer中该轨迹起始帧记录的最低绝对帧]
+        # 如果我从 Frame 10 出发，现在走到了 Frame 12，而 Buffer 里记录从 Frame 10 出发的最差家伙只走到了 Frame 11
+        # 那么 12 > 11，我有资格进行更新。
+
+        thresholds = torch.zeros(N, device=self.device, dtype=torch.float)
+
+        unique_mids = torch.unique(env_mids)
+        for mid_tensor in unique_mids:
+            mid = int(mid_tensor.item())
+            mask = (env_mids == mid_tensor)
+
+            # 获取 Start Frames
+            start_f = env_start_frames[mask]
+            max_frame = self.physics_state_scores[mid].shape[0]
+            start_f = torch.clamp(start_f, 0, max_frame - 1)
+
+            # 获取 Start Frame 处的 Candidate Scores (即它们走到了哪一帧)
+            start_scores = self.physics_state_scores[mid][start_f]
+
+            # 阈值 = 起始帧处最差的结束成绩
+            thresholds[mask] = start_scores.min(dim=1).values
+
+        # 筛选：当前走到的位置 > 起始位置记录的门槛
+        # 并且为了稳定性，仍然保留一个最小存活步数 (比如32步)，防止刚出生就覆盖
+        cond_survived = (self.episode_length_buf[env_ids] > 32) & \
+                        (curr_frames.float() > thresholds)
+
         cond_prob = torch.rand(len(env_ids), device=self.device) < 0.25
         survived_mask = cond_survived & cond_prob
+
         update_env_ids = env_ids[survived_mask]
 
         if len(update_env_ids) > 0:
+            # --- 3. 状态抓取 ---
 
             root_offset = self.pos_offset['root'][update_env_ids]
 
-            # Capture Robot State
+            # (状态抓取代码保持不变...)
             curr_root_pos = self.base_pos[update_env_ids] - root_offset
             curr_root_rot = self.base_quat[update_env_ids]
             curr_root_lin_vel = self.root_states[update_env_ids, 7:10]
             curr_root_ang_vel = self.root_states[update_env_ids, 10:13]
-
             curr_dof_pos = self.dof_pos[update_env_ids]
             curr_dof_vel = self.dof_vel[update_env_ids]
-
-            # Capture Object State
             curr_obj_pos = self.obj_pos[update_env_ids] - root_offset
             curr_obj_rot = self.obj_quat[update_env_ids]
             curr_obj_lin_vel = self.obj_vel[update_env_ids]
@@ -1051,68 +1117,56 @@ class LeggedRobotHoi(LeggedRobotImi):
 
             curr_robot_root = torch.cat([curr_root_pos, curr_root_rot, curr_root_lin_vel, curr_root_ang_vel], dim=-1)
             curr_obj_state = torch.cat([curr_obj_pos, curr_obj_rot, curr_obj_lin_vel, curr_obj_ang_vel], dim=-1)
-            captured_state = torch.cat(
-                [curr_robot_root, curr_dof_pos, curr_dof_vel, curr_obj_state], dim=-1)
+            captured_state = torch.cat([curr_robot_root, curr_dof_pos, curr_dof_vel, curr_obj_state], dim=-1)
 
-            curr_motion_ids = self._sampled_motion_ids[update_env_ids]
-            curr_motion_times = self._motion_start_times[update_env_ids] + self.episode_length_buf[
-                update_env_ids] * self.dt
-            curr_frames = (curr_motion_times / self.dt).long()
+            # 获取筛选后的 motion id 和 frame
+            batch_mids = env_mids[survived_mask]
+            batch_frames = curr_frames[survived_mask]
 
-            # --- Dynamic Trim Logic ---
-            # Formula: 16 / length * 32 = 512 / length
-            # Note: length > 64 checked above, so division is safe.
-            curr_lengths = self.episode_length_buf[update_env_ids].float()
+            # --- 核心修改：Score = 当前绝对帧索引 ---
+            # 含义：我证明了这个状态至少能活到 batch_frames 这一帧
+            # 在同一帧 t 进行比较时，batch_frames 越大，说明该轨迹的 [剩余寿命 = batch_frames - t] 越长
+            batch_scores = batch_frames.float()
 
-            curr_scores = self.episode_length_buf[update_env_ids].float() # (N_update,)
-
-            curr_trim_frames = (512.0 / curr_lengths).long()
-
-            unique_mids = torch.unique(curr_motion_ids)
-            for mid_tensor in unique_mids:
+            # --- 4. 写入 Buffer ---
+            unique_update_mids = torch.unique(batch_mids)
+            for mid_tensor in unique_update_mids:
                 mid = int(mid_tensor.item())
-                mid_mask = (curr_motion_ids == mid)
+                mid_mask = (batch_mids == mid)
 
-                batch_frames = curr_frames[mid_mask]
-                batch_states = captured_state[mid_mask]
-                batch_scores = curr_scores[mid_mask]  # 当前这批数据的分数
-                batch_trim = curr_trim_frames[mid_mask]
+                final_frames = batch_frames[mid_mask]
+                final_states = captured_state[mid_mask]
+                final_new_scores = batch_scores[mid_mask]
 
                 motion_buffer = self.physics_state_buffer[mid]
-                score_buffer = self.physics_state_scores[mid]  # 获取分数 Buffer
+                score_buffer = self.physics_state_scores[mid]
                 max_frame = motion_buffer.shape[0]
 
-                valid_frame_mask = (batch_frames > batch_trim) & (batch_frames < (max_frame - batch_trim))
+                # 越界检查 (移除了 trim)
+                valid_frame_mask = (final_frames >= 0) & (final_frames < max_frame)
                 if not valid_frame_mask.any(): continue
 
-                final_frames = batch_frames[valid_frame_mask]
-                final_states = batch_states[valid_frame_mask]
-                final_new_scores = batch_scores[valid_frame_mask]
+                final_frames = final_frames[valid_frame_mask]
+                final_states = final_states[valid_frame_mask]
+                final_new_scores = final_new_scores[valid_frame_mask]
 
-                # --- 核心修改：优胜劣汰逻辑 ---
+                # A. 获取 Buffer 中当前帧记录的分数 (即之前存储的轨迹最终走到了哪)
+                current_buffer_scores = score_buffer[final_frames]  # (Batch, K)
 
-                # 1. 获取 Buffer 中对应帧的所有候选者分数
-                # current_buffer_scores: (Num_Updates, Num_Candidates)
-                current_buffer_scores = score_buffer[final_frames]
+                # B. 找到最弱的 Candidate (最终走得最近的那个)
+                min_vals, min_indices = torch.min(current_buffer_scores, dim=1)
 
-                # 2. 找到每个帧中最差的候选者 (Min Value) 及其索引 (Argmin)
-                # 注意：因为我们初始化时给了 Index 0 极高分 (10000)，所以 min() 永远不会选中 Index 0
-                # 这样就自动实现了“保留原始参考”的功能
-                min_scores, min_indices = torch.min(current_buffer_scores, dim=1)
-
-                # 3. 只有当 新分数 > 旧的最低分 时，才执行替换
-                replace_mask = final_new_scores > min_scores
+                # C. 替换逻辑：如果我走到的位置 > Buffer 里记录的最差位置
+                # 例如：Buffer 里记录某个轨迹走到了 Frame 11。而我现在走到了 Frame 12。
+                # 那么 12 > 11，证明我比它更强（剩余寿命更长），覆盖它。
+                replace_mask = final_new_scores > min_vals
 
                 if replace_mask.any():
-                    # 筛选出值得更新的
                     update_frames = final_frames[replace_mask]
-                    update_indices = min_indices[replace_mask]  # 要覆盖的槽位
+                    update_indices = min_indices[replace_mask]
 
-                    # 执行写入状态
                     self.physics_state_buffer[mid][update_frames, update_indices] = final_states[replace_mask]
-                    # 执行更新分数
                     self.physics_state_scores[mid][update_frames, update_indices] = final_new_scores[replace_mask]
-
         # 2. Reset the requested environments using the buffer
         # A. Sample Motion IDs
         self.sample_motions(env_ids)
@@ -1130,13 +1184,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         rand_factors = torch.rand(num_resets, device=self.device)
         sampled_frames = (rand_factors * motion_lens_frames).long()
 
-        # C. Sample Candidate Index
-        rand_candidates = torch.randint(0, self.physics_init_candidates, (num_resets,), device=self.device)
-
-        # D. Gather States from Buffer
-        # Since buffer is a Dict, we iterate or gather.
-        # Given heterogenous shapes in dict, we likely loop or group by motion ID.
-        # Grouping by motion ID is more efficient on GPU than single loops.
+        # # --- 修改开始: 5% 概率强制从第 0 帧开始 ---
+        # # 生成概率检测向量
+        # start_prob_check = torch.rand(num_resets, device=self.device)
+        # # 创建掩码：小于 0.05 的位置设为 True
+        # start_at_zero_mask = start_prob_check < 0.05
+        # # 将对应位置的帧索引强制置为 0
+        # sampled_frames[start_at_zero_mask] = 0
 
         # Placeholders for extracted data
         # Dim: 13 + 2*dof + 13
@@ -1149,14 +1203,20 @@ class LeggedRobotHoi(LeggedRobotImi):
             mask = (reset_mids == umid)
             frames_for_mid = sampled_frames[mask]  # (N_subset,)
 
-            # 获取这些帧的分数分布
-            # scores: (N_subset, Num_Candidates)
-            scores = self.physics_state_scores[int(umid.item())][frames_for_mid]
+            # --- 修复开始 ---
+            # 防越界保护 (以防万一 sampled_frames 计算稍微溢出)
+            max_frame = self.physics_state_scores[int(umid.item())].shape[0]
+            frames_for_mid = torch.clamp(frames_for_mid, 0, max_frame - 1)
 
-            # 转换为概率 (Softmax 或直接归一化)
-            # 直接归一化即可，分数越高概率越大
-            # 加一个 epsilon 防止除以 0
-            probs = scores / (scores.sum(dim=1, keepdim=True) + 1e-6)
+            # 获取这些帧的分数分布 (N_subset, Num_Candidates)
+            scores = torch.clamp(self.physics_state_scores[int(umid.item())][frames_for_mid] - frames_for_mid.unsqueeze(1), min=0.0)
+
+            # 转换为概率
+            # [Fix]: 加 1e-6 防止全 0 分数导致 sum 为 0 从而报错
+            # 如果 scores 全为 0 (例如起始帧碰撞)，加上 epsilon 后变为均匀分布
+            scores_safe = scores + 1e-6
+            probs = scores_safe / scores_safe.sum(dim=1, keepdim=True)
+            # --- 修复结束 ---
 
             # 采样
             # torch.multinomial 需要 2D 输入，对每一行采样 1 个索引
@@ -1205,6 +1265,280 @@ class LeggedRobotHoi(LeggedRobotImi):
         self._motion_start_times[env_ids] = sampled_frames * self.dt
 
 
+    def play_all_motions_sequentially(self, max_loops_per_motion=1, random_start=False):
+        """
+        利用所有并行环境，依次播放 MotionLib 中的所有动作。
+        自动处理 环境-物体 的对应关系。
+        """
+        print(f"Starting sequential playback of all motions...")
+
+        # 1. 整理环境资源：Obj ID -> [Env IDs]
+        # 统计每个物体类别有哪些环境可用
+        env_ids_by_obj = {}
+        for env_id in range(self.num_envs):
+            oid = int(self.env_object_ids[env_id].item())
+            if oid not in env_ids_by_obj:
+                env_ids_by_obj[oid] = []
+            env_ids_by_obj[oid].append(env_id)
+
+        # 2. 整理动作资源：Obj ID -> [Motion IDs]
+        # self._motion_lib._motions_by_object 是一个字典 {oid: Tensor([mid, mid...])}
+        motions_by_obj = self._motion_lib._motions_by_object
+
+        # 3. 计算最大轮数
+        # 我们需要知道如果要播完所有动作，最长的一组需要播多少轮
+        max_rounds = 0
+        for oid, motion_ids_tensor in motions_by_obj.items():
+            if oid not in env_ids_by_obj:
+                print(
+                    f"[Warning] MotionLib has object {oid}, but no envs are assigned to it. Skipping {len(motion_ids_tensor)} motions.")
+                continue
+
+            num_motions = len(motion_ids_tensor)
+            num_assigned_envs = len(env_ids_by_obj[oid])
+
+            # 向上取整计算该物体需要的轮数
+            rounds = (num_motions + num_assigned_envs - 1) // num_assigned_envs
+            max_rounds = max(max_rounds, rounds)
+
+        print(f"Total batches to play: {max_rounds}")
+
+        # 4. 开始循环播放每一轮
+        for r in range(max_rounds):
+            print(f"--- Playing Batch {r + 1}/{max_rounds} ---")
+
+            # 构建当前轮次要播放的 Motion ID 列表
+            # 初始化为 0 (或者当前环境的默认动作)，防止未被分配的环境报错
+            batch_motion_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+
+            # 记录当前轮次实际播放的新动作数量（用于日志）
+            new_motions_count = 0
+
+            for oid, env_list in env_ids_by_obj.items():
+                if oid not in motions_by_obj: continue
+
+                avail_motions = motions_by_obj[oid]  # Tensor [M]
+                num_avail = len(avail_motions)
+                num_envs_for_obj = len(env_list)
+
+                # 计算当前轮次，这组环境应该播放哪些动作的索引范围
+                start_idx = r * num_envs_for_obj
+
+                for i, env_id in enumerate(env_list):
+                    motion_idx = start_idx + i
+
+                    if motion_idx < num_avail:
+                        # 正常情况：播放新的动作
+                        mid = avail_motions[motion_idx]
+                        batch_motion_ids[env_id] = mid
+                        new_motions_count += 1
+                    else:
+                        # 溢出情况：该物体的动作已经播完了
+                        # 为了不让环境空转报错，我们可以重播之前的动作（比如取模）
+                        # 或者重播第 0 个
+                        mid = avail_motions[motion_idx % num_avail]
+                        batch_motion_ids[env_id] = mid
+
+            if new_motions_count == 0:
+                print("No new motions in this batch, skipping.")
+                continue
+
+            # 5. 调用 play_hoi 播放这一批
+            # 注意：play_hoi 内部会重置环境
+            print(f"Batch {r + 1}: Rendering {new_motions_count} unique motions...")
+            self.play_hoi(
+                motion_ids=batch_motion_ids,
+                random_start=random_start,
+                real_time=True,
+                max_loops=max_loops_per_motion,
+                sleep_when_render=True
+            )
+
+        print("All motions played.")
+
+    # @torch.no_grad()
+    def play_hoi(self,
+                 motion_ids: torch.Tensor = None,
+                 random_start: bool = False,
+                 real_time: bool = True,
+                 max_loops: int = 1,
+                 sleep_when_render: bool = True):
+        """
+        HOI 专用播放（仅按参考轨迹逐帧写入人物与物体状态，不走策略网络）。
+
+        Args:
+            motion_ids: [num_envs] 每个 env 播放的轨迹 ID。None 则按对象类别采样。
+            random_start: True 从随机时间开始；False 从 0 开始。
+            real_time: True 尽量按 dt 实时播放（需渲染）；False 尽快跑。
+            max_loops: 轨迹播完循环次数。
+            sleep_when_render: 渲染时是否用 sleep 做节流。
+        """
+        # 播放期：固定、可复现
+        self.eval_mode = False
+        self.early_termination = False
+
+        env_ids = torch.arange(self.num_envs, device=self.device)
+
+        # 1) 选择要播的 motion
+        if motion_ids is None:
+            # HOI: 按对象类别采样对应的动作
+            self.sample_motions(env_ids)                 # -> 填充 self._sampled_motion_ids
+            motion_ids = self._sampled_motion_ids.clone()
+        else:
+            assert motion_ids.shape[0] == self.num_envs
+            self._sampled_motion_ids[:] = motion_ids
+
+        # 2) 初始化到起始帧
+        # self.reset_with_motion_ids(motion_ids, random=random_start)
+        # 清掉提前终止/timeout
+        self.reset_buf[:] = 0
+        self.time_out_buf[:] = 0
+        self.early_termination_buf[:] = 0
+
+        # 3) 获取各 env 轨迹时长(秒)，确定一次 loop 的步数
+        motion_lens = self._motion_lib.get_motion_length(motion_ids)    # [num_envs]
+        steps_per_loop = int(float(motion_lens.max().item()) / self.dt) + 1
+
+        for loop in range(max_loops):
+            # 从头来一遍
+            self.episode_length_buf[:] = 0
+            self._motion_start_times[:] = 0.0
+
+            for step_idx in range(steps_per_loop):
+                # 当前参考时间
+                progress = (self.episode_length_buf.to(torch.float) + 1) * self.dt     # [num_envs]
+                motion_times = progress + self._motion_start_times                     # [num_envs]
+
+                # a) 取人物参考状态
+                motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids, motion_times)
+                # b) 取物体参考状态（HOI）
+                hoi = self._motion_lib.get_hoi_state(self._sampled_motion_ids, motion_times)
+
+                # c) 写人物状态（root / dof / key bodies）
+                self._set_env_state(
+                    env_ids=env_ids,
+                    root_pos=motion_state["root_pos"] + self.pos_offset['root'],
+                    root_rot=motion_state["root_rot"],
+                    dof_pos=motion_state["dof_pos"],
+                    root_vel=motion_state["root_vel"],
+                    root_ang_vel=motion_state["root_ang_vel"],
+                    dof_vel=motion_state["dof_vel"],
+                    key_pos=motion_state["key_pos"] + self.pos_offset['body'],
+                    key_rot=motion_state["key_rot"],
+                    key_vel=motion_state["key_vel"],
+                    key_ang_vel=motion_state["key_ang_vel"]
+                )
+
+                # self._reset_obj(env_ids)   # 直接写入物体状态
+                # d) 写物体状态（到缓存 _target_states）
+                self.obj_states[env_ids, :3]  = hoi["obj_pos"] + self.pos_offset['root'][env_ids]
+                self.obj_states[env_ids, 3:7] = hoi["obj_rot"]          # xyzw
+                self.obj_states[env_ids, 7:10]  = hoi["obj_pos_vel"]
+                self.obj_states[env_ids, 10:13] = hoi["obj_rot_vel"]
+                self.ig[env_ids] = hoi['ig']
+                self.body_contact[env_ids] = hoi['contact_robot']
+
+                # e) 把缓存写回 sim（注意 dof_pos contiguous）
+                self._reset_env_tensors(env_ids)   # LeggedRobotHoi 覆盖版会同时推 actor_root（人物+物体）
+
+                # f) 推仿真 + 渲染（为显示；物理不会主导状态）
+                self.gym.simulate(self.sim)
+                # self.gym.fetch_results(self.sim, True)
+                # if (step_idx % 4) == 0:
+                self.gym.step_graphics(self.sim)
+                self.gym.clear_lines(self.viewer)
+                self.render()
+
+                # g) 推进内部计步器
+                self.episode_length_buf += 1
+
+                # h) 实时节流
+                # if real_time and sleep_when_render and not self.headless:
+                #     target_elapsed = (loop * steps_per_loop + step_idx + 1) * self.dt
+                #     now = time.perf_counter() - t0                #     remain = target_elapsed - now
+                #     if remain > 0:
+                #         time.sleep(min(remain, self.dt))
+
+        # 让最后一帧停顿一下（看清）
+        if not self.headless:
+            time.sleep(0.5)
+
+    def post_physics_step(self):
+        """
+        重写 post_physics_step 以支持记录 Object 的状态数据 (HOI Metric)
+        """
+        self._refresh_sim_tensors()
+        self.episode_length_buf += 1
+        self.common_step_counter += 1
+
+        # prepare quantities
+        self.base_pos[:] = self.robot_states[:, 0:3]
+        self.base_quat[:] = self.robot_states[:, 3:7]
+        self.rpy[:] = get_euler_xyz_in_tensor(self.base_quat[:])
+        self.base_lin_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 7:10])
+        self.base_ang_vel[:] = quat_rotate_inverse(self.base_quat, self.robot_states[:, 10:13])
+        self.projected_gravity[:] = quat_rotate_inverse(self.base_quat, self.gravity_vec)
+
+        self.body_pos[:] = self._rigid_body_state_reshaped[..., self.body_ids, 0:3]
+        self.body_rot[:] = self._rigid_body_state_reshaped[..., self.body_ids, 3:7]
+        self.body_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 7:10]
+        self.body_ang_vel[:] = self._rigid_body_state_reshaped[..., self.body_ids, 10:13]
+
+        self.compute_reward()
+        self.check_termination()
+        env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
+
+        # --- Data Recording Logic (Modified for HOI) ---
+        if self.is_recording_data:
+            # CPU conversions
+            body_pos_cpu = (self.body_pos - self.pos_offset['body']).detach().cpu().numpy()
+            ref_body_pos_cpu = (self.ref_body_pos - self.pos_offset['body']).detach().cpu().numpy()
+            body_rot_cpu = self.body_rot.detach().cpu().numpy()
+            ref_body_rot_cpu = self.ref_body_rot.detach().cpu().numpy()
+            dof_pos_cpu = self.dof_pos.detach().cpu().numpy()
+            ref_dof_pos_cpu = self.ref_dof_pos.detach().cpu().numpy()
+            actions_cpu = self.actions.detach().cpu().numpy()
+
+            # HOI Specific: Object Data
+            # 注意：这里的 pos 是全局坐标，减去 root offset 以保持与 body 逻辑一致（如果 body 减了的话）
+            # 通常 object 也是基于 pos_offset['root'] 偏移的
+            root_offset_cpu = self.pos_offset['root'].detach().cpu().numpy()
+
+            obj_pos_cpu = self.obj_pos.detach().cpu().numpy() - root_offset_cpu
+            ref_obj_pos_cpu = self.ref_obj_pos.detach().cpu().numpy() - root_offset_cpu
+            obj_rot_cpu = self.obj_quat.detach().cpu().numpy()
+            ref_obj_rot_cpu = self.ref_obj_rot.detach().cpu().numpy()
+
+            done_flags_cpu = self.done_flags.detach().cpu().numpy()
+            alive_ids = np.where(done_flags_cpu == False)[0]
+
+            for env_id in alive_ids:
+                record_dict = {
+                    'body_pos': body_pos_cpu[env_id].copy(),
+                    'ref_body_pos': ref_body_pos_cpu[env_id].copy(),
+                    'body_rot': body_rot_cpu[env_id].copy(),
+                    'ref_body_rot': ref_body_rot_cpu[env_id].copy(),
+                    'dof_pos': dof_pos_cpu[env_id].copy(),
+                    'ref_dof_pos': ref_dof_pos_cpu[env_id].copy(),
+                    'actions': actions_cpu[env_id].copy(),
+                    # --- HOI Data ---
+                    'obj_pos': obj_pos_cpu[env_id].copy(),
+                    'ref_obj_pos': ref_obj_pos_cpu[env_id].copy(),
+                    'obj_rot': obj_rot_cpu[env_id].copy(),
+                    'ref_obj_rot': ref_obj_rot_cpu[env_id].copy()
+                }
+
+                self.recorded_data[env_id].append(record_dict)
+
+        self.reset_idx(env_ids)
+        if self.cfg.env.send_timeouts:
+            self.extras["time_outs"] = self.time_out_buf
+
+        self.compute_observations()
+
+        self.last_actions[:] = self.actions[:]
+        self.last_dof_vel[:] = self.dof_vel[:]
+        self.last_root_vel[:] = self.robot_states[:, 7:13]
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):

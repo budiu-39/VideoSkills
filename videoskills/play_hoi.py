@@ -25,11 +25,7 @@ def play_hoi(args):
     motion_ids = None
     # motion_ids = torch.arange(env.num_envs, device=env.device) % env._motion_lib.get_num_motions()
 
-    env.play_hoi(motion_ids=motion_ids,
-                 random_start=False,
-                 real_time=True,
-                 max_loops=1,
-                 sleep_when_render=True)
+    env.play_all_motions_sequentially(max_loops_per_motion=1)
 
 if __name__ == "__main__":
     args = get_args()

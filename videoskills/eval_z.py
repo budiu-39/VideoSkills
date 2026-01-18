@@ -19,6 +19,7 @@ def eval(args):
     # env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg, train_cfg = task_registry.get_cfgs(args)
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)
+
     # override some parameters for testing
     # env_cfg.env.num_envs = min(env_cfg.env.num_envs, 4)
     env_cfg.terrain.num_rows = 5
@@ -41,16 +42,19 @@ def eval(args):
     env.set_z_prior(prior)
     env.set_z_decoder(decoder)
 
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
-    ckpt = torch.load(ppo_runner.resume_path)
-    prior.load_state_dict(ckpt["prior_state_dict"])
-    decoder.load_state_dict(ckpt["decoder_state_dict"])
+    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg,
+                                                          eval_mode=True)
+    # ckpt = torch.load(ppo_runner.resume_path)
+    vae_ckpt =  torch.load(args.vae_ckpt)
+
+    prior.load_state_dict(vae_ckpt["prior_state_dict"])
+    decoder.load_state_dict(vae_ckpt["decoder_state_dict"])
     # student.load_state_dict(ckpt["model_state_dict"])
     # policy = ppo_runner.get_inference_policy(device=env.device)
 
     # ppo_runner.alg.actor_critic.load_state_dict(student, strict=False)
     decoder.eval()  # 主要是为了 rms
-    result = ppo_runner.eval()
+    result = ppo_runner.eval(rollout=True)
     print('Evaluation result: ', result)
 
     success_keys = result.get("success_keys", [])

@@ -7,12 +7,13 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
         # init_noise_std = 0.15
         # actor_hidden_dims = [1024, 512, 256]
         # critic_hidden_dims =[1024, 512, 256]
-        actor_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156 # 含义  humanoid_obs, mimic_obs, obj_obs, hoi_obs(2个 156), self.body_contact, self.actions
-        critic_input_dim = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        actor_input_dim = 778 + 528 + 21 + 156 + 156 + 153 + 52 + 156 + 52  # 含义  humanoid_obs, mimic_obs, obj_obs, hoi_obs(2个 156), self.body_contact, self.actions
+        critic_input_dim = 778 + 528 + 21 + 156 + 156 + 153 + 52 + 156 + 52
         actor_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         critic_hidden_dims = [2048, 1536, 1024, 1024, 512, 512]
         activation = 'silu'  # can be elu, relu, selu, crelu, lrelu, tanh, sigmoid
         use_z = False
+        res_act = False
 
     class algorithm(LeggedRobotCfgPPO.algorithm):
         learning_rate = 0.00002  # 5.e-4   # 0.001    0.0005    0.00002   0.0001  0.00002
@@ -23,7 +24,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_ppo'
 
-        run_name = 'omomo_omniretargeted'
+        run_name = 'omomo_new_psi'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 38000  # number of policy updates
@@ -69,8 +70,9 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
 
 class SMPLXRobotCfg( LeggedRobotCfg ):
     class init_state(LeggedRobotCfg.init_state):
-        # type = 'physical'
-        type = 'random'
+        type = 'physical'
+        # type = 'hybrid'
+        # type = 'start'
         pos = [0.0, 0.0, 0.89]  # x,y,z [m]   1003 - 69 = 934
 
     class early_termination:
@@ -81,6 +83,9 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         reset_body = ['Pelvis', 'L_Hip', 'L_Knee', 'R_Hip', 'R_Knee',
                      'Torso', 'Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
                      'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']    # 7
+
+        reset_on_body_contact = True
+        reset_on_no_contact = True
 
     class asset(LeggedRobotCfg.asset):
         load_object = True
@@ -100,9 +105,9 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
     class motion:
         rotate_motion = False
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_motion/AMASS_train')
-        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_select')
-        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_omniretargeted')
-
+        file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_collision_check')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo_subset_1')
+        # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/omomo')
         # file = ('{LEGGED_GYM_ROOT_DIR}/dataset/smplx_hoi_motion/behave_fixed')
 
 
@@ -166,7 +171,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         # num_observations =  task_obs + humanoid_obs + 69 # 69 + 138 + 10 + 74 =
         num_observations = 859
         activate_quat_to_tan_norm = True
-        norm_num_observations = 778 + 528 + 21 + 156 + 153 + 52 + 156
+        norm_num_observations = 778 + 528 + 21 + 156 + 156 + 153 + 52  + 156 + 52
 
     class control:
         # PD Drive parameters:
@@ -234,6 +239,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             w_pos = 0.3
             w_rot = 0.5
             w_vel = 0.1
+            k_action_rate = 0
 
         class weight:
             p = 30.

@@ -66,6 +66,16 @@ class SMPLXRobotHoiZ(LeggedRobotHoiZ):
         self._build_body_hand_masks()
         self._build_dof_hand_masks()
 
+    def _build_dof_hand_masks(self):  # 基于dof编号的hand mask
+        # 与 self.dof_names 一一对应
+        is_hand = [self._is_hand_dof(n) for n in self.dof_names]
+        self.hand_dof_mask = torch.tensor(is_hand, device=self.device, dtype=torch.bool)
+        self.no_hand_dof_mask = ~self.hand_dof_mask
+
+        # [新增] 将 hand_dof_mask 设置为 decoder 掩码
+        # 这样在 compute_z_action 中，手部关节的 VAE 输出会被置零，只保留 residual
+        self.decoder_dof_mask = self.hand_dof_mask
+
     def _is_hand_body(self, name: str) -> bool:
         # Wrist 视为“非手”（保留可动）；手掌/手指为“手”
         if "Wrist" in name:

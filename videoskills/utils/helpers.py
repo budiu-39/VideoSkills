@@ -223,7 +223,7 @@ def get_args():
         args.sim_device += f":{args.sim_device_id}"
 
     if args.dev:
-        args.num_envs = 16
+        args.num_envs = 32
         # args.headless = False
     return args
 
@@ -260,15 +260,16 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy', 
 
         pkl_files.sort(key=extract_iter)
         failed_keys = joblib.load(os.path.join(failed_key_dir, pkl_files[-1]))
-        npy_paths = []
-        for key in failed_keys:
-            parts = key.split("-")
-            if len(parts) >= 2:
-                dataset = parts[0]
-                subset = parts[1]
-                filename = "-".join(parts[2:])
-                rel_path = os.path.join(motion_file, dataset, subset, filename + ext)
-                npy_paths.append(rel_path)
+        npy_paths = [os.path.join(motion_file, key.split('-')[-1] + ext) for key in failed_keys]
+        # AMASS 结构特殊，直接存相对路径
+        # for key in failed_keys:
+        #     parts = key.split("-")
+        #     if len(parts) >= 2:
+        #         dataset = parts[0]
+        #         subset = parts[1]
+        #         filename = "-".join(parts[2:])
+        #         rel_path = os.path.join(motion_file, dataset, subset, filename + ext)
+        #         npy_paths.append(rel_path)
         return npy_paths
     else:
         import glob
@@ -279,9 +280,12 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy', 
         return motion_file
 
 
-def print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml"):
+def print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml", eval_mode=False):
     log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-    log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
+    if eval_mode:
+        log_dir = os.path.join(log_root, train_cfg.runner.load_run)
+    else:
+        log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
     env_cfg_dict = class_to_dict(env_cfg)
     train_cfg_dict = class_to_dict(train_cfg)
     class SmartListDumper(yaml.SafeDumper):

@@ -9,6 +9,7 @@ class LeggedRobotHoiZ(LeggedRobotHoi):
         super().__init__(cfg, sim_params, physics_engine, sim_device, headless)
         self._z_provider = None
         self._proprio_dim = self.cfg.env.proprio_dim
+        self.decoder_dof_mask = None
 
     def set_z_decoder(self, fn):
         self._z_decoder = fn
@@ -22,6 +23,7 @@ class LeggedRobotHoiZ(LeggedRobotHoi):
         z_res: torch.Tensor,
         use_prior: bool = True,
         sample: bool = True,
+        act_res: torch.Tensor = None,
     ):
         """
         obs: [B, obs_dim] —— PPO policy 的输入 obs
@@ -48,6 +50,12 @@ class LeggedRobotHoiZ(LeggedRobotHoi):
             act = mu_a + eps * std_a
         else:
             act = mu_a
+
+        if self.decoder_dof_mask is not None:
+            act[:, self.decoder_dof_mask] = 0.0
+
+        if act_res is not None:
+            act = act + act_res
 
         extra = {
             "mu_p": mu_p,

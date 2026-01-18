@@ -64,8 +64,12 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
                                   [self.env.num_obs], [num_critic_obs], [self.env.num_actions])
             if self.policy_cfg['use_z']:
-                self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
-                                      [self.env.num_obs], [num_critic_obs], [self.policy_cfg['z_dim']])
+                if self.policy_cfg.get('res_act', False):
+                    self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+                    [self.env.num_obs], [num_critic_obs], [self.policy_cfg['z_dim'] + self.env.num_actions],)
+                else:
+                    self.alg.init_storage(self.env.num_envs, self.num_steps_per_env,
+                    [self.env.num_obs], [num_critic_obs], [self.policy_cfg['z_dim']],)
 
         # Log
         self.log_dir = log_dir
@@ -125,8 +129,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     if self.policy_cfg['use_z']:
                         # obs = obs[:, :-self.env.num_actions]
                         critic_obs = obs
-                        actions_z = self.alg.act(obs, critic_obs)
-                        actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=True)
+                        actions_raw = self.alg.act(obs, critic_obs)
+                        if self.policy_cfg['res_act']:
+                            act_res = actions_raw[:, -self.env.num_actions:]
+                            actions_z = actions_raw[:, :-self.env.num_actions]
+                            actions, _ = self.env.compute_z_action(actions_z, use_prior=True, sample=False, act_res=act_res)
+                        else:
+                            actions, _ = self.env.compute_z_action(actions_raw, use_prior=True, sample=False)
                     else:
                         # student_obs = obs[:, :-645]
                         # # actions = self.alg.actor_critic.act_inference(obs_student)
@@ -165,18 +174,29 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             self.alg.compute_returns(critic_obs)
 
             # === 打印 Early Termination 占比并清零 ===
+            et_stats = {}
+            total_finished_episodes = dones_sum + 1e-8
             if getattr(self.env, "et_counter", None) is not None:
                 et = self.env.et_counter
-                total = et["total"]
-                if total > 0:
+                total_fails = et["total"]
+
+                total_et_rate = total_fails / total_finished_episodes
+                et_stats["ET_Rates/Total_Rate"] = total_et_rate
+                et_stats["ET_Rates/Reason_Robot_Fall"] = et['robot'] / total_finished_episodes
+                et_stats["ET_Rates/Reason_Object_Fail"] = et['object'] / total_finished_episodes
+                et_stats["ET_Rates/Reason_IG_Fail"] = et['ig'] / total_finished_episodes
+                et_stats["ET_Rates/Reason_Contact_Fail"] = et['contact'] / total_finished_episodes
+
+                if total_fails > 0 and it % 10 == 0:
                     print(f"[Iter {it}] Early Termination breakdown: "
-                          f"robot={et['robot'] / total:.2%}, "
-                          f"object={et['object'] / total:.2%}, "
-                          f"ig={et['ig'] / total:.2%}, "
-                          f"contact={et['contact'] / total:.2%}, total={total:.0f}")
-                else:
-                    print(f"[Iter {it}] No early termination this iteration.")
-                # 清零计数器
+                          f"robot={et['robot'] / total_fails:.2%}, "
+                          f"object={et['object'] / total_fails:.2%}, "
+                          f"ig={et['ig'] / total_fails:.2%}, "
+                          f"hand={et['cg_hand'] / total_fails:.2%}, "
+                          f"body={et['cg_body'] / total_fails:.2%}, "
+                          f"no_contact={et['cg_no_contact'] / total_fails:.2%}, "
+                          f"contact={et['contact'] / total_fails:.2%}, total={total_fails:.0f}")
+
                 for k in et:
                     et[k] = 0
 
@@ -258,8 +278,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 with torch.no_grad():
                     if self.policy_cfg['use_z']:
                         obs = obs[:, :self.policy_cfg['proprioception_dim']+self.policy_cfg['task_dim']]
-                        actions_z = self.alg.actor_critic.act_inference(obs)
-                        actions, _ = self.env.compute_z_action(actions_z, use_prior=False, sample=False)
+                        actions_raw = self.alg.actor_critic.act_inference(obs)
+                        if self.policy_cfg['res_act']:
+                            act_res = actions_raw[:, -self.env.num_actions:]
+                            actions_z = actions_raw[:, :-self.env.num_actions]
+                            actions, _ = self.env.compute_z_action(actions_z, use_prior=True, sample=False, act_res=act_res)
+                        else:
+                            actions, _ = self.env.compute_z_action(actions_raw, use_prior=True, sample=False)
                     else:
                         # obs_front = obs[:, :1432]
                         # # action + task obs
@@ -343,16 +368,46 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 tgt_dof = np.stack([f["ref_dof_pos"] for f in frames], axis=0)  # (T, D)
                 action = np.stack([f["actions"] for f in frames], axis=0)  # (T, A)
 
+                if 'obj_pos' in frames[0]:
+                    # Stack Data: (T, 3) / (T, 4)
+                    pred_obj_pos = np.stack([f['obj_pos'] for f in frames], axis=0)
+                    gt_obj_pos = np.stack([f['ref_obj_pos'] for f in frames], axis=0)
+                    pred_obj_rot = np.stack([f['obj_rot'] for f in frames], axis=0)
+                    gt_obj_rot = np.stack([f['ref_obj_rot'] for f in frames], axis=0)
+
+                    # 1. Position Error (Euclidean Distance in meters)
+                    # Shape: (T,) -> Scalar Mean
+                    obj_pos_err = np.linalg.norm(pred_obj_pos - gt_obj_pos, axis=-1).mean()
+
+                    # 2. Rotation Error (Angle difference in degrees)
+                    # Formula: 2 * arccos(|<q1, q2>|)
+                    # Dot product over last axis
+                    quat_dot = np.abs(np.sum(pred_obj_rot * gt_obj_rot, axis=-1))
+                    quat_dot = np.clip(quat_dot, -1.0, 1.0) # Numerical stability
+                    obj_rot_err_rad = 2 * np.arccos(quat_dot)
+                    obj_rot_err_deg = np.degrees(obj_rot_err_rad).mean()
+
+                    # Add to Global Metrics (Tracked across all motions)
+                    global_metrics['Object_Pos_Err'].append(obj_pos_err)
+                    global_metrics['Object_Rot_Err'].append(obj_rot_err_deg)
+
+                    # Add to Success-Only Metrics (if this motion was successful)
+                    if key not in failed_keys:
+                        metrics_success['Object_Pos_Err'].append(obj_pos_err)
+                        metrics_success['Object_Rot_Err'].append(obj_rot_err_deg)
+
                 if rollout and key in success_keys:
                     rollout_length = len(frames)
                     rollout = {
                         "pred_pos": pred_pos[:rollout_length],
                         # "gt_pos": tgt_pos[:rollout_length],
                         "pred_rot": pred_rot[:rollout_length],
-                        "action": action
+                        "action": action,
                         # "gt_rot": tgt_rot[:rollout_length],
-                        # "pred_dof_pos": pred_dof[:rollout_length],
+                        "pred_dof_pos": pred_dof[:rollout_length],
                         # "gt_dof_pos": tgt_dof[:rollout_length],
+                        "pred_obj_pos": pred_obj_pos[:rollout_length] if 'obj_pos' in frames[0] else None,
+                        "pred_obj_rot": pred_obj_rot[:rollout_length] if 'obj_rot' in frames[0] else None,
                     }
                     out_path = os.path.join(self.rollouts_succeed_path, f"{key}.pkl")
                     joblib.dump(rollout, out_path, compress=True)
@@ -449,11 +504,13 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 if len(v) == 0: continue
                 val = np.mean(v).item()
                 # 判定是物理合理性指标还是动作模仿指标
-                if any(kw in k.lower() for kw in physics_keywords):
-                    prefix = "Eval_Physical"
+                if "Object" in k:
+                    prefix = "Eval_Object"  # 新增分类：物体误差
+                elif any(kw in k.lower() for kw in physics_keywords):
+                    prefix = "Eval_Physical"  # 物理指标
                 else:
-                    prefix = "Eval_Tracking"
-                # 扁平化命名示例: Eval_Physical/Foot_Skating_All
+                    prefix = "Eval_Tracking"  # 追踪指标 (人体)
+
                 detail_metrics[f"{prefix}/{k}_All"] = val
 
             # --- 处理 B: 仅成功轨迹的指标 (_SuccessOnly) ---
@@ -461,10 +518,15 @@ class OnPolicyRunnerEval(OnPolicyRunner):
             for k, v in metrics_success.items():
                 if len(v) == 0: continue
                 val = np.mean(v).item()
-                if any(kw in k.lower() for kw in physics_keywords):
+
+                # === [修改点] 增加 Object 分类判断 ===
+                if "Object" in k:
+                    prefix = "Eval_Object"
+                elif any(kw in k.lower() for kw in physics_keywords):
                     prefix = "Eval_Physical"
                 else:
                     prefix = "Eval_Tracking"
+
                 detail_metrics[f"{prefix}/{k}_success_only"] = val
 
             # 3. 一次性推送
@@ -742,6 +804,10 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                     if not key.startswith("reward"):
                         clean_name = key.replace("_err", "")
                         wandb_dict[f"Physical_Errors/{clean_name}"] = v_mean
+
+        et_stats = locs.get('et_stats', {})
+        if et_stats:
+            wandb_dict.update(et_stats)
 
         # 5. 解析 Episode 结束时的累计子项 (Section: HOI_Details)
         # 这部分是从 reset_idx 时填入的 extras['episode'] 传过来的

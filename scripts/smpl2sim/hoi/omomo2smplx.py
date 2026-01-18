@@ -144,7 +144,7 @@ if __name__ == "__main__":
         num_betas=20  # SMPL-X 20 维 beta
     )
 
-    OBJECT_PATH = "data/omomo/objects_scaled/objects"
+    OBJECT_PATH = "data/omomo/objects/objects"
     render_outdir = "renders/OMOMO"
 
     data_dict = get_omomo_data(args.src)
@@ -223,6 +223,9 @@ if __name__ == "__main__":
         # 导入人体 SMPL 数据
         key_str = data_dict_seq[seq_key]['seq_name']
         pose_aa_smpl = human['poses']  #pose zup 只是朝向为 zup，相对旋转还是 yup
+        rot_offset = sRot.from_euler('x', 90, degrees=True)
+        # pose_aa_smpl[:, 60:63] = (sRot.from_rotvec(pose_aa_smpl[:, 60:63]) * rot_offset).as_rotvec()
+        # pose_aa_smpl[:, 63:66] = (sRot.from_rotvec(pose_aa_smpl[:, 63:66]) * rot_offset).as_rotvec()
         trans_smpl = human['trans']
         betas_smpl = human['betas'][np.newaxis, :]
         gender =  str(human['gender'])

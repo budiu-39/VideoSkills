@@ -51,7 +51,7 @@ def train_z(args):
     env_cfg.motion.file = parse_motion_file_path(env_cfg, train_cfg, only_failed_key=False)
 
     # 保存配置
-    log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config_z.yaml")
+    log_dir = print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml")
 
     # 2. 创建环境
     # 注意：环境类必须是 LeggedRobotHoiZ (通过配置文件指定 task name 关联)
