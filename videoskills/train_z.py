@@ -113,6 +113,13 @@ def train_z(args):
         )
 
     # 7. 开始训练循环
+
+    # 一个比较简陋
+    psi_output_dir = os.path.join(log_dir, 'psi_buffer')
+    if os.path.exists(psi_output_dir):
+        psi_file_latest = sorted(os.listdir(psi_output_dir))[-1]
+        psi_file_latest = os.path.join(psi_output_dir, psi_file_latest)
+        ppo_runner.env.import_physics_buffer(psi_file_latest)
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
 
         # 确保 VAE 始终处于 eval 模式 (防止 PPO runner 内部可能的 train() 调用影响到 VAE 的 BatchNorm)
@@ -121,7 +128,7 @@ def train_z(args):
 
         # 训练
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=False)
-
+        ppo_runner.env.export_physics_buffer(log_dir, it)
         result = ppo_runner.eval()
         print('Evaluation result: ', result)
 

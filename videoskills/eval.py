@@ -33,7 +33,7 @@ def eval(args):
     # load policy
     train_cfg.runner.resume = True
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg
-                                                          , eval_mode=True)
+                                                          ,eval_mode=True)
     # policy = ppo_runner.get_inference_policy(device=env.device)
 
     ### 临时更改 motion lib

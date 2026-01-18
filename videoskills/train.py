@@ -55,12 +55,11 @@ def train(args):
     # test_batch_dir = "dataset/smpl_motion/subset/train_active"
 
 
-
+    psi_output_dir = os.path.join(log_dir, 'psi_buffer')
     for it in range(0, train_cfg.runner.max_iterations + 1, train_cfg.runner.eval_interval):
-
         # reset_motion_lib_dir(ppo_runner, train_batch_dir)
         ppo_runner.learn(num_learning_iterations=train_cfg.runner.eval_interval, init_at_random_ep_len=False)
-
+        ppo_runner.env.export_physics_buffer(psi_output_dir, it)
         result = ppo_runner.eval()
         print('Evaluation result: ', result)
 

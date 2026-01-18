@@ -5,7 +5,6 @@ from isaacgym import gymtorch, gymapi
 import torch
 from videoskills.envs.base.legged_robot_config import LeggedRobotCfg
 from videoskills.envs.base.legged_robot_imi import LeggedRobotImi
-from videoskills.utils.torch_utils import to_torch
 import trimesh
 from isaacgym import gymtorch, gymapi, gymutil
 from videoskills.utils.motion_lib_hoi import MotionLibHoi
@@ -16,6 +15,7 @@ from videoskills.envs.base.legged_robot_imi import (
     compute_humanoid_observations_jit,
 )
 from videoskills.utils.isaacgym_utils import get_euler_xyz as get_euler_xyz_in_tensor
+import joblib
 
 class LeggedRobotHoi(LeggedRobotImi):
     def __init__(self, cfg: LeggedRobotCfg, sim_params, physics_engine, sim_device, headless):
@@ -40,6 +40,7 @@ class LeggedRobotHoi(LeggedRobotImi):
             "cg_hand": 0,
             "cg_body": 0,
             "cg_no_contact": 0,
+            "penetration": 0,  # [新增] 穿模/非法接触计数
             "total": 0,
         }
         self.reward_subterm_sums = {}
@@ -58,6 +59,21 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.physics_state_scores = None  # 新增：用于存储分数的 Buffer
         self.physics_init_candidates = 3  # Parameter: candidate number per frame
         self.physics_buffer_initialized = False
+
+        perturb_dof_list = []  # 使用纯 Python 列表，避免过早转 Tensor
+
+        for target_body_name in self.cfg.asset.upper_body:
+            # 1. 找到 Body ID
+            if target_body_name in self.body_names:
+                bid = self.body_names.index(target_body_name)
+                start_dof = (bid - 1) * 3
+                perturb_dof_list.extend([start_dof, start_dof + 1, start_dof + 2])
+            else:
+                print(f"[Warning] Perturbing {target_body_name} not found.")
+
+        self.perturb_dof_indices = torch.tensor(perturb_dof_list, device=self.device, dtype=torch.long)
+
+        print(f"Perturbing DOFs: {self.perturb_dof_indices} for Upper Body Randomization")
 
 
     def _build_env(self, env_id, env_ptr, humanoid_asset):
@@ -197,6 +213,13 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         super()._init_buffers()
         self._build_obj_tensors()
+
+        allowed_contact_body_ids = self.cfg.early_termination.foot_ids
+
+        # 创建一个全 True 的 mask
+        self.non_foot_mask = torch.ones(self.num_bodies, device=self.device, dtype=torch.bool)
+        # 将脚部设为 False (即不检测脚部的接触)
+        self.non_foot_mask[allowed_contact_body_ids] = False
 
         return
 
@@ -420,6 +443,22 @@ class LeggedRobotHoi(LeggedRobotImi):
         contact_fail_any = torch.any(contact_fails_per_type, dim=-1)  # [N]
         contact_fail = contact_fail_any & (self.episode_length_buf > 1)
 
+        # --- [新增] Penetration Reset (初始化穿模检测) ---
+        # 1. 仅在初始几帧检测 (例如 <= 1)
+        check_frames = self.episode_length_buf <= 1
+
+        # 2. 计算接触力的大小 (Norm) -> [num_envs, num_bodies],  -3 是物体
+        contact_force_norm = torch.norm(self.contact_forces[:,:-1], dim=-1)
+        illegal_contacts = contact_force_norm[:, self.non_foot_mask]
+
+        # 判断是否存在严重穿模 (力 > 1.0 以过滤物理引擎的幽灵力/噪声)
+        has_penetration = torch.any(illegal_contacts > 1.0, dim=-1)
+        self.penetration_reset = has_penetration & check_frames
+        # ---------------------------------------------------
+
+        # 将 penetration_reset 加入 early_termination_buf
+        self.early_termination_buf = self.kinematic_reset | contact_fail | self.penetration_reset
+
         self.early_termination_buf = self.kinematic_reset | contact_fail
         self.time_out_buf = time_out | ref_out
         self.reset_buf = self.time_out_buf | self.early_termination_buf
@@ -441,6 +480,8 @@ class LeggedRobotHoi(LeggedRobotImi):
             self.et_counter["object"] += torch.sum(self.object_reset).item()
             self.et_counter["ig"] += torch.sum(self.ig_reset).item()
             self.et_counter["contact"] += torch.sum(contact_fail).item()
+            # [新增] 记录穿模重置次数
+            self.et_counter["penetration"] += torch.sum(self.penetration_reset).item()
 
             fails_masked = contact_fails_per_type & contact_fail.unsqueeze(-1)
             self.et_counter["cg_hand"] += torch.sum(fails_masked[:, 0]).item() + torch.sum(fails_masked[:, 1]).item()
@@ -1023,7 +1064,7 @@ class LeggedRobotHoi(LeggedRobotImi):
 
             # 【核心修复】
             # 1. 计算期望的目标分数：当前帧 + 30
-            target_scores = frames + 30.0
+            target_scores = frames + 50.0
 
             # 2. 设定分数的物理上限：动作总长度
             # 注意：这里减去 0.1 是为了制造 "可被超越" 的空间。
@@ -1184,13 +1225,13 @@ class LeggedRobotHoi(LeggedRobotImi):
         rand_factors = torch.rand(num_resets, device=self.device)
         sampled_frames = (rand_factors * motion_lens_frames).long()
 
-        # # --- 修改开始: 5% 概率强制从第 0 帧开始 ---
-        # # 生成概率检测向量
-        # start_prob_check = torch.rand(num_resets, device=self.device)
-        # # 创建掩码：小于 0.05 的位置设为 True
-        # start_at_zero_mask = start_prob_check < 0.05
-        # # 将对应位置的帧索引强制置为 0
-        # sampled_frames[start_at_zero_mask] = 0
+        # 5% 概率强制从第 0 帧开始 --- （这个是为了成功率，因为 hoi 的因果性很重要！）
+        # 生成概率检测向量
+        start_prob_check = torch.rand(num_resets, device=self.device)
+        # 创建掩码：小于 0.05 的位置设为 True
+        start_at_zero_mask = start_prob_check < 0.05
+        # 将对应位置的帧索引强制置为 0
+        sampled_frames[start_at_zero_mask] = 0
 
         # Placeholders for extracted data
         # Dim: 13 + 2*dof + 13
@@ -1242,6 +1283,22 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # Object State (13)
         r_obj = target_states[:, idx_dof_vel:]
+
+        if len(self.perturb_dof_indices) > 0:
+            # 设定噪声幅度，例如 0.05 弧度 (~2.8度) 到 0.2 弧度，根据需要调整
+            # 建议在 cfg 中配置，这里暂时硬编码演示
+            noise_scale = 0.1
+
+            # 生成均匀分布噪声 [-noise_scale, +noise_scale]
+            # shape: (num_resets, num_perturb_dofs)
+            noise = (torch.rand((len(env_ids), len(self.perturb_dof_indices)),
+                                device=self.device) * 2.0 - 1.0) * noise_scale
+
+            # 将噪声叠加到对应的 DOF 上
+            r_dof_pos[:, self.perturb_dof_indices] += noise
+
+            # [重要] 必须 Clamp 到关节的物理极限范围内，防止报错或物理爆炸
+            r_dof_pos = torch.clamp(r_dof_pos, self.dof_limits_lower, self.dof_limits_upper)
 
         # Apply Offsets
         env_root_offset = self.pos_offset['root'][env_ids]
@@ -1539,6 +1596,101 @@ class LeggedRobotHoi(LeggedRobotImi):
         self.last_actions[:] = self.actions[:]
         self.last_dof_vel[:] = self.dof_vel[:]
         self.last_root_vel[:] = self.robot_states[:, 7:13]
+
+    def export_physics_buffer(self, output_dir, iteration):
+        """
+        导出当前的 Physics State Buffer 和 Scores 到磁盘。
+        格式为字典: { motion_name: {'states': Tensor, 'scores': Tensor} }
+        """
+        if self.physics_state_buffer is None:
+            print("[PSI Export] Buffer is empty or not initialized.")
+            return
+
+        export_dict = {}
+        motion_lib = self._motion_lib
+
+        # 遍历 Buffer (key: motion_id (int))
+        for mid, state_tensor in self.physics_state_buffer.items():
+            # 将 ID 转换为 Motion Name (String)，保证跨训练的可移植性
+            if mid < len(motion_lib._motion_keys):
+                motion_name = motion_lib._motion_keys[mid]
+
+                # 获取对应的分数
+                scores_tensor = self.physics_state_scores.get(mid, None)
+
+                if scores_tensor is not None:
+                    # 转移到 CPU 并分离计算图，减小文件体积
+                    export_dict[motion_name] = {
+                        'states': state_tensor.detach().cpu().clone(),
+                        'scores': scores_tensor.detach().cpu().clone()
+                    }
+
+        # 确保目录存在
+        psi_dir = os.path.join(output_dir, "psi_buffer")
+        os.makedirs(psi_dir, exist_ok=True)
+
+        filename = f"psi_buffer_iter{iteration}.pkl"
+        save_path = os.path.join(psi_dir, filename)
+
+        try:
+            joblib.dump(export_dict, save_path, compress=3)
+            print(f"[PSI Export] Successfully exported buffer to: {save_path}")
+        except Exception as e:
+            print(f"[PSI Export] Failed to export buffer: {e}")
+
+    def import_physics_buffer(self, filepath):
+        """
+        从磁盘加载 PSI Buffer。
+        """
+        if not os.path.exists(filepath):
+            print(f"[PSI Import] File not found: {filepath}")
+            return False
+
+        try:
+            print(f"[PSI Import] Loading buffer from {filepath}...")
+            data = joblib.load(filepath)
+
+            # 确保环境内部变量已初始化
+            if self.physics_state_buffer is None:
+                self.physics_state_buffer = {}
+                self.physics_state_scores = {}
+
+            loaded_count = 0
+            motion_lib = self._motion_lib
+
+            # 创建 Name -> ID 的临时映射表以加速查找
+            name_to_id = {name: i for i, name in enumerate(motion_lib._motion_keys)}
+
+            for motion_name, content in data.items():
+                # 检查当前环境是否包含该动作
+                if motion_name in name_to_id:
+                    mid = name_to_id[motion_name]
+
+                    # 校验数据格式
+                    if isinstance(content, dict) and 'states' in content and 'scores' in content:
+                        states = content['states'].to(self.device)
+                        scores = content['scores'].to(self.device)
+
+                        # 简单的形状校验 (防止加载了参数不匹配的 buffer)
+                        # self.physics_init_candidates 是 buffer 的候选数量
+                        if states.shape[1] != self.physics_init_candidates:
+                            print(f"[PSI Import Warning] Candidate size mismatch for {motion_name}. "
+                                  f"Saved: {states.shape[1]}, Current: {self.physics_init_candidates}. Skipping.")
+                            continue
+
+                        self.physics_state_buffer[mid] = states
+                        self.physics_state_scores[mid] = scores
+                        loaded_count += 1
+                    else:
+                        print(f"[PSI Import Warning] Invalid format for {motion_name}. Skipping.")
+
+            print(f"[PSI Import] Successfully loaded buffer for {loaded_count} motions.")
+            self.physics_buffer_initialized = True
+            return True
+
+        except Exception as e:
+            print(f"[PSI Import] Error loading buffer: {e}")
+            return False
 
 @torch.jit.script
 def compute_obj_observations_jit(root_pos, root_rot, obj_states, ref_obj_pos, ref_obj_rot, ref_obj_vel, ref_obj_ang_vel):

@@ -282,7 +282,7 @@ def parse_motion_file_path(env_cfg, cfg, only_failed_key = False, ext = '.npy', 
 
 def print_and_save_cfg(env_cfg, train_cfg, filename="config.yaml", eval_mode=False):
     log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-    if eval_mode:
+    if eval_mode or train_cfg.runner.resume:
         log_dir = os.path.join(log_root, train_cfg.runner.load_run)
     else:
         log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))

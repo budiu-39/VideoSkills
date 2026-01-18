@@ -8,6 +8,7 @@ from videoskills.envs.base.legged_robot_imi import (
     compute_amp_observations_jit,
 )
 from isaacgym import gymtorch
+from videoskills.utils.torch_utils import to_torch
 
 SMPL24_BODIES = [
     'Pelvis',
@@ -38,7 +39,8 @@ class SMPLXRobotHoi(LeggedRobotHoi):
                 props[p_idx].filter = filter_ints[p_idx]
             self.gym.set_actor_rigid_shape_properties(env_ptr, robot_handle, props)
 
-        return
+
+
 
     def _create_envs(self):
 

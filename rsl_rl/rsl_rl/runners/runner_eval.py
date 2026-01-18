@@ -195,7 +195,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                           f"hand={et['cg_hand'] / total_fails:.2%}, "
                           f"body={et['cg_body'] / total_fails:.2%}, "
                           f"no_contact={et['cg_no_contact'] / total_fails:.2%}, "
+                          f"penetration={et['penetration'] / total_fails:.2%},"
                           f"contact={et['contact'] / total_fails:.2%}, total={total_fails:.0f}")
+
 
                 for k in et:
                     et[k] = 0
@@ -916,4 +918,3 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         num_envs = self.env.num_envs
         init_ids = torch.zeros(num_envs, dtype=torch.long, device=self.device)
         self.env.reset_with_motion_ids(init_ids)
-

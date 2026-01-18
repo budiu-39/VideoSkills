@@ -41,7 +41,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_z_ppo'
 
-        run_name = 'omomo_psi_prior_v2'
+        run_name = 'prior_psi_v2_perturb_hybrid_50score'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 25000  # number of policy updates
@@ -103,6 +103,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
 
         reset_on_body_contact = True
         reset_on_no_contact = True
+        foot_ids = [3,4,7,8]
 
     class asset(LeggedRobotCfg.asset):
         load_object = True
@@ -110,7 +111,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
         foot_name = "Ankle"
-        penalize_contacts_on = ["Hip", "Knee"]
+
         terminate_after_contacts_on = ["Pelvis"]
         self_collisions = 1
 
@@ -118,6 +119,9 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         asset_root = 'data/omomo/objects'
         # asset_root = 'data/OMOMO_new/objects'
         # asset_root = 'dataset/behave_correct/objects_centered'
+
+        upper_body = ['Spine', 'Chest', 'Neck', 'Head', 'L_Thorax', 'L_Shoulder', 'L_Elbow',  # 8
+                     'L_Wrist', 'R_Thorax', 'R_Shoulder', 'R_Elbow', 'R_Wrist']
 
     class motion:
         rotate_motion = False

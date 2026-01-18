@@ -29,6 +29,7 @@ class TaskRegistry():
             # load config from the path
             return self.load_cfg(args)
         train_cfg = self.train_cfgs[args.task]
+
         env_cfg = self.env_cfgs[args.task]
         # copy seed
         env_cfg.seed = train_cfg.seed
@@ -55,9 +56,10 @@ class TaskRegistry():
             env_cfg['motion']['file'] = motion_file_path
 
         train_cfg['runner']['load_run'] = args.load_run
-
+        train_cfg['runner']['resume'] = True
         env_cfg = dict_to_class(env_cfg)
         train_cfg = dict_to_class(train_cfg)
+
 
         return env_cfg, train_cfg
     
@@ -140,11 +142,9 @@ class TaskRegistry():
         _, train_cfg = update_cfg_from_args(None, train_cfg, args)
 
         log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name)
-        if log_dir is None:
-            if eval_mode:
-                log_dir = os.path.join(log_root, args.load_run)
-            else:
-                log_dir = os.path.join(log_root, train_cfg.runner.run_name + '_' + datetime.now().strftime('%b%d_%H-%M-%S'))
+
+        if eval_mode or train_cfg.runner.resume:
+            log_dir = os.path.join(log_root, args.load_run)
 
         use_amp_runner = train_cfg.runner.use_amp_runner  # ✅ 从 cfg 中读取
         if train_cfg.runner.run_name.split('_')[-1] == 'test':
