@@ -134,7 +134,7 @@ if __name__ == "__main__":
     )
 
     OBJECT_PATH = "data/omomo/objects/objects"
-    dataset_name = "omomo_index_action_rate"
+    dataset_name = "omomo_psi_v3"
     render_outdir = f"renders/{dataset_name}"
 
     data_dict = get_omomo_data(args.src)

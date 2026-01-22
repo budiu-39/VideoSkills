@@ -8,6 +8,7 @@ import torch
 import copy
 from videoskills.utils import task_registry
 import wandb
+
 import gc
 # A100 友好设置
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -42,6 +43,57 @@ def main():
     # 老师/学生
     teacher = load_teacher(teacher_config, teacher_ckpt, env, device)
     student = build_student(env, train_cfg, device)
+
+    # ========================== 新增：Eval 模式分支 ==========================
+    # 检查是否开启了 play 模式 (通常 videoskills.utils.get_args 会包含 --play 参数)
+    # 或者你可以手动添加参数解析
+    if getattr(args, 'play', False):
+        print("\n[DAgger] 🚀 Switch to EVALUATION mode (Skipping training)...")
+
+        # 1. 确定学生模型权重路径
+        # 假设通过 --checkpoint 传入，或者在这里硬编码路径进行测试
+        # 如果 args 没有 checkpoint 属性，你需要手动指定 student_load_path
+        student_load_path = getattr(args, 'checkpoint', None)
+
+        # 如果命令行没传 checkpoint，可以在这里临时硬编码调试：
+        # student_load_path = "logs/your_experiment/dagger_student_1000.pt"
+
+        if student_load_path is None or str(student_load_path) == '-1':
+            raise ValueError("[DAgger Eval] Please provide a checkpoint path via --checkpoint or hardcode it.")
+
+        print(f"[DAgger Eval] Loading student weights from: {student_load_path}")
+        loaded_dict = torch.load(student_load_path, map_location=device)
+
+        # 2. 加载权重 (兼容不同的保存格式)
+        if 'student_state_dict' in loaded_dict:
+            student.load_state_dict(loaded_dict['student_state_dict'])
+        elif 'model_state_dict' in loaded_dict:
+            student.load_state_dict(loaded_dict['model_state_dict'])
+        else:
+            # 尝试直接加载 state_dict
+            student.load_state_dict(loaded_dict)
+
+        # 3. 创建 Eval Runner
+        # 复用之前的配置，但关闭 storage 初始化以节省显存
+        eval_cfg = copy.deepcopy(train_cfg)
+        eval_cfg.runner.init_storage = False
+
+        # 使用 task_registry 创建 runner，传入现有的 env
+        eval_runner, _ = task_registry.make_alg_runner(
+            env=env, name=args.task, args=args, train_cfg=eval_cfg, log_dir=log_dir
+        )
+
+        # 4. 将加载好权重的学生模型同步给 Runner 的 ActorCritic
+        # 注意：eval_runner 内部默认是 Teacher 类型的 Policy 结构，
+        # 如果 Student 结构(Attention)与 Teacher 不同，确保 Runner 能兼容 Student 的 forward
+        eval_runner.alg.actor_critic = student  # 直接替换为学生实例最稳妥
+        # 或者如果结构完全一致：
+        # eval_runner.alg.actor_critic.load_state_dict(student.state_dict(), strict=False)
+
+        print("[DAgger Eval] Starting evaluation loop...")
+        eval_runner.eval(log=True)  # 调用 runner_eval.py 中的 eval
+
+        return  # 评估结束后直接退出程序
 
     # 优化器：先只训 actor/backbone；如需蒸馏 value 再加 critic
     optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters())

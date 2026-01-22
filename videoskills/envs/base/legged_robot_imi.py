@@ -826,6 +826,7 @@ class LeggedRobotImi(LeggedRobot):
                 })
 
         self.reset_idx(env_ids)
+        self.extras['early_termination_buf'] = self.early_termination_buf
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 

@@ -217,7 +217,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         self.current_learning_iteration += num_learning_iterations
         # self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
-    def eval(self, motion_ids=None, log = True, rollout = False):
+    def eval(self, motion_ids=None, log = True, rollout = False, enable_early_termination=True):
         """Evaluate policy over multiple motions in parallel across environments."""
         self.alg.set_eval()  # switch to eval mode (for dropout for example)
         state_init = self.env._state_init
@@ -225,6 +225,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
         if hasattr(self.alg.actor_critic, "set_update_rms"):
             self.alg.actor_critic.set_update_rms(False)
         self.env.eval_mode = True
+        self.env.early_termination = enable_early_termination
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.eval_distance * len(self.env.early_termination_distance)
                                                            , device=self.device) ** 2
 
@@ -300,7 +301,9 @@ class OnPolicyRunnerEval(OnPolicyRunner):
                 cum_rewards += rewards
 
                 episode_lengths += (~done_flags).int()
-
+                dones |= extras['early_termination_buf']
+                # if dones.any():
+                #     print('dones detect')
                 newly_done = dones.squeeze() & (~done_flags)
                 done_flags |= dones.squeeze()
 
@@ -479,6 +482,7 @@ class OnPolicyRunnerEval(OnPolicyRunner):
 
         self.env.disable_data_recording()
         self.env.early_termination_distance = torch.tensor(self.env.cfg.early_termination.distance, device=self.device) ** 2
+        self.env.early_termination = self.env.cfg.early_termination.enabled
         self.env.eval_mode = False
         self.env._state_init = state_init
         self.env.reset()

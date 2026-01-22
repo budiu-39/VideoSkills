@@ -41,7 +41,7 @@ class SMPLXRoughCfgPPO(LeggedRobotCfgPPO):
     class runner(LeggedRobotCfgPPO.runner):
         experiment_name = 'smplx_hoi_z_ppo'
 
-        run_name = 'prior_psi_v2_perturb_hybrid_50score'
+        run_name = 'omomo_prior_psi_v3_action_rate'
 
         use_amp_runner = False # 可以联动！和 amp
         max_iterations = 25000  # number of policy updates
@@ -106,7 +106,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
         foot_ids = [3,4,7,8]
 
     class asset(LeggedRobotCfg.asset):
-        load_object = True
+        load_object = False
         file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smplx_humanoid_hand.xml'
         # file = '{LEGGED_GYM_ROOT_DIR}/data/robots/smpl/smpl_humanoid.xml'
         name = "smpl_humanoid"
@@ -262,7 +262,7 @@ class SMPLXRobotCfg( LeggedRobotCfg ):
             w_pos = 0.3
             w_rot = 0.5
             w_vel = 0.1
-            k_action_rate = 0
+            k_action_rate = 0.15
 
         class weight:
             p = 30.

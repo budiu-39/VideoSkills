@@ -52,6 +52,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         for i, name in enumerate(env_obj_names):
             # motion_lib.object_vocab 由 motion 库构建（名字必须一致）
             obj_id = self._motion_lib.object_vocab.get(name, None)
+            # [FIX] 如果找不到 ID (例如 "none" 且 vocab 未构建或是空的)，给予默认值 0
+            if obj_id is None:
+                obj_id = 0
             self.env_object_ids[i] = obj_id
 
         # Physics Init Buffer Variables
@@ -445,23 +448,27 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         # --- [新增] Penetration Reset (初始化穿模检测) ---
         # 1. 仅在初始几帧检测 (例如 <= 1)
-        check_frames = self.episode_length_buf <= 1
+        check_frames = self.episode_length_buf == 1
 
         # 2. 计算接触力的大小 (Norm) -> [num_envs, num_bodies],  -3 是物体
-        contact_force_norm = torch.norm(self.contact_forces[:,:-1], dim=-1)
+        if self.cfg.asset.load_object:
+            contact_force_norm = torch.norm(self.contact_forces[:,:-1], dim=-1)
+        else:
+            contact_force_norm = torch.norm(self.contact_forces, dim=-1)
         illegal_contacts = contact_force_norm[:, self.non_foot_mask]
 
         # 判断是否存在严重穿模 (力 > 1.0 以过滤物理引擎的幽灵力/噪声)
         has_penetration = torch.any(illegal_contacts > 1.0, dim=-1)
         self.penetration_reset = has_penetration & check_frames
+
         # ---------------------------------------------------
 
         # 将 penetration_reset 加入 early_termination_buf
-        self.early_termination_buf = self.kinematic_reset | contact_fail | self.penetration_reset
-
         self.early_termination_buf = self.kinematic_reset | contact_fail
+
+        # self.early_termination_buf = self.kinematic_reset | contact_fail
         self.time_out_buf = time_out | ref_out
-        self.reset_buf = self.time_out_buf | self.early_termination_buf
+        self.reset_buf = self.time_out_buf | self.early_termination_buf #| self.penetration_reset
 
         if not self.early_termination:
             self.reset_buf = time_out | ref_out
@@ -945,20 +952,23 @@ class LeggedRobotHoi(LeggedRobotImi):
         if len(env_ids) == 0:
             return
 
-        motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], self._motion_start_times )
+        if self._state_init == 'physical':
+            self._reset_phys_state_init(env_ids, motion_ids, random)
+        else:
+            motion_state = self._motion_lib.get_motion_state(self._sampled_motion_ids[env_ids], self._motion_start_times )
 
-        self._set_env_state(env_ids=env_ids,
-                            root_pos=motion_state["root_pos"] + self.pos_offset['root'][env_ids],
-                            root_rot=motion_state["root_rot"],
-                            dof_pos=motion_state["dof_pos"],
-                            root_vel=motion_state["root_vel"],
-                            root_ang_vel=motion_state["root_ang_vel"],
-                            dof_vel=motion_state["dof_vel"],
-                            key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
-                            key_rot=motion_state["key_rot"],
-                            key_vel=motion_state["key_vel"],
-                            key_ang_vel=motion_state["key_ang_vel"]
-                            )
+            self._set_env_state(env_ids=env_ids,
+                                root_pos=motion_state["root_pos"] + self.pos_offset['root'][env_ids],
+                                root_rot=motion_state["root_rot"],
+                                dof_pos=motion_state["dof_pos"],
+                                root_vel=motion_state["root_vel"],
+                                root_ang_vel=motion_state["root_ang_vel"],
+                                dof_vel=motion_state["dof_vel"],
+                                key_pos=motion_state["key_pos"] + self.pos_offset['body'][env_ids],
+                                key_rot=motion_state["key_rot"],
+                                key_vel=motion_state["key_vel"],
+                                key_ang_vel=motion_state["key_ang_vel"]
+                                )
 
         self._reset_obj(env_ids)
         self._reset_env_tensors(env_ids)
@@ -1088,11 +1098,8 @@ class LeggedRobotHoi(LeggedRobotImi):
 
         print(f"Physics Buffer initialized for {num_motions} motions.")
 
-    def _reset_phys_state_init(self, env_ids):
-        """
-        Resets environment using states from the Physics State Buffer.
-        Also updates the buffer with current valid states from environments that lived long enough.
-        """
+
+    def update_psi(self, env_ids):
         # --- 1. 准备数据 ---
 
         # 计算当前物理状态对应的绝对帧索引 (Absolute Frame Index)
@@ -1132,7 +1139,7 @@ class LeggedRobotHoi(LeggedRobotImi):
         # 筛选：当前走到的位置 > 起始位置记录的门槛
         # 并且为了稳定性，仍然保留一个最小存活步数 (比如32步)，防止刚出生就覆盖
         cond_survived = (self.episode_length_buf[env_ids] > 32) & \
-                        (curr_frames.float() > thresholds)
+                        (curr_frames.float() >= thresholds)
 
         cond_prob = torch.rand(len(env_ids), device=self.device) < 0.25
         survived_mask = cond_survived & cond_prob
@@ -1164,10 +1171,24 @@ class LeggedRobotHoi(LeggedRobotImi):
             batch_mids = env_mids[survived_mask]
             batch_frames = curr_frames[survived_mask]
 
-            # --- 核心修改：Score = 当前绝对帧索引 ---
-            # 含义：我证明了这个状态至少能活到 batch_frames 这一帧
-            # 在同一帧 t 进行比较时，batch_frames 越大，说明该轨迹的 [剩余寿命 = batch_frames - t] 越长
-            batch_scores = batch_frames.float()
+            # ================= [核心修改] 引入质量指标 =================
+            # 1. 基础分：绝对帧数 (Integer)
+            base_score = batch_frames.float()
+
+            # 2. 质量分：当前帧的 Reward (Fractional)
+            # 获取对应环境的当前步奖励
+            # 注意：update_psi 是在 compute_reward 之后调用的，所以 rew_buf 是最新的
+            curr_rewards = self.rew_buf[update_env_ids]
+
+            # 安全 Clamp，确保奖励在 [0, 1] 之间 (虽然一般都是)
+            quality_score = torch.clamp(curr_rewards, 0.0, 1.0)
+
+            # 3. 组合分数
+            # 权重系数 0.5：确保即使满分奖励 (1.0 * 0.5 = 0.5) 也不会超过 1 帧的差距。
+            # 这样保证了 "多活一帧" 永远优于 "少活一帧但姿态完美"。
+            # 但在同帧内，Reward 高的会胜出。
+            batch_scores = base_score + 0.5 * quality_score
+            # ========================================================
 
             # --- 4. 写入 Buffer ---
             unique_update_mids = torch.unique(batch_mids)
@@ -1208,44 +1229,49 @@ class LeggedRobotHoi(LeggedRobotImi):
 
                     self.physics_state_buffer[mid][update_frames, update_indices] = final_states[replace_mask]
                     self.physics_state_scores[mid][update_frames, update_indices] = final_new_scores[replace_mask]
+
+    def _reset_phys_state_init(self, env_ids, motion_ids=None, random=True):
+        """
+        Resets environment using states from the Physics State Buffer.
+        Also updates the buffer with current valid states from environments that lived long enough.
+        """
+        if not self.eval_mode:
+            # 1. Update the buffer with current valid states
+            self.update_psi(env_ids)
+
         # 2. Reset the requested environments using the buffer
         # A. Sample Motion IDs
-        self.sample_motions(env_ids)
+        if motion_ids is None:
+            self.sample_motions(env_ids)
+        else:
+            self._sampled_motion_ids[env_ids] = motion_ids.clone()
 
         num_resets = len(env_ids)
-        reset_mids = self._sampled_motion_ids[env_ids]
 
-        motion_lens_sec = self._motion_lib._motion_lengths[reset_mids]
-
-        # 计算总帧数 (与 _init_physics_state_buffer 中的逻辑对齐: int(len/dt) + 1)
-        motion_lens_frames = (motion_lens_sec / self.dt).long() + 1
-
-        # Sample frames: Full range [0, Len)
-        # 只要 buffer 初始化正确，首尾的 Kinematic 数据也是合法的采样点
-        rand_factors = torch.rand(num_resets, device=self.device)
-        sampled_frames = (rand_factors * motion_lens_frames).long()
-
-        # 5% 概率强制从第 0 帧开始 --- （这个是为了成功率，因为 hoi 的因果性很重要！）
-        # 生成概率检测向量
-        start_prob_check = torch.rand(num_resets, device=self.device)
-        # 创建掩码：小于 0.05 的位置设为 True
-        start_at_zero_mask = start_prob_check < 0.05
-        # 将对应位置的帧索引强制置为 0
-        sampled_frames[start_at_zero_mask] = 0
+        if random:
+            motion_ids = self._sampled_motion_ids[env_ids]
+            motion_lens_sec = self._motion_lib._motion_lengths[motion_ids]
+            motion_lens_frames = (motion_lens_sec / self.dt).long() + 1
+            rand_factors = torch.rand(num_resets, device=self.device)
+            sampled_frames = (rand_factors * motion_lens_frames).long()
+            # 5% 概率强制从第 0 帧开始 --- （这个是为了成功率，因为 hoi 的因果性很重要！）
+            start_prob_check = torch.rand(num_resets, device=self.device)
+            start_at_zero_mask = start_prob_check < 0.05
+            sampled_frames[start_at_zero_mask] = 0
+        else:
+            sampled_frames = torch.zeros(len(env_ids), dtype=torch.long, device=self.device)
 
         # Placeholders for extracted data
-        # Dim: 13 + 2*dof + 13
         state_dim = 13 + 2 * self.num_dofs + 13
 
         target_states = torch.zeros((num_resets, state_dim), device=self.device)
 
-        unique_mids = torch.unique(reset_mids)
+        unique_mids = torch.unique(motion_ids)
         for umid in unique_mids:
-            mask = (reset_mids == umid)
+            mask = (motion_ids == umid)
             frames_for_mid = sampled_frames[mask]  # (N_subset,)
 
             # --- 修复开始 ---
-            # 防越界保护 (以防万一 sampled_frames 计算稍微溢出)
             max_frame = self.physics_state_scores[int(umid.item())].shape[0]
             frames_for_mid = torch.clamp(frames_for_mid, 0, max_frame - 1)
 
@@ -1284,7 +1310,9 @@ class LeggedRobotHoi(LeggedRobotImi):
         # Object State (13)
         r_obj = target_states[:, idx_dof_vel:]
 
-        if len(self.perturb_dof_indices) > 0:
+        perturb_prob = torch.rand(1, device=self.device) < 0.25
+        perturb_prob = 0
+        if not self.eval_mode and len(self.perturb_dof_indices) > 0 and perturb_prob:
             # 设定噪声幅度，例如 0.05 弧度 (~2.8度) 到 0.2 弧度，根据需要调整
             # 建议在 cfg 中配置，这里暂时硬编码演示
             noise_scale = 0.1
@@ -1588,6 +1616,7 @@ class LeggedRobotHoi(LeggedRobotImi):
                 self.recorded_data[env_id].append(record_dict)
 
         self.reset_idx(env_ids)
+        self.extras['early_termination_buf'] = self.early_termination_buf
         if self.cfg.env.send_timeouts:
             self.extras["time_outs"] = self.time_out_buf
 

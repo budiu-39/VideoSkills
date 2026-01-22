@@ -36,16 +36,82 @@ def main():
     env, env_cfg, train_cfg, log_dir = build_env_and_cfg(args)
     os.makedirs(log_dir, exist_ok=True)
 
+    student = build_student(env, train_cfg, device)
+    decoder, prior = build_decoder_and_prior(train_cfg, device)
+    env.set_z_prior(prior)
+    env.set_z_decoder(decoder)
+
+    # ========================== 新增：Eval 模式分支 ==========================
+    if getattr(args, 'dev', False):
+        print("\n[DAgger Z] 🚀 Switch to EVALUATION mode (Skipping training)...")
+
+        # 1. 确定 Checkpoint 路径
+        ckpt_path = getattr(args, 'vae_ckpt', None)
+        if ckpt_path is None or str(ckpt_path) == '-1':
+            raise ValueError("[DAgger Z Eval] Please provide a checkpoint path via --checkpoint.")
+
+        print(f"[DAgger Z Eval] Loading weights from: {ckpt_path}")
+        loaded_dict = torch.load(ckpt_path, map_location=device)
+
+        # 2. 加载 Student (Actor/Critic)
+        # 兼容不同的保存 key
+        if 'model_state_dict' in loaded_dict:
+            student.load_state_dict(loaded_dict['model_state_dict'])
+        elif 'student_state_dict' in loaded_dict:
+            student.load_state_dict(loaded_dict['student_state_dict'])
+        else:
+            student.load_state_dict(loaded_dict)  # 尝试直接加载
+
+        # 3. 加载 Decoder
+        if 'decoder_state_dict' in loaded_dict:
+            decoder.load_state_dict(loaded_dict['decoder_state_dict'])
+            print(" | Loaded Decoder weights")
+        else:
+            print("[Warning] No 'decoder_state_dict' found in checkpoint!")
+
+        # 4. 加载 Prior
+        if prior is not None and 'prior_state_dict' in loaded_dict:
+            prior.load_state_dict(loaded_dict['prior_state_dict'])
+            print(" | Loaded Prior weights")
+
+        # 5. 切换到评估模式 (影响 Dropout/BatchNorm 等)
+        student.eval()
+        decoder.eval()
+        if prior is not None:
+            prior.eval()
+
+        # 6. 创建 Eval Runner
+        import copy
+        eval_cfg = copy.deepcopy(train_cfg)
+        eval_cfg.runner.init_storage = False
+        # 确保 runner 识别正确的 policy 类名 (通常 student 是 ActorCritic_Attention，但 runner 可能默认配置不同)
+        # 这里的 hack 是为了让 runner 能够实例化，实际上我们会把 student 实例直接替换进去
+        eval_cfg.runner.policy_class_name = 'ActorCritic'
+
+        eval_runner, _ = task_registry.make_alg_runner(
+            env=env, name=args.task, args=args, train_cfg=eval_cfg, log_dir=log_dir
+        )
+
+        # 7. 注入 Student 模型
+        # 直接替换实例，确保使用的是带有 Attention 的 student
+        eval_runner.alg.actor_critic = student
+
+        # 再次确保 env 里的 decoder 是最新的 (虽然上面设过了，但为了保险)
+        env.set_z_decoder(decoder)
+        env.set_z_prior(prior)
+
+        print("[DAgger Z Eval] Starting evaluation loop...")
+        eval_runner.eval(log=True)
+
+        return  # 结束程序
+    # ========================================================================
+
     with open(args.teacher_config, 'r') as f:
         cfg = yaml.safe_load(f)
     teacher_config = cfg.get('train_cfg', {})
 
     # 老师/学生, decoder, prior, optimizer
     teacher = load_teacher(teacher_config, teacher_ckpt, env, device)
-    student = build_student(env, train_cfg, device)
-    decoder, prior = build_decoder_and_prior(train_cfg, device)
-    env.set_z_prior(prior)
-    env.set_z_decoder(decoder)
 
     optim_params = list(student.actor_network.parameters()) + list(student.actor_head.parameters()) +   \
         list(decoder.parameters()) + ([] if prior is None else list(prior.parameters()))

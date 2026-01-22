@@ -254,18 +254,18 @@ class MotionLibHoi(MotionLib):
                 out[b] = subset[idx_in_subset]
         return out
 
-    def sample_time(self, motion_ids, truncate_time=None):
-        B = motion_ids.shape[0]
-        out_t = torch.empty(B, dtype=torch.float32, device=self._device)
-        for b in range(B):
-            i = int(motion_ids[b].item())
-            dt_i = float(self._motion_dt[i].item())
-            valid = self._valid_frames_no_cg[i]
-            if truncate_time is not None:
-                T_i = int(self._motion_num_frames[i].item())
-                max_idx = max(T_i - 1 - int(truncate_time / dt_i), 0)
-                valid = valid[valid <= max_idx]
-                if valid.numel() == 0: valid = torch.tensor([0], device=self._device)
-            pick = valid[torch.randint(0, valid.numel(), (1,), device=self._device)]
-            out_t[b] = pick.float() * dt_i
-        return out_t
+    # def sample_time(self, motion_ids, truncate_time=None):
+    #     B = motion_ids.shape[0]
+    #     out_t = torch.empty(B, dtype=torch.float32, device=self._device)
+    #     for b in range(B):
+    #         i = int(motion_ids[b].item())
+    #         dt_i = float(self._motion_dt[i].item())
+    #         valid = self._valid_frames_no_cg[i]
+    #         if truncate_time is not None:
+    #             T_i = int(self._motion_num_frames[i].item())
+    #             max_idx = max(T_i - 1 - int(truncate_time / dt_i), 0)
+    #             valid = valid[valid <= max_idx]
+    #             if valid.numel() == 0: valid = torch.tensor([0], device=self._device)
+    #         pick = valid[torch.randint(0, valid.numel(), (1,), device=self._device)]
+    #         out_t[b] = pick.float() * dt_i
+    #     return out_t

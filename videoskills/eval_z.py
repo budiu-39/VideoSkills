@@ -53,8 +53,14 @@ def eval(args):
     # policy = ppo_runner.get_inference_policy(device=env.device)
 
     # ppo_runner.alg.actor_critic.load_state_dict(student, strict=False)
+    log_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, train_cfg.runner.load_run)
     decoder.eval()  # 主要是为了 rms
-    result = ppo_runner.eval(rollout=True)
+    psi_output_dir = os.path.join(log_dir, 'psi_buffer')
+    if os.path.exists(psi_output_dir):
+        psi_file_latest = sorted(os.listdir(psi_output_dir))[-1]
+        psi_file_latest = os.path.join(psi_output_dir, psi_file_latest)
+        ppo_runner.env.import_physics_buffer(psi_file_latest)
+    result = ppo_runner.eval(rollout=True, enable_early_termination=False)
     print('Evaluation result: ', result)
 
     success_keys = result.get("success_keys", [])

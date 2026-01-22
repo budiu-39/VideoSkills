@@ -52,7 +52,12 @@ def eval(args):
     #
     # reset_motion_lib_dir(ppo_runner, train_motion_paths)
 
-
+    log_dir = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', train_cfg.runner.experiment_name, train_cfg.runner.load_run)
+    psi_output_dir = os.path.join(log_dir, 'psi_buffer')
+    if os.path.exists(psi_output_dir):
+        psi_file_latest = sorted(os.listdir(psi_output_dir))[-1]
+        psi_file_latest = os.path.join(psi_output_dir, psi_file_latest)
+        ppo_runner.env.import_physics_buffer(psi_file_latest)
     result = ppo_runner.eval(rollout=True)
     print('Evaluation result: ', result)
 
